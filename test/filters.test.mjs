@@ -20,6 +20,7 @@ import {
   smoothFace,
   toLocal,
   toWorld,
+  unwarpLandmarks,
 } from '../renderer/filters.mjs'
 
 const ASPECT = 16 / 9
@@ -219,4 +220,46 @@ test('only known filter ids cross the room boundary', () => {
   assert.equal(cleanFilterId(''), null)
   assert.equal(cleanFilterId(null), null)
   assert.equal(cleanFilterId({}), null)
+})
+
+test('unwarping recovers a face this app had already warped', () => {
+  // What the YouTube path faces: the picture read back has the filter on it, so the same landmarks
+  // that built the warp must come back out of a reading taken through it.
+  const {landmarks, pose} = makeFace()
+  const points = controlPoints(FILTERS.chad, landmarks, pose, ASPECT)
+  const warped = landmarks.map((p) => {
+    const [lx, ly] = toLocal(pose, p.x, p.y, ASPECT)
+    const [dx, dy] = displacementAt(points, lx, ly)
+    const [wx, wy] = toWorld(pose, lx + dx, ly + dy, ASPECT)
+    return {x: wx, y: wy}
+  })
+  const recovered = unwarpLandmarks(warped, points, pose, ASPECT)
+  let worst = 0
+  for (const index of [172, 136, 152, 234, 33, 263]) {
+    const [tx, ty] = toLocal(pose, landmarks[index].x, landmarks[index].y, ASPECT)
+    const [rx, ry] = toLocal(pose, recovered[index].x, recovered[index].y, ASPECT)
+    worst = Math.max(worst, Math.hypot(rx - tx, ry - ty))
+  }
+  // Evaluating the field at the warped point leaves a second-order error; what matters is that it
+  // is far smaller than the displacement, so repeated frames settle instead of running away.
+  assert.ok(worst < 0.05, `unwarp should land back near the real face, off by ${worst.toFixed(4)}`)
+})
+
+test('unwarping repeatedly settles instead of running away', () => {
+  // The real loop: every frame warps the already-warped picture and unwarps the reading. If the
+  // correction were missing this would diverge, which is a jaw that grows until it leaves frame.
+  const {landmarks, pose} = makeFace()
+  let current = landmarks
+  for (let frame = 0; frame < 30; frame++) {
+    const points = controlPoints(FILTERS.chad, current, pose, ASPECT)
+    const warped = current.map((p) => {
+      const [lx, ly] = toLocal(pose, p.x, p.y, ASPECT)
+      const [dx, dy] = displacementAt(points, lx, ly)
+      const [wx, wy] = toWorld(pose, lx + dx, ly + dy, ASPECT)
+      return {x: wx, y: wy}
+    })
+    current = unwarpLandmarks(warped, points, pose, ASPECT)
+  }
+  const [jawX] = toLocal(pose, current[172].x, current[172].y, ASPECT)
+  assert.ok(Math.abs(jawX - -0.9) < 0.02, `the jaw should stay put over 30 frames, ended at ${jawX.toFixed(3)}`)
 })

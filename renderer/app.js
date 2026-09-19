@@ -1735,6 +1735,9 @@ function drawFilters() {
     ui.filterCanvas.hidden = true
     return
   }
+  // The YouTube picture is read back out of this window, which already has the filter drawn on it,
+  // so the detector has to take its own warp back out of what it measures. Nothing else does.
+  if (filters.tracker) filters.tracker.unwarp = youtube.videoId ? filter : null
   if (filters.source !== source) {
     filters.source = source
     filters.tracker ||= new FaceTracker()

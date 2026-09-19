@@ -6,7 +6,7 @@
 // the cost scales with pixels and rate, and the renderer interpolates between results anyway.
 // Nothing here runs unless a filter is switched on.
 
-import {MAX_FACES, createSmoother, grayscale, holdOpacity, isCut, resetSmoother, smoothFace} from './filters.mjs'
+import {MAX_FACES, controlPoints, createSmoother, facePose, grayscale, holdOpacity, isCut, resetSmoother, smoothFace, unwarpLandmarks} from './filters.mjs'
 
 const ASSETS = 'svp-vision://assets'
 // The longest side the detector ever sees. Its own input is smaller still, so this throws away
@@ -100,6 +100,9 @@ export class FaceTracker {
     this.source = null
     this.aspect = 16 / 9
     this.detecting = false
+    // Set to the active filter when the picture being read back already has that filter drawn
+    // on it, which is the case for the YouTube path. Left null everywhere else.
+    this.unwarp = null
     this.canvas = document.createElement('canvas')
     this.context = this.canvas.getContext('2d', {willReadFrequently: false})
     this.thumb = document.createElement('canvas')
@@ -176,7 +179,7 @@ export class FaceTracker {
       const detections = (result?.faceLandmarks || []).slice(0, MAX_FACES)
       const matched = matchFaces(this.tracked, detections)
       this.tracked = matched.map(({face, landmarks, x, y}) => {
-        face.landmarks = smoothFace(face.smoother, landmarks, this.aspect, now) || landmarks
+        face.landmarks = smoothFace(face.smoother, this.correct(landmarks, face), this.aspect, now) || landmarks
         face.x = x
         face.y = y
         face.at = now
@@ -187,6 +190,15 @@ export class FaceTracker {
     } finally {
       this.detecting = false
     }
+  }
+
+  // Takes this app's own warp back out of a reading, using the filter as it stood over the face
+  // last time round. With nothing drawn yet there is nothing to undo.
+  correct(landmarks, face) {
+    if (!this.unwarp || !face.landmarks) return landmarks
+    const pose = facePose(face.landmarks, this.aspect)
+    if (!pose) return landmarks
+    return unwarpLandmarks(landmarks, controlPoints(this.unwarp, face.landmarks, pose, this.aspect), pose, this.aspect)
   }
 
   // What to draw right now: the last known faces, fading out if detection has lost them. Called
@@ -208,7 +220,7 @@ export class FaceTracker {
 // directly on top and would otherwise be fed back into the detector.
 
 export async function captureElement(element) {
-  if (typeof RestrictionTarget === 'undefined') throw new Error('This build cannot capture the YouTube picture')
+  if (typeof CropTarget === 'undefined') throw new Error('This build cannot capture the YouTube picture')
   const stream = await navigator.mediaDevices.getDisplayMedia({
     video: {frameRate: DETECT_HZ},
     audio: false,
@@ -218,7 +230,7 @@ export async function captureElement(element) {
   })
   const [track] = stream.getVideoTracks()
   try {
-    await track.restrictTo(await RestrictionTarget.fromElement(element))
+    await track.cropTo(await CropTarget.fromElement(element))
   } catch (error) {
     stream.getTracks().forEach((t) => t.stop())
     throw error

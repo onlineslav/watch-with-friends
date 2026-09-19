@@ -199,6 +199,43 @@ export function buildMesh(filter, landmarks, aspect, n = GRID, out = null) {
   return mesh
 }
 
+// ---------- Undoing this app's own warp ----------
+// The YouTube picture is read back out of the app's own window, and that window already has the
+// filter drawn on it. So a detection made from it measures a face this app has itself widened, and
+// building the next warp on that measurement compounds it — a jaw that grows every frame until it
+// leaves the screen.
+//
+// Subtracting the displacement that was applied at the measured position turns the reading back
+// into the real face. Evaluating the field at the warped point rather than the true one leaves a
+// second-order error, which is small for a smooth displacement and settles rather than accumulates.
+
+// Solves l = measured - displacement(l) by repeated substitution. One pass is not enough: the
+// field is steep enough near the jaw that the leftover error feeds the next frame and the warp
+// still creeps outward, just slowly. A handful of passes converges and then stays put.
+const UNWARP_STEPS = 8
+const UNWARP_SETTLED = 1e-4
+
+export function unwarpLandmarks(landmarks, points, pose, aspect) {
+  if (!pose || !points.length) return landmarks
+  return landmarks.map((point) => {
+    const [mx, my] = toLocal(pose, point.x, point.y, aspect)
+    let lx = mx
+    let ly = my
+    for (let step = 0; step < UNWARP_STEPS; step++) {
+      const [dx, dy] = displacementAt(points, lx, ly)
+      const nx = mx - dx
+      const ny = my - dy
+      const moved = Math.hypot(nx - lx, ny - ly)
+      lx = nx
+      ly = ny
+      if (moved < UNWARP_SETTLED) break
+    }
+    if (lx === mx && ly === my) return point
+    const [wx, wy] = toWorld(pose, lx, ly, aspect)
+    return {x: wx, y: wy}
+  })
+}
+
 // ---------- Smoothing ----------
 // Raw landmarks jitter, and detection runs far slower than the screen refreshes. Smoothing the
 // rigid pose slowly and the expression on top of it quickly is what makes a filter look locked to

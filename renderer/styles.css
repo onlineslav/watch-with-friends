@@ -1652,6 +1652,20 @@ button:disabled {
   color: var(--accent);
 }
 
+/* Waiting for the YouTube picture: the window may be covered, or the player may not have painted
+   yet. The filter stays on and keeps trying, so this only marks the button rather than interrupting
+   with a message over the video. */
+#filter-toggle.waiting {
+  color: var(--accent);
+  animation: filter-waiting 1.4s ease-in-out infinite;
+}
+
+@keyframes filter-waiting {
+  50% {
+    opacity: 0.45;
+  }
+}
+
 #filter-toggle:disabled {
   opacity: 0.4;
   pointer-events: none;

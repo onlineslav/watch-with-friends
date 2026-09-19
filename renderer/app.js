@@ -1644,7 +1644,16 @@ function setPeopleOpen(open) {
 // Whoever changes it last wins, ordered by revision like the whiteboard's clear, so the choice
 // survives the host leaving.
 
-const filters = {renderer: null, tracker: null, capture: null, capturing: false, source: null, installed: null}
+const filters = {renderer: null, tracker: null, capture: null, capturing: false, source: null, installed: null, retryAt: 0, attempts: 0}
+
+// Reaching the YouTube picture can fail for reasons that pass on their own: the window is covered or
+// minimized, or the player has not painted its first frame yet. None of those mean the filter was a
+// mistake, so it stays chosen and keeps trying, backing off so a genuinely dead path is not retried
+// in a tight loop.
+const CAPTURE_RETRY_MS = 600
+const CAPTURE_RETRY_MAX_MS = 4000
+// Long enough that a filter switched on a second early never says anything.
+const CAPTURE_QUIET_ATTEMPTS = 6
 
 const filterOpen = () => ui.room.classList.contains('filter-open')
 
@@ -1654,16 +1663,27 @@ const canFilter = () => session.role !== 'idle' && !shownImage() && !session.med
 
 function teardownFilters() {
   filters.tracker?.stop()
-  filters.capture?.stop()
-  filters.capture = null
-  filters.capturing = false
+  releaseCapture()
   filters.source = null
   if (ui.filterCanvas) ui.filterCanvas.hidden = true
 }
 
-// A filter that cannot run here is switched off here only. Everyone else keeps seeing it: one
-// computer without a working GPU should not decide for the room.
-function filterFailed(message) {
+function releaseCapture() {
+  filters.capture?.stop()
+  filters.capture = null
+  filters.capturing = false
+  filters.retryAt = 0
+  filters.attempts = 0
+  if (ui.filterToggle) {
+    ui.filterToggle.classList.remove('waiting')
+    ui.filterToggle.title = 'Face filters'
+  }
+}
+
+// A filter that genuinely cannot run here — no WebGL, no model — is switched off here only, and
+// everyone else keeps seeing it: one computer's missing hardware should not decide for the room.
+// Anything that might fix itself goes through the retry above instead of coming here.
+function filterUnavailable(message) {
   teardownFilters()
   if (session.filter) toast(message, true)
   session.filter = null
@@ -1671,24 +1691,36 @@ function filterFailed(message) {
 }
 
 // The <video> holding the picture to look for faces in. YouTube plays inside a cross-origin iframe
-// whose pixels are out of reach, so there the app captures its own window instead.
+// whose pixels are out of reach, so there the app captures its own window instead. Returning null
+// only means there is nothing to look at this frame; the filter stays on and this is asked again.
 function filterSource() {
   if (youtube.videoId) {
     if (filters.capture) return filters.capture.video
-    if (!filters.capturing) {
+    if (!filters.capturing && performance.now() >= filters.retryAt) {
       filters.capturing = true
       captureElement(ui.youtubePlayer)
         .then((capture) => {
           if (!session.filter || !youtube.videoId) return capture.stop()
           filters.capture = capture
+          filters.attempts = 0
+          ui.filterToggle.classList.remove('waiting')
+          ui.filterToggle.title = 'Face filters'
         })
-        .catch((error) => filterFailed(`Filters cannot reach the YouTube picture: ${errorMessage(error)}`))
+        .catch(() => {
+          // Keep the filter on and come back to it. Say nothing for the first few tries, then mark
+          // the button rather than interrupting with a message over the video.
+          filters.attempts++
+          filters.retryAt = performance.now() + Math.min(CAPTURE_RETRY_MAX_MS, CAPTURE_RETRY_MS * filters.attempts)
+          if (filters.attempts >= CAPTURE_QUIET_ATTEMPTS) {
+            ui.filterToggle.classList.add('waiting')
+            ui.filterToggle.title = 'Face filters are waiting for the YouTube picture. Bring the window to the front if it is covered.'
+          }
+        })
         .finally(() => (filters.capturing = false))
     }
     return null
   }
-  filters.capture?.stop()
-  filters.capture = null
+  releaseCapture()
   return isHost() ? ui.localVideo : ui.remoteVideo
 }
 
@@ -1707,14 +1739,14 @@ function drawFilters() {
     filters.source = source
     filters.tracker ||= new FaceTracker()
     filters.tracker.start(source).then((started) => {
-      if (!started && filters.source === source) filterFailed(`Face filters could not start: ${errorMessage(filters.tracker.error)}`)
+      if (!started && filters.source === source) filterUnavailable(`Face filters could not start: ${errorMessage(filters.tracker.error)}`)
     })
   }
   if (!filters.renderer) {
     try {
       filters.renderer = new FilterRenderer(ui.filterCanvas)
     } catch (error) {
-      return filterFailed(errorMessage(error))
+      return filterUnavailable(errorMessage(error))
     }
   }
   const dpr = window.devicePixelRatio || 1

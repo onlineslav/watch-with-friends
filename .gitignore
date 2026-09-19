@@ -2,3 +2,4 @@ node_modules/
 dist/
 renderer/bundle.js
 config/turn.json
+renderer/vision/

@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('api', {
   openProject: () => ipcRenderer.invoke('app:open-project'),
   chooseMedia: () => ipcRenderer.invoke('dialog:media'),
   youTubeTitles: (ids) => ipcRenderer.invoke('youtube:titles', ids),
+  visionReady: () => ipcRenderer.invoke('vision:ready'),
   chooseMediaFiles: () => ipcRenderer.invoke('dialog:media-files'),
   chooseSubtitle: () => ipcRenderer.invoke('dialog:subtitle'),
   pathForFile: (file) => webUtils.getPathForFile(file),

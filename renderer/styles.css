@@ -1631,6 +1631,68 @@ button:disabled {
   background: rgba(124, 108, 255, 0.18);
 }
 
+/* ---------- Face filters ---------- */
+/* The warp is drawn on its own canvas over the picture, under the whiteboard so a drawing stays on
+   top of a filtered face. It never takes the pointer: every filter is chosen from the strip. */
+
+.filter-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.filter-menu {
+  position: relative;
+}
+
+#filter-toggle.active {
+  color: var(--accent);
+}
+
+#filter-toggle:disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.room:not(.filter-open) .filter-tools {
+  display: none;
+}
+
+/* Opposite the whiteboard's strip, so both can be open without overlapping. */
+.filter-tools {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding: 10px 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(22, 22, 29, 0.9);
+  transform: translateY(-50%);
+  transition:
+    opacity 0.25s,
+    transform 0.25s;
+}
+
+.room.idle .filter-tools {
+  opacity: 0;
+  transform: translate(calc(100% + 12px), -50%);
+  pointer-events: none;
+}
+
+.filter-choice {
+  min-width: 92px;
+  padding: 6px 10px;
+  font-size: 0.82rem;
+}
+
 .tools-divider {
   width: 24px;
   height: 1px;

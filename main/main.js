@@ -8,6 +8,7 @@ const {focusWindow} = require('./startup')
 const {watchZoom, zoomFactor} = require('./zoom')
 const IMAGES = require('../shared/images.json')
 const {prepareYouTube, registerYouTube, youTubeTitles} = require('./youtube')
+const {prepareVision, registerVision, visionReady} = require('./vision')
 
 const MEDIA_EXTENSIONS = [
   'mkv', 'mp4', 'm4v', 'mov', 'avi', 'webm', 'wmv', 'flv', 'ts', 'm2ts', 'mts',
@@ -55,6 +56,7 @@ function registerIpc() {
   ipcMain.handle('app:version', () => app.getVersion())
   ipcMain.handle('app:open-project', () => shell.openExternal('https://github.com/onlineslav/watch-with-friends'))
   ipcMain.handle('youtube:titles', (_event, ids) => youTubeTitles(ids))
+  ipcMain.handle('vision:ready', () => visionReady())
   ipcMain.handle('dialog:media', (event) => pickFile(event, 'Media', MEDIA_EXTENSIONS))
   ipcMain.handle('dialog:media-files', (event) => pickFiles(event, 'Media', MEDIA_EXTENSIONS, true))
   ipcMain.handle('dialog:subtitle', (event) => pickFile(event, 'Subtitles', SUBTITLE_EXTENSIONS))
@@ -92,9 +94,11 @@ function registerIpc() {
 
 function start() {
   prepareYouTube()
+  prepareVision()
   app.on('second-instance', () => focusWindow(BrowserWindow.getAllWindows()[0]))
   app.whenReady().then(() => {
     registerYouTube()
+    registerVision()
     registerIpc()
     createWindow()
     media.detectCapabilities() // warm up so the first transcode starts instantly

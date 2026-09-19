@@ -27,6 +27,9 @@ import {cleanRoomDetails, MAX_ROOM_NAME_LENGTH, newerRoomDetails, renameRoom} fr
 import {RoomHistory} from './room-history.mjs'
 import {RoomPresence} from './room-presence.mjs'
 import {drawConfetti, launchConfetti, stepConfetti} from './confetti.mjs'
+import {FILTERS, FILTER_IDS, cleanFilterId} from './filters.mjs'
+import {FaceTracker, captureElement} from './faces.mjs'
+import {FilterRenderer} from './filter-gl.mjs'
 import {REACTIONS, createRateLimiter, playReactionSound} from './reactions.mjs'
 import {clampZoom, stepZoom, parseZoom, formatZoom, zoomPercent, MIN_ZOOM, MAX_ZOOM, DEFAULT_ZOOM} from './zoom.mjs'
 import {captionHtml} from './subtitles.mjs'
@@ -194,6 +197,10 @@ const ui = {
   roomNameForm: $('room-name-form'),
   roomName: $('room-name'),
   boardMenu: $('board-menu'),
+  filterMenu: $('filter-menu'),
+  filterToggle: $('filter-toggle'),
+  filterTools: $('filter-tools'),
+  filterCanvas: $('filter-canvas'),
   boardToggle: $('board-toggle'),
   boardVisibility: $('board-visibility'),
   board: $('board'),
@@ -285,6 +292,9 @@ const blankSession = () => ({
   profileAction: null,
   boardAction: null,
   board: createBoard(),
+  filterAction: null,
+  filter: null, // the face filter everyone in the room is seeing, or null
+  filterAt: 0, // revision of the last filter change, so the newer choice wins
   reactAction: null,
   role: 'idle', // 'idle' | 'host' | 'viewer'
   hostId: null,
@@ -491,6 +501,7 @@ async function openRoom(code, joining) {
     clockAction: room.makeAction('clock', {kind: 'request'}),
     profileAction: room.makeAction('profile'),
     boardAction: room.makeAction('board'),
+    filterAction: room.makeAction('filter'),
     reactAction: room.makeAction('react'),
     imageAction: room.makeAction('image'),
     playlistAction: room.makeAction('playlist'),
@@ -528,6 +539,7 @@ async function openRoom(code, joining) {
     return cleanCues(cues)
   }, {request: true})
   session.boardAction.onMessage = limited('board', (message, {peerId}) => receiveBoard(message, peerId))
+  session.filterAction.onMessage = limited('filter', (message, {peerId}) => receiveFilter(message, peerId))
   session.profileAction.onMessage = limited('profile', (profile, {peerId}) => {
     person(peerId).name = cleanDisplayName(profile?.name)
     person(peerId).username = peerIdentities.get(peerId) || null
@@ -544,6 +556,7 @@ async function openRoom(code, joining) {
     if (session.details) session.detailsAction.send(session.details, {target: peerId}).catch(() => {})
     session.profileAction.send(myProfile(), {target: peerId}).catch(() => {})
     session.boardAction.send({type: 'sync', ...boardSnapshot(session.board)}, {target: peerId}).catch(() => {})
+    if (session.filter) session.filterAction.send({id: session.filter, at: session.filterAt}, {target: peerId}).catch(() => {})
     if (session.playlist.items.size || session.playlist.removed.size) {
       session.playlistAction.send({type: 'sync', ...playlistSnapshot(session.playlist)}, {target: peerId}).catch(() => {})
     }
@@ -647,6 +660,8 @@ async function leaveRoom() {
   ui.reactionFeed.replaceChildren()
   clearHostImage()
   for (const peerId of [...current.images.keys()]) forgetImage(peerId)
+  teardownFilters()
+  setFilterOpen(false)
   session = blankSession()
   setRole('idle')
   ui.room.hidden = ui.settings.hidden = true
@@ -1619,6 +1634,162 @@ function setPeopleOpen(open) {
   } catch {}
 }
 
+// ---------- Face filters ----------
+// One filter at a time, chosen by anyone, seen by everyone. Only the *choice* travels: each app
+// finds the faces in the picture it is showing and draws the warp itself, the way subtitles are
+// rendered per person rather than burned into the stream. That costs nothing on the wire, and it
+// puts the filter on the frame this screen is actually displaying, which is a frame or two behind
+// the host's.
+//
+// Whoever changes it last wins, ordered by revision like the whiteboard's clear, so the choice
+// survives the host leaving.
+
+const filters = {renderer: null, tracker: null, capture: null, capturing: false, source: null, installed: null}
+
+const filterOpen = () => ui.room.classList.contains('filter-open')
+
+// Filters need a moving picture. A still photograph has nothing to track, and there is no point
+// running the detector before any media is open.
+const canFilter = () => session.role !== 'idle' && !shownImage() && !session.mediaError
+
+function teardownFilters() {
+  filters.tracker?.stop()
+  filters.capture?.stop()
+  filters.capture = null
+  filters.capturing = false
+  filters.source = null
+  if (ui.filterCanvas) ui.filterCanvas.hidden = true
+}
+
+// A filter that cannot run here is switched off here only. Everyone else keeps seeing it: one
+// computer without a working GPU should not decide for the room.
+function filterFailed(message) {
+  teardownFilters()
+  if (session.filter) toast(message, true)
+  session.filter = null
+  renderFilterTools()
+}
+
+// The <video> holding the picture to look for faces in. YouTube plays inside a cross-origin iframe
+// whose pixels are out of reach, so there the app captures its own window instead.
+function filterSource() {
+  if (youtube.videoId) {
+    if (filters.capture) return filters.capture.video
+    if (!filters.capturing) {
+      filters.capturing = true
+      captureElement(ui.youtubePlayer)
+        .then((capture) => {
+          if (!session.filter || !youtube.videoId) return capture.stop()
+          filters.capture = capture
+        })
+        .catch((error) => filterFailed(`Filters cannot reach the YouTube picture: ${errorMessage(error)}`))
+        .finally(() => (filters.capturing = false))
+    }
+    return null
+  }
+  filters.capture?.stop()
+  filters.capture = null
+  return isHost() ? ui.localVideo : ui.remoteVideo
+}
+
+// Runs every frame while a filter is on, and returns immediately when one is not. Detection is not
+// done here: the tracker runs on its own slower clock and this only draws what it last found.
+function drawFilters() {
+  requestAnimationFrame(drawFilters)
+  const filter = session.filter && FILTERS[session.filter]
+  if (!filter || !canFilter()) return teardownFilters()
+  const source = filterSource()
+  if (!source?.videoWidth) {
+    ui.filterCanvas.hidden = true
+    return
+  }
+  if (filters.source !== source) {
+    filters.source = source
+    filters.tracker ||= new FaceTracker()
+    filters.tracker.start(source).then((started) => {
+      if (!started && filters.source === source) filterFailed(`Face filters could not start: ${errorMessage(filters.tracker.error)}`)
+    })
+  }
+  if (!filters.renderer) {
+    try {
+      filters.renderer = new FilterRenderer(ui.filterCanvas)
+    } catch (error) {
+      return filterFailed(errorMessage(error))
+    }
+  }
+  const dpr = window.devicePixelRatio || 1
+  const rect = currentPictureRect()
+  filters.renderer.resize(Math.round(ui.stage.clientWidth * dpr), Math.round(ui.stage.clientHeight * dpr))
+  ui.filterCanvas.hidden = false
+  filters.renderer.draw(source, filters.tracker.visible(), filter, {
+    x: Math.round(rect.x * dpr),
+    y: Math.round(rect.y * dpr),
+    width: Math.round(rect.width * dpr),
+    height: Math.round(rect.height * dpr),
+  })
+}
+
+function setFilter(id) {
+  const next = cleanFilterId(id)
+  session.filterAt = nextRevision(session.filterAt)
+  session.filter = next
+  session.filterAction?.send({id: next, at: session.filterAt}).catch(() => {})
+  renderFilterTools()
+}
+
+function receiveFilter(message, peerId) {
+  const off = message?.id === null || message?.id === undefined
+  const id = off ? null : cleanFilterId(message.id)
+  if (!off && !id) return
+  if (!isRevision(message?.at) || !(message.at > session.filterAt)) return
+  session.filterAt = message.at
+  session.filter = id
+  renderFilterTools()
+  const who = person(peerId).name || 'Someone'
+  toast(id ? `${who} turned on the ${FILTERS[id].name} filter` : `${who} turned the filter off`)
+}
+
+// The strip is built from FILTERS, so a new entry in that table shows up here with no other change.
+function buildFilterTools() {
+  const choices = [{id: '', label: 'Off'}, ...FILTER_IDS.map((id) => ({id, label: FILTERS[id].name}))]
+  ui.filterTools.replaceChildren(
+    ...choices.map(({id, label}) => {
+      const button = element('button', 'tool filter-choice', label)
+      button.dataset.filter = id
+      button.addEventListener('click', () => setFilter(id || null))
+      return button
+    }),
+  )
+}
+
+function renderFilterTools() {
+  for (const button of ui.filterTools.querySelectorAll('[data-filter]')) {
+    const active = (button.dataset.filter || null) === session.filter
+    button.classList.toggle('active', active)
+    button.setAttribute('aria-pressed', String(active))
+  }
+  ui.filterToggle.setAttribute('aria-pressed', String(filterOpen()))
+  ui.filterToggle.classList.toggle('active', Boolean(session.filter))
+  ui.filterToggle.disabled = !canFilter()
+}
+
+function setFilterOpen(open) {
+  ui.room.classList.toggle('filter-open', open)
+  renderFilterTools()
+}
+
+// The model and its runtime are fetched after install rather than committed, so they can genuinely
+// be missing. Say so once, on the way in, instead of failing when someone picks a filter.
+async function openFilters() {
+  if (filterOpen()) return setFilterOpen(false)
+  if (filters.installed === null) filters.installed = await window.api.visionReady().catch(() => false)
+  if (!filters.installed) return toast('Face filters are not installed. Run npm install again to fetch them.', true)
+  setFilterOpen(true)
+}
+
+buildFilterTools()
+ui.filterToggle.addEventListener('click', () => openFilters())
+
 // ---------- Whiteboard ----------
 // Everyone in the room draws on one board over the video. Showing it is a personal choice; the
 // strokes keep arriving either way.
@@ -2282,6 +2453,7 @@ function addSubtitleFile(filePath) {
 let captionsShown = ''
 function drawCaptions() {
   requestAnimationFrame(drawCaptions)
+requestAnimationFrame(drawFilters)
   const {cues} = session.captions
   const delayMs = isHost() || youtube.videoId ? 0 : session.frameDelayMs ?? ((session.playoutDelayMs ?? session.buffer.bufferMs) + (session.link?.rttMs || 0) / 2 + DECODE_DELAY_MS)
   const html = cues.length && session.role !== 'idle' ? captionHtml(cues, currentTime() - delayMs / 1000) : ''

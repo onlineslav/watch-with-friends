@@ -6,14 +6,15 @@
   "main": "main/index.js",
   "private": true,
   "scripts": {
-    "postinstall": "node scripts/patch-trystero.js",
-    "prebundle": "node scripts/patch-trystero.js",
-    "pretest": "node scripts/patch-trystero.js",
+    "postinstall": "node scripts/patch-trystero.js && node scripts/fetch-vision-assets.js",
+    "prebundle": "node scripts/patch-trystero.js && node scripts/fetch-vision-assets.js",
+    "pretest": "node scripts/patch-trystero.js && node scripts/fetch-vision-assets.js",
     "bundle": "esbuild renderer/app.js --bundle --format=iife --target=chrome130 --outfile=renderer/bundle.js",
     "start": "npm run bundle && node scripts/electron.js .",
     "test": "node --test",
     "test:startup": "npm run bundle && node scripts/electron.js scripts/check-startup.js && node scripts/check-profiles.js",
     "test:youtube": "node scripts/electron.js scripts/check-youtube.js",
+    "test:filters": "npm run bundle && node scripts/electron.js scripts/check-filters.js",
     "test:network": "node scripts/patch-trystero.js && node scripts/electron.js scripts/check-network.js",
     "test:discovery": "node scripts/patch-trystero.js && node scripts/electron.js scripts/check-network.js --public-discovery",
     "test:connections": "node scripts/patch-trystero.js && node scripts/electron.js scripts/check-connection-regression.js --relay-outage working",
@@ -26,6 +27,7 @@
     "ffprobe-static": "^3.1.0"
   },
   "devDependencies": {
+    "@mediapipe/tasks-vision": "^1.0.1",
     "electron": "^44.3.0",
     "electron-builder": "^26.15.3",
     "esbuild": "^0.28.2",
@@ -47,6 +49,7 @@
       "renderer/styles.css",
       "renderer/youtube/**",
       "renderer/bundle.js",
+      "renderer/vision/**",
       "!node_modules/ffprobe-static/bin/linux/**"
     ],
     "asarUnpack": [

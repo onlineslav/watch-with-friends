@@ -20,7 +20,8 @@
     "test:discovery": "node scripts/patch-trystero.js && node scripts/electron.js scripts/check-network.js --public-discovery",
     "test:connections": "node scripts/patch-trystero.js && node scripts/electron.js scripts/check-connection-regression.js --relay-outage working",
     "dist:win": "npm run bundle && electron-builder --win",
-    "dist:mac": "npm run bundle && electron-builder --mac"
+    "dist:mac": "npm run bundle && electron-builder --mac",
+    "curve": "node scripts/electron.js scripts/landmark-curve.js"
   },
   "dependencies": {
     "electron-updater": "^6.8.9",

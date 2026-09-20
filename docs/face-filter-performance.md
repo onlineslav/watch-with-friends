@@ -149,3 +149,51 @@ presentation is a candidate for removing a compositing wait. For YouTube, guest 
 another stage that this benchmark does not time. Bounded motion prediction is another candidate,
 but needs stop/reversal/occlusion tests so it does not reintroduce overshoot. Neither is implemented
 or claimed as a measured gain here.
+
+## Follow-up: detection resolution
+
+Inference speed was never the limit; the pixels reaching the landmark stage were. MediaPipe is two
+stage by design — a detector on the whole image, then a landmark model on a crop of it — and the
+worker normalizes every frame to `DETECT_SIZE` before either runs. That single number therefore
+decides how much real face the landmark model sees.
+
+`scripts/landmark-curve.js` measures the cost directly. It decodes a local file to PNG frames, runs
+the same frames at several scales with one landmarker per scale (VIDEO mode carries tracking state,
+so a shared instance would let a small scale inherit the native run's prior), and compares each
+scale against the native-resolution detection. Error is in face units, the same measure the filters
+are authored in, so it is comparable to a filter's own displacement of about 0.3. Unlike the live
+benchmark it is deterministic: the same file gives the same numbers.
+
+Measured on 640x360 news footage, 150 frames, single face, GPU delegate:
+
+| Detected at | Eye distance | Median error | p95 | Max |
+| --- | ---: | ---: | ---: | ---: |
+| 640x360 (native) | 56.4 px | reference | reference | reference |
+| 512x288 | 45.1 px | 0.0024 | 0.0054 | 0.0260 |
+| 384x216 (previously shipped) | 33.8 px | 0.0038 | 0.0080 | 0.0229 |
+| 288x162 | 25.4 px | 0.0108 | 0.0210 | 0.0563 |
+| 192x108 | 16.9 px | 0.0151 | 0.0300 | 0.0651 |
+| 128x72 | 11.3 px | 0.0295 | 0.0561 | 0.1207 |
+
+Read it by eye distance in pixels, not by scale factor. Because the frame is normalized to
+`DETECT_SIZE`, the pixels the landmark stage receives depend only on how large the face is within
+the frame — a 1080p source and a 360p source with the same framing deliver identical input. Source
+resolution does not enter into it.
+
+The knee sits at roughly 25–34 px of eye distance. This footage is a close-up, with the eyes
+spanning 8.8% of frame width, which at 384 gave 33.8 px: just above the knee on the easiest kind of
+shot. An ordinary medium or wide shot has a face around a third that size, landing at 11–17 px,
+where the error is 5–10% of a filter's own displacement and changes every frame.
+
+`DETECT_SIZE` is therefore 768. On the live YouTube benchmark that cost 2.8 ms of inference median
+(16.2 → 19.0 ms) with p95 and throughput unchanged, throughput being capped by the source's frame
+rate rather than by inference. A later confirmation run at the shipped setting measured 18.0 ms
+median, 24.4 ms p95 and 29.7 detections/s, so the paired figures above are representative rather
+than exact. The reference is the model's own best answer, not human labelling, so
+the curve measures degradation rather than absolute correctness, and a close-up at 640x360 does not
+establish the low-eye-pixel end on real wide-shot footage. Re-measuring there, and a two-stage crop
+pass for shots that 768 still leaves under about 20 px, are the open follow-ups.
+
+```powershell
+npm run curve -- --video="<path to a local file>" --seconds=5 --scales=1,0.8,0.6,0.45,0.3,0.2
+```

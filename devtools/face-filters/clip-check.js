@@ -77,7 +77,7 @@ window.__probe = {
     return new Promise((r) => { video.addEventListener('seeked', () => r(video.currentTime), {once: true}); video.currentTime = t })
   },
 
-  // Detection at the detector's real working size (the app downscales to 384 before detecting).
+  // Detection at the detector's real working size (the app downscales to DETECT_SIZE first).
   detect(detectSize, ts) {
     const c = document.createElement('canvas')
     const s = Math.min(1, detectSize / Math.max(video.videoWidth, video.videoHeight))
@@ -210,7 +210,7 @@ app.whenReady().then(async () => {
     for (const t of TIMES) {
       await run(`window.__probe.seek(${t})`)
       ts += 100
-      const faces = await run(`window.__probe.detect(384, ${ts})`)
+      const faces = await run(`window.__probe.detect(768, ${ts})`)
       const n = faces.length
       const name = `t${String(t).replace('.', '_')}`
       for (const [label, def] of Object.entries(TABLES)) {

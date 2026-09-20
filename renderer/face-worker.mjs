@@ -4,7 +4,11 @@ import {FaceLandmarker, FilesetResolver} from '@mediapipe/tasks-vision'
 import {MAX_FACES, grayscale} from './filters.mjs'
 
 const ASSETS = 'svp-vision://assets'
-const DETECT_SIZE = 384
+// Detection resolution for the whole frame. Because the frame is normalized to this size, it is
+// what decides how many pixels of face the landmark stage gets, whatever the source resolution.
+// scripts/landmark-curve.js puts the accuracy knee at roughly 25-34px of eye distance; 384 left an
+// ordinary wide shot well under it. 768 costs ~2.8ms of inference median and doubles that budget.
+const DETECT_SIZE = 768
 const canvas = new OffscreenCanvas(DETECT_SIZE, DETECT_SIZE)
 const context = canvas.getContext('2d')
 const thumb = new OffscreenCanvas(32, 18)

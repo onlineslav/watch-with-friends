@@ -120,7 +120,7 @@ So item 1 is worth building, but the cheap fix covers most of it:
 - [x] Curve script: `scripts/landmark-curve.js`, deterministic, any local file
 - [x] Measured cost of `DETECT_SIZE` 384 -> 768: +2.8 ms inference median
       (16.2 -> 19.0), p95 and throughput unchanged
-- [ ] Ship `DETECT_SIZE` 768. It doubles eye pixels for every shot and the curve
+- [x] Ship `DETECT_SIZE` 768. It doubles eye pixels for every shot and the curve
       says that is worth roughly one knee-step of accuracy. Cheapest win available.
 - [ ] Re-run the curve on a 1080p source with a genuine wide shot to confirm the
       low-eye-pixel end of the curve on real footage rather than by downscaling

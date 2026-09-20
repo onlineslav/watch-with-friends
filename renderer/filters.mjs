@@ -32,6 +32,17 @@ const TEMPLES = [103, 67, 109, 338, 297, 332]
 // nobody expects: anchors close in argue the deformation back down to almost nothing, so a filter
 // with reach 1 looks like it is barely doing anything however large its numbers are.
 export const FILTERS = {
+  // Not a warp at all: `debug` means "draw what the detector found, not what a filter would do".
+  // The renderer branches on it and paints MediaPipe's own face mesh over the picture, which is the
+  // only way to see whether detection is landing on the face and where it thinks the features are.
+  // A warped picture cannot answer that — a filter that looks wrong and a filter that is being fed
+  // landmarks from the wrong place look identical.
+  mesh: {
+    name: 'Face map',
+    debug: true,
+    reach: 1,
+    controls: [],
+  },
   chad: {
     name: 'Chad',
     reach: 4,

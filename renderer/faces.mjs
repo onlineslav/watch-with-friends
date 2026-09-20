@@ -20,12 +20,19 @@ const THUMB_H = 18
 const CAPTURE_TIMEOUT_MS = 5000
 
 let loading = null
+// MediaPipe's own tessellation, kept from the load so the debug filter can draw the same face mesh
+// the detector is describing. Empty until a filter has been switched on once; the mesh then falls
+// back to bare dots, which still shows where the landmarks are.
+let connections = []
+
+export const faceConnections = () => connections
 
 // MediaPipe is only fetched the first time someone turns a filter on, and only once per session.
 async function loadLandmarker() {
   if (loading) return loading
   loading = (async () => {
     const {FaceLandmarker, FilesetResolver} = await import('@mediapipe/tasks-vision')
+    connections = FaceLandmarker.FACE_LANDMARKS_TESSELATION || []
     const fileset = await FilesetResolver.forVisionTasks(ASSETS)
     const model = await fetch(`${ASSETS}/face_landmarker.task`)
     if (!model.ok) throw new Error('The face model is not installed')

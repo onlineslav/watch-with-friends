@@ -131,6 +131,8 @@ test('every filter leaves the grid border still, so the warp has no seam', () =>
   // wide frame is under half a pixel.
   const {landmarks} = makeFace()
   for (const [id, filter] of Object.entries(FILTERS)) {
+    // A debug filter deforms nothing — it is drawn as landmarks, not through the grid.
+    if (filter.debug) continue
     const mesh = buildMesh(filter, landmarks, ASPECT)
     const n = GRID
     let worst = 0

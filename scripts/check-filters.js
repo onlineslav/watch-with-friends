@@ -91,11 +91,11 @@ app.whenReady().then(async () => {
     const bundle = await esbuild.build({
       stdin: {
         contents: `
-          import {FaceTracker, captureGuest} from './renderer/faces.mjs'
+          import {FaceTracker, captureGuest, faceConnections} from './renderer/faces.mjs'
           import {FilterRenderer} from './renderer/filter-gl.mjs'
           import {FILTERS, buildMesh, toWorld} from './renderer/filters.mjs'
           window.failure = null
-          Object.assign(window, {FaceTracker, captureGuest, FilterRenderer, FILTERS, buildMesh, toWorld})
+          Object.assign(window, {FaceTracker, captureGuest, faceConnections, FilterRenderer, FILTERS, buildMesh, toWorld})
 
           // A synthetic "video": a canvas of coloured stripes, streamed into a <video> so it has
           // the videoWidth/videoHeight the pipeline reads. Stripes make a warp visible.
@@ -201,6 +201,43 @@ app.whenReady().then(async () => {
     const centreX = (drawn.minX + drawn.maxX) / 2
     assert.ok(Math.abs(centreX - 320) < 60, `the warp landed off-centre at x=${centreX}`)
     say(`PASS: the filter shader draws the warp over the face alone (${share.toFixed(1)}% of the canvas, centred at x=${Math.round(centreX)})`)
+
+    // ---- 3b. The face map draws the detector's own landmarks instead of a warp. It shares the
+    // canvas and the viewport with the warp but none of its program, so it is checked separately:
+    // a mesh of thin lines and dots must mark the face without filling it the way the warp does.
+    const map = await run(`
+      (() => {
+        const canvas = document.getElementById('filter')
+        const renderer = new FilterRenderer(canvas)
+        renderer.resize(640, 360)
+        const faces = [{landmarks: window.fixture, opacity: 1}]
+        renderer.draw(window.video, faces, window.FILTERS.mesh, {x: 0, y: 0, width: 640, height: 360})
+        const flat = document.createElement('canvas')
+        Object.assign(flat, {width: 640, height: 360})
+        const c = flat.getContext('2d')
+        c.drawImage(canvas, 0, 0)
+        const {data} = c.getImageData(0, 0, 640, 360)
+        let marked = 0, minX = 640, maxX = 0
+        for (let i = 0; i < data.length; i += 4) {
+          if (data[i + 3] > 40) {
+            marked++
+            const x = (i / 4) % 640
+            if (x < minX) minX = x
+            if (x > maxX) maxX = x
+          }
+        }
+        return {marked, minX, maxX, edges: window.faceConnections().length}
+      })()
+    `)
+    assert.ok(map.edges > 100, `MediaPipe's tessellation did not come through (${map.edges} edges)`)
+    const mapShare = (map.marked / (640 * 360)) * 100
+    // Drawing nothing means the mesh program or the landmark buffers are broken; covering the
+    // canvas means it is painting somewhere other than the face.
+    assert.ok(mapShare > 0.5, `the face map drew almost nothing (${mapShare.toFixed(1)}% of the canvas)`)
+    assert.ok(mapShare < 25, `the face map covered far more than a face (${mapShare.toFixed(1)}% of the canvas)`)
+    const mapCentre = (map.minX + map.maxX) / 2
+    assert.ok(Math.abs(mapCentre - 320) < 60, `the face map landed off-centre at x=${mapCentre}`)
+    say(`PASS: the face map draws ${map.edges} mesh edges and its landmarks over the face (${mapShare.toFixed(1)}% of the canvas)`)
 
     say('')
 

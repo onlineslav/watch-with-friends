@@ -39,6 +39,9 @@ export const pairRoomId = (a, b) => `pair:${[a, b].sort().join(':')}`
 export const helloText = (roomId, fromPeer, toPeer) => `synced-video-player hello ${roomId} ${fromPeer} ${toPeer}`
 
 const MAX_EARLY_MESSAGES = 10
+const MAX_HELLO_CHECKS = 3 // signature checks per peer, so nobody can force endless verification
+const MAX_HELLO_RESENDS = 8 // re-offers of our own hello to a peer that hasn't verified yet
+const MAX_HELD_HELLOS = 8 // hellos kept from peers the transport hasn't reported joining yet
 
 export class FriendNetwork extends EventTarget {
   // storage: {load(key) -> value | null, save(key, value)}
@@ -74,7 +77,7 @@ export class FriendNetwork extends EventTarget {
     this.profile = profile
     this.running = true
     clearInterval(this.requestTimer)
-    this.requestTimer = setInterval(() => this.expireRequests(), 15_000)
+    this.requestTimer = setInterval(() => { this.expireRequests(); this.resendHellos() }, 15_000)
     this.requestTimer.unref?.()
     this.syncRooms()
   }
@@ -243,7 +246,7 @@ export class FriendNetwork extends EventTarget {
 
   join(roomId, purpose) {
     const config = {appId: this.appId, password: roomId, ...(this.turnConfig.length && {turnConfig: this.turnConfig})}
-    const link = {roomId, ...purpose, peers: new Map(), connectedPeers: new Set(), early: new Map(), actions: {}, error: null, verifying: new Set(), attempts: new Set()}
+    const link = {roomId, ...purpose, peers: new Map(), connectedPeers: new Set(), early: new Map(), actions: {}, error: null, verifying: new Set(), checks: new Map(), resends: new Map(), held: new Map()}
     const room = this.joinRoom(config, roomId, {onJoinError: ({error}) => {
       if (this.links.get(roomId) !== link) return
       link.error = error
@@ -257,7 +260,11 @@ export class FriendNetwork extends EventTarget {
       if (this.links.get(roomId) !== link) return
       if (link.connectedPeers.size >= 32) { room.getPeers?.()[peerId]?.close(); return }
       link.connectedPeers.add(peerId)
+      // Reaching anyone proves the room is reachable, so an earlier failure is stale.
+      if (link.error) { link.error = null; this.changed() }
       this.sendHello(link, peerId).catch(() => {})
+      const held = link.held.get(peerId)
+      if (held) { link.held.delete(peerId); this.receiveHello(link, peerId, held) }
     }
     room.onPeerLeave = (peerId) => {
       if (this.links.get(roomId) !== link) return
@@ -265,7 +272,9 @@ export class FriendNetwork extends EventTarget {
       const username = link.peers.get(peerId)
       link.peers.delete(peerId)
       link.early.delete(peerId)
-      link.attempts.delete(peerId)
+      link.held.delete(peerId)
+      link.checks.delete(peerId)
+      link.resends.delete(peerId)
       link.verifying.delete(peerId)
       // A peer has the same id in every room; only leaving the room you're friends through counts.
       const entry = this.online.get(username)
@@ -274,22 +283,15 @@ export class FriendNetwork extends EventTarget {
         this.changed()
       }
     }
-    link.actions.hello.onMessage = async (hello, {peerId}) => {
-      // The room caps connections at 32; verify each once without dropping a
-      // legitimate hello just because other participants arrived together.
-      if (this.links.get(roomId) !== link || !link.connectedPeers.has(peerId) || link.peers.has(peerId) || link.attempts.has(peerId)) return
-      link.attempts.add(peerId)
-      link.verifying.add(peerId)
-      let genuine
-      try { genuine = await verifySigned(hello, helloText(roomId, peerId, this.selfId)) }
-      finally { link.verifying.delete(peerId) }
-      if (!genuine || this.links.get(roomId) !== link || !link.connectedPeers.has(peerId) || link.peers.has(peerId)) return
-      link.peers.set(peerId, hello.username)
-      this.verified(link, peerId, hello.username)
-      for (const replay of link.early.get(peerId) || []) replay()
-      link.early.delete(peerId)
-      link.attempts.delete(peerId)
-      link.verifying.delete(peerId)
+    link.actions.hello.onMessage = (hello, {peerId}) => {
+      if (this.links.get(roomId) !== link) return
+      // A hello can arrive before the transport reports the peer joined. Hold it instead of
+      // dropping it, or neither side ever hears from the other again.
+      if (!link.connectedPeers.has(peerId)) {
+        if (link.held.has(peerId) || link.held.size < MAX_HELD_HELLOS) link.held.set(peerId, hello)
+        return
+      }
+      return this.receiveHello(link, peerId, hello)
     }
     // Anything else waits until its sender's hello has been checked.
     const onVerified = (handler) => (data, {peerId}) => {
@@ -372,6 +374,37 @@ export class FriendNetwork extends EventTarget {
     this.askIds.delete(username)
     this.offerIds.delete(username)
     this.incomingAsks.delete(username)
+  }
+
+  // Checks one hello. The count caps how much verification a peer can ask for; a failed or lost
+  // hello no longer locks that peer out of the link until the app restarts.
+  async receiveHello(link, peerId, hello) {
+    const {roomId} = link
+    const checks = link.checks.get(peerId) || 0
+    if (link.peers.has(peerId) || link.verifying.has(peerId) || checks >= MAX_HELLO_CHECKS) return
+    link.checks.set(peerId, checks + 1)
+    link.verifying.add(peerId)
+    let genuine
+    try { genuine = await verifySigned(hello, helloText(roomId, peerId, this.selfId)) }
+    finally { link.verifying.delete(peerId) }
+    if (!genuine || this.links.get(roomId) !== link || !link.connectedPeers.has(peerId) || link.peers.has(peerId)) return
+    link.peers.set(peerId, hello.username)
+    link.checks.delete(peerId)
+    link.resends.delete(peerId)
+    this.verified(link, peerId, hello.username)
+    for (const replay of link.early.get(peerId) || []) replay()
+    link.early.delete(peerId)
+  }
+
+  // A hello lost on a connecting channel would otherwise leave both sides waiting forever, so
+  // offer ours again to anyone still unverified. Bounded, because a peer that never answers is gone.
+  resendHellos() {
+    for (const link of this.links.values()) for (const peerId of link.connectedPeers) {
+      const sent = link.resends.get(peerId) || 0
+      if (link.peers.has(peerId) || link.verifying.has(peerId) || sent >= MAX_HELLO_RESENDS) continue
+      link.resends.set(peerId, sent + 1)
+      this.sendHello(link, peerId).catch(() => {})
+    }
   }
 
   async sendHello(link, peerId) {

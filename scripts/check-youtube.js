@@ -15,6 +15,8 @@ const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 app.whenReady().then(async () => {
   registerYouTube()
   const win = new BrowserWindow({show: false, width: 960, height: 640, webPreferences: {backgroundThrottling: false, autoplayPolicy: 'no-user-gesture-required'}})
+  // Nothing here listens to the sound, and a test run should not be audible.
+  win.webContents.setAudioMuted(true)
   const run = (source) => win.webContents.executeJavaScript(source)
   const until = async (condition) => {
     for (let i = 0; i < 300; i++) {

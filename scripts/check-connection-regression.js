@@ -143,6 +143,7 @@ app.whenReady().then(async () => {
       for (const name of ['alpha', 'bravo']) {
         const win = new BrowserWindow({show: false, webPreferences: {partition: `comparison-${index}-${name}`,
           backgroundThrottling: false, preload}})
+        win.webContents.setAudioMuted(true)
         windows.push(win)
         win.webContents.on('console-message', d => {
           if (['warning', 'error'].includes(d.level)) console.log(`${ref}/${name}: ${d.message}`)

@@ -3,12 +3,10 @@ import assert from 'node:assert/strict'
 import {
   FILTERS,
   GRID,
-  GRID_BOX,
   LM,
+  anchorBox,
   buildMesh,
   cleanFilterId,
-  controlPoints,
-  displacementAt,
   createSmoother,
   facePose,
   frameDifference,
@@ -18,9 +16,12 @@ import {
   holdOpacity,
   isCut,
   smoothFace,
+  gridBox,
+  sourceAt,
   toLocal,
   toWorld,
   unwarpLandmarks,
+  warpPairs,
 } from '../renderer/filters.mjs'
 
 const ASPECT = 16 / 9
@@ -55,6 +56,10 @@ function makeFace({x = 0.5, y = 0.42, scale = 0.14, roll = 0} = {}) {
 }
 
 const close = (a, b, tolerance = 1e-6) => Math.abs(a - b) <= tolerance
+
+// The deformation is solved backwards, so tests that want to ask "where does this pixel end up"
+// rather than "where did it come from" swap the two sides and solve it the other way round.
+const forward = (pairs) => ({p: pairs.q, q: pairs.p, n: pairs.n, weights: new Float64Array(pairs.n)})
 
 test('the pose recovers the scale and roll the face was built with', () => {
   for (const roll of [0, 0.3, -0.55]) {
@@ -91,57 +96,70 @@ test('facePose refuses a face with no measurable eye distance', () => {
   assert.equal(facePose(landmarks, ASPECT), null)
 })
 
-test('overlapping controls blend instead of stacking', () => {
-  // Thirteen jaw points each asking for 0.20 must widen the jaw by about 0.20, not by 2.6. This is
-  // the property that lets the numbers in FILTERS be read as what they do.
+test('overlapping controls agree instead of stacking', () => {
+  // Thirteen jaw points each asking for 0.3 must widen the jaw by about 0.3, not by four. This is
+  // the property that lets the numbers in FILTERS be read as what they do, and it is the one that
+  // composing local translation warps does not have.
   const {landmarks, pose} = makeFace()
-  const points = controlPoints(FILTERS.chad, landmarks, pose, ASPECT)
-  const [dx] = displacementAt(points, 0.82, 1.25) // on the right jaw
-  assert.ok(dx > 0.1, `jaw should widen, got ${dx}`)
-  assert.ok(dx < 0.32, `jaw widening should not stack, got ${dx}`)
+  const pairs = warpPairs(FILTERS.chad, landmarks, pose, ASPECT)
+  const target = 0.82 + 0.3 // where the right jaw at (0.82, 1.25) is asked to end up
+  const [sx] = sourceAt(pairs, target, 1.25)
+  const shift = target - sx
+  assert.ok(shift > 0.15, `jaw should widen, got ${shift}`)
+  assert.ok(shift < 0.5, `jaw widening should not stack, got ${shift}`)
 })
 
-test('the warp reaches zero before the edge of the grid', () => {
+test('the anchors hold the deformation still where they are', () => {
+  // MLS tends to a global similarity far from its controls rather than to the identity. The anchor
+  // ring is what stops the whole frame drifting, so it has to actually hold.
   const {landmarks, pose} = makeFace()
-  const points = controlPoints(FILTERS.chad, landmarks, pose, ASPECT)
-  for (const corner of [[GRID_BOX.x0, GRID_BOX.y0], [GRID_BOX.x1, GRID_BOX.y0], [GRID_BOX.x0, GRID_BOX.y1], [GRID_BOX.x1, GRID_BOX.y1]]) {
-    const [dx, dy] = displacementAt(points, corner[0], corner[1])
-    assert.equal(dx, 0, `corner ${corner} x`)
-    assert.equal(dy, 0, `corner ${corner} y`)
+  const filter = FILTERS.chad
+  const box = anchorBox(filter.reach)
+  const pairs = warpPairs(filter, landmarks, pose, ASPECT)
+  const cx = (box.x0 + box.x1) / 2
+  const cy = (box.y0 + box.y1) / 2
+  let worst = 0
+  for (let i = 0; i < 16; i++) {
+    const angle = (i / 16) * Math.PI * 2
+    const x = cx + (Math.cos(angle) * (box.x1 - box.x0)) / 2
+    const y = cy + (Math.sin(angle) * (box.y1 - box.y0)) / 2
+    const [sx, sy] = sourceAt(pairs, x, y)
+    worst = Math.max(worst, Math.hypot(sx - x, sy - y))
   }
+  assert.ok(worst < 1e-9, `anchors should not move, worst ${worst}`)
 })
 
 test('every filter leaves the grid border still, so the warp has no seam', () => {
+  // The mask fades the grid's border. Anything still moving there turns that fade into a visible
+  // edge, which is the defect the old forward warp had. Positions and texture coordinates are both
+  // normalized to the frame, so the tolerance below is a fraction of the picture: 2e-4 of a 1920
+  // wide frame is under half a pixel.
   const {landmarks} = makeFace()
   for (const [id, filter] of Object.entries(FILTERS)) {
     const mesh = buildMesh(filter, landmarks, ASPECT)
     const n = GRID
+    let worst = 0
     for (let column = 0; column <= n; column++) {
       for (const row of [0, n]) {
         const at = (row * (n + 1) + column) * 2
-        assert.ok(close(mesh.position[at], mesh.uv[at], 1e-9), `${id} border x`)
-        assert.ok(close(mesh.position[at + 1], mesh.uv[at + 1], 1e-9), `${id} border y`)
+        worst = Math.max(worst, Math.hypot(mesh.position[at] - mesh.uv[at], mesh.position[at + 1] - mesh.uv[at + 1]))
       }
     }
+    assert.ok(worst < 2e-4, `${id} border moves by ${worst.toExponential(2)}`)
   }
 })
 
 test('chad widens the jaw and lengthens the chin', () => {
+  // Read backwards: a pixel now sitting outside where the jaw was must have come from inside it,
+  // which is what widening looks like from the output's point of view.
   const {landmarks, pose} = makeFace()
-  const mesh = buildMesh(FILTERS.chad, landmarks, ASPECT)
-  const at = (lx, ly) => {
-    // Nearest grid vertex to a point in face units.
-    const column = Math.round(((lx - GRID_BOX.x0) / (GRID_BOX.x1 - GRID_BOX.x0)) * GRID)
-    const row = Math.round(((ly - GRID_BOX.y0) / (GRID_BOX.y1 - GRID_BOX.y0)) * GRID)
-    const index = (row * (GRID + 1) + column) * 2
-    return toLocal(pose, mesh.position[index], mesh.position[index + 1], ASPECT)
-  }
-  const [rightX] = at(0.85, 1.2)
-  const [leftX] = at(-0.85, 1.2)
-  assert.ok(rightX > 0.9, `right jaw should move outward, got ${rightX}`)
-  assert.ok(leftX < -0.9, `left jaw should move outward, got ${leftX}`)
-  const [, chinY] = at(0, 1.8)
-  assert.ok(chinY > 1.82, `chin should drop, got ${chinY}`)
+  const pairs = warpPairs(FILTERS.chad, landmarks, pose, ASPECT)
+  const [rightSource] = sourceAt(pairs, 1.05, 1.2)
+  assert.ok(rightSource < 1.0, `right jaw should widen, came from ${rightSource}`)
+  const [leftSource] = sourceAt(pairs, -1.05, 1.2)
+  assert.ok(leftSource > -1.0, `left jaw should widen, came from ${leftSource}`)
+  const [, chinSource] = sourceAt(pairs, 0, 1.95)
+  assert.ok(chinSource < 1.95, `chin should lengthen, came from ${chinSource}`)
 })
 
 test('a filter lands in the same place on a face twice the size', () => {
@@ -149,7 +167,8 @@ test('a filter lands in the same place on a face twice the size', () => {
   const large = makeFace({scale: 0.16})
   const meshes = [small, large].map(({landmarks}) => buildMesh(FILTERS.chad, landmarks, ASPECT))
   const index = (GRID / 2) * (GRID + 1) * 2
-  const localise = (mesh, face) => toLocal(face.pose, mesh.position[index], mesh.position[index + 1], ASPECT)
+  // The texture coordinate is the part the deformation moves, so that is the part worth comparing.
+  const localise = (mesh, face) => toLocal(face.pose, mesh.uv[index], mesh.uv[index + 1], ASPECT)
   const [ax, ay] = localise(meshes[0], small)
   const [bx, by] = localise(meshes[1], large)
   assert.ok(close(ax, bx, 1e-6), `${ax} vs ${bx}`)
@@ -226,22 +245,24 @@ test('unwarping recovers a face this app had already warped', () => {
   // What the YouTube path faces: the picture read back has the filter on it, so the same landmarks
   // that built the warp must come back out of a reading taken through it.
   const {landmarks, pose} = makeFace()
-  const points = controlPoints(FILTERS.chad, landmarks, pose, ASPECT)
+  const pairs = warpPairs(FILTERS.chad, landmarks, pose, ASPECT)
+  const ahead = forward(pairs)
   const warped = landmarks.map((p) => {
     const [lx, ly] = toLocal(pose, p.x, p.y, ASPECT)
-    const [dx, dy] = displacementAt(points, lx, ly)
-    const [wx, wy] = toWorld(pose, lx + dx, ly + dy, ASPECT)
-    return {x: wx, y: wy}
+    const [wx, wy] = sourceAt(ahead, lx, ly)
+    const [ix, iy] = toWorld(pose, wx, wy, ASPECT)
+    return {x: ix, y: iy}
   })
-  const recovered = unwarpLandmarks(warped, points, pose, ASPECT)
+  const recovered = unwarpLandmarks(warped, pairs, pose, ASPECT)
   let worst = 0
   for (const index of [172, 136, 152, 234, 33, 263]) {
     const [tx, ty] = toLocal(pose, landmarks[index].x, landmarks[index].y, ASPECT)
     const [rx, ry] = toLocal(pose, recovered[index].x, recovered[index].y, ASPECT)
     worst = Math.max(worst, Math.hypot(rx - tx, ry - ty))
   }
-  // Evaluating the field at the warped point leaves a second-order error; what matters is that it
-  // is far smaller than the displacement, so repeated frames settle instead of running away.
+  // Forwards and backwards are two separate fits rather than exact inverses, so a little is left
+  // over. What matters is that it is far smaller than the displacement, so repeated frames settle
+  // instead of running away.
   assert.ok(worst < 0.05, `unwarp should land back near the real face, off by ${worst.toFixed(4)}`)
 })
 
@@ -251,15 +272,16 @@ test('unwarping repeatedly settles instead of running away', () => {
   const {landmarks, pose} = makeFace()
   let current = landmarks
   for (let frame = 0; frame < 30; frame++) {
-    const points = controlPoints(FILTERS.chad, current, pose, ASPECT)
+    const pairs = warpPairs(FILTERS.chad, current, pose, ASPECT)
+    const ahead = forward(pairs)
     const warped = current.map((p) => {
       const [lx, ly] = toLocal(pose, p.x, p.y, ASPECT)
-      const [dx, dy] = displacementAt(points, lx, ly)
-      const [wx, wy] = toWorld(pose, lx + dx, ly + dy, ASPECT)
-      return {x: wx, y: wy}
+      const [wx, wy] = sourceAt(ahead, lx, ly)
+      const [ix, iy] = toWorld(pose, wx, wy, ASPECT)
+      return {x: ix, y: iy}
     })
-    current = unwarpLandmarks(warped, points, pose, ASPECT)
+    current = unwarpLandmarks(warped, pairs, pose, ASPECT)
   }
   const [jawX] = toLocal(pose, current[172].x, current[172].y, ASPECT)
-  assert.ok(Math.abs(jawX - -0.9) < 0.02, `the jaw should stay put over 30 frames, ended at ${jawX.toFixed(3)}`)
+  assert.ok(Math.abs(jawX - -0.9) < 0.05, `the jaw should stay put over 30 frames, ended at ${jawX.toFixed(3)}`)
 })

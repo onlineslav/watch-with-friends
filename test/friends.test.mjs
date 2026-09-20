@@ -368,6 +368,82 @@ test('a hello still being verified when a peer leaves cannot mark them online', 
   assert.equal(alice.friends.list()[0].confirmed, false)
 })
 
+test('a hello that arrives before the peer join is reported still connects them', async (t) => {
+  const net = fakeTrystero()
+  const alice = await person(net, 'a', 'Alice')
+  t.after(() => alice.friends.stop())
+  const bob = await createIdentity('tester')
+  alice.friends.add(bob.username)
+  const roomId = pairRoomId(alice.identity.username, bob.username)
+  const link = alice.friends.links.get(roomId)
+  const hello = {username: bob.username, publicKey: bob.publicKey, signature: await sign(bob, helloText(roomId, 'b', 'a'))}
+  await link.actions.hello.onMessage(hello, {peerId: 'b'}) // before onPeerJoin: held, not dropped
+  assert.equal(alice.friends.list()[0].online, false)
+  link.room.onPeerJoin('b')
+  await until(() => alice.friends.list()[0].online, 'held hello replayed on join')
+  assert.equal(link.held.size, 0)
+})
+
+test('a bad hello does not lock a peer out of sending a real one', async (t) => {
+  const net = fakeTrystero()
+  const alice = await person(net, 'a', 'Alice')
+  t.after(() => alice.friends.stop())
+  const bob = await createIdentity('tester')
+  const imposter = await createIdentity('tester')
+  alice.friends.add(bob.username)
+  const roomId = pairRoomId(alice.identity.username, bob.username)
+  const link = alice.friends.links.get(roomId)
+  link.room.onPeerJoin('b')
+  const text = helloText(roomId, 'b', 'a')
+  await link.actions.hello.onMessage({username: bob.username, publicKey: imposter.publicKey, signature: await sign(imposter, text)}, {peerId: 'b'})
+  assert.equal(alice.friends.list()[0].online, false)
+  await link.actions.hello.onMessage({username: bob.username, publicKey: bob.publicKey, signature: await sign(bob, text)}, {peerId: 'b'}) // the real one still counts
+  assert.equal(alice.friends.list()[0].online, true)
+  assert.equal(link.checks.has('b'), false)
+})
+
+test('endless bad hellos stop being verified', async (t) => {
+  const net = fakeTrystero()
+  const alice = await person(net, 'a', 'Alice')
+  t.after(() => alice.friends.stop())
+  const bob = await createIdentity('tester')
+  const imposter = await createIdentity('tester')
+  alice.friends.add(bob.username)
+  const roomId = pairRoomId(alice.identity.username, bob.username)
+  const link = alice.friends.links.get(roomId)
+  link.room.onPeerJoin('b')
+  const text = helloText(roomId, 'b', 'a')
+  const bad = {username: bob.username, publicKey: imposter.publicKey, signature: await sign(imposter, text)}
+  for (let i = 0; i < 6; i++) await link.actions.hello.onMessage(bad, {peerId: 'b'})
+  assert.equal(link.checks.get('b'), 3)
+  await link.actions.hello.onMessage({username: bob.username, publicKey: bob.publicKey, signature: await sign(bob, text)}, {peerId: 'b'})
+  assert.equal(alice.friends.list()[0].online, false)
+})
+
+test('a connected peer clears a stale connection error, and lost hellos are re-sent', async (t) => {
+  const net = fakeTrystero()
+  const alice = await person(net, 'a', 'Alice')
+  t.after(() => alice.friends.stop())
+  const bob = await createIdentity('tester')
+  alice.friends.add(bob.username)
+  const roomId = pairRoomId(alice.identity.username, bob.username)
+  const link = alice.friends.links.get(roomId)
+  link.room.callbacks.onJoinError({error: 'could not connect after exchanging SDP'})
+  assert.equal(presenceText({...alice.friends.list()[0], confirmed: true}), 'Connection unavailable · retrying')
+  const sent = []
+  link.actions.hello.send = async (_hello, {target}) => sent.push(target)
+  link.room.onPeerJoin('b')
+  assert.equal(link.error, null)
+  await until(() => sent.length === 1, 'hello sent on join')
+  alice.friends.resendHellos()
+  await until(() => sent.length === 2, 'hello re-sent while unverified')
+  for (let i = 0; i < 20; i++) alice.friends.resendHellos()
+  await until(() => sent.length === 9, 're-sending stops at the cap') // the first hello plus MAX_HELLO_RESENDS
+  alice.friends.resendHellos()
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.equal(sent.length, 9)
+})
+
 test('add rejects bad input', async () => {
   const net = fakeTrystero()
   const alice = await person(net, 'a', 'Alice')

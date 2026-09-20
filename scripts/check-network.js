@@ -144,6 +144,9 @@ app.whenReady().then(async () => {
     ipcMain.handle('net:ice-servers', () => [])
     for (const name of ['alpha', 'bravo', 'charlie']) {
       const win = new BrowserWindow({show: false, webPreferences: {partition: `network-${name}`, backgroundThrottling: false, autoplayPolicy: 'no-user-gesture-required', preload: path.join(temporary, 'preload.js')}})
+      // Muted at the output only. The Web Audio graph is untouched, so audioLevel() still
+      // measures what is being played; it just does not come out of the speakers.
+      win.webContents.setAudioMuted(true)
       windows.push(win)
       if (checkYouTube) registerYouTube(win.webContents.session)
       win.webContents.on('console-message', (details) => {

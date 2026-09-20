@@ -43,6 +43,7 @@ app.whenReady().then(async () => {
   // Visible on purpose: getDisplayMedia never resolves for a window that is not being shown, so a
   // hidden window would hang this check rather than fail it.
   const win = new BrowserWindow({show: true, width: 900, height: 820, webPreferences: {backgroundThrottling: false, autoplayPolicy: 'no-user-gesture-required'}})
+  win.webContents.setAudioMuted(true)
   const run = (source) => win.webContents.executeJavaScript(source)
   const until = async (condition, label = condition) => {
     for (let i = 0; i < 300; i++) {

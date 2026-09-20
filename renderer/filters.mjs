@@ -1,11 +1,8 @@
 // Face filters: what a filter *is*, and all the maths that places one on a face. Pure and
 // unit-tested, like whiteboard.mjs — nothing here touches the DOM, WebGL or MediaPipe.
 //
-// A filter is data, not code. It names groups of face landmarks and how far to push them, so adding
-// one means editing the table below rather than writing a renderer. The warp itself is a grid of
-// vertices laid over the face: each vertex keeps the texture coordinate it started at and moves to
-// where the filter wants it, so the video stretches between them. Displacement falls to zero well
-// inside the grid's edge, which is why the warp has no visible seam.
+// A filter is data, not code. It names groups of face landmarks and where to put them, so adding
+// one means editing the table below rather than writing a renderer.
 //
 // Everything is measured in "face units": one unit is the distance between the outer eye corners,
 // the origin sits between the eyes, and the axes follow the head's roll. A filter authored this way
@@ -16,47 +13,55 @@ export const LM = {rightEye: 33, leftEye: 263, noseTip: 1, chin: 152, foreheadTo
 
 // The lower face oval, jaw corner round to jaw corner.
 const JAW = [172, 136, 150, 149, 176, 148, 152, 377, 400, 378, 379, 365, 397]
-const JAW_CORNERS = [132, 58, 288, 361]
-const CHIN = [148, 176, 152, 377, 400]
+// The gonial angle — the corner of the mandible, and the single feature a heavy jaw reads from.
+const JAW_CORNERS = [58, 288, 172, 397, 132, 361]
+const CHIN = [148, 176, 152, 377, 400, 175, 199, 200]
 const BROW = [70, 63, 105, 66, 107, 336, 296, 334, 293, 300]
-const CHEEKS = [234, 454, 93, 323]
+const CHEEKBONES = [234, 454, 93, 323, 116, 345]
+// Under the cheekbone, where a hollow goes. Not to be confused with the mid-cheek points beside
+// the nose, which is where these were wrongly placed at first.
+const CHEEK_HOLLOW = [205, 425, 216, 436, 207, 427]
 const EYES = [33, 133, 159, 145, 263, 362, 386, 374]
 const TEMPLES = [103, 67, 109, 338, 297, 332]
 
 // `out` pushes a point away from the face's centre line (a pure widening); `move` shifts it in face
-// units, y downwards. `radius` is how far the push reaches. Overlapping groups blend rather than
-// stack, so these numbers mean what they say.
+// units, y downwards. There is no radius: the deformation decides for itself how far each control
+// reaches, from how close the other controls are.
+//
+// `reach` is how far out the anchors sit, in multiples of the grid box. It is the strength knob
+// nobody expects: anchors close in argue the deformation back down to almost nothing, so a filter
+// with reach 1 looks like it is barely doing anything however large its numbers are.
 export const FILTERS = {
   chad: {
     name: 'Chad',
+    reach: 4,
     controls: [
-      {points: JAW, out: 0.2, radius: 0.42},
-      {points: JAW_CORNERS, out: 0.26, radius: 0.4},
-      {points: CHIN, move: [0, 0.1], radius: 0.34},
-      {points: BROW, move: [0, 0.05], radius: 0.28},
-      {points: CHEEKS, out: 0.09, radius: 0.34},
+      {points: JAW, out: 0.3},
+      {points: JAW_CORNERS, out: 0.45, move: [0, 0.08]},
+      {points: CHIN, out: 0.18, move: [0, 0.2]},
+      {points: CHEEKBONES, out: 0.2, move: [0, -0.06]},
+      {points: CHEEK_HOLLOW, out: -0.14},
+      {points: BROW, move: [0, 0.1]},
     ],
-    // Applied inside the mask only, and faded out with it, so there is no line around the face.
-    grade: {saturation: 0.82, contrast: 1.14, brightness: 1},
   },
   alien: {
     name: 'Alien',
+    reach: 4,
     controls: [
-      {points: TEMPLES, out: 0.3, move: [0, -0.22], radius: 0.55},
-      {points: EYES, out: 0.1, radius: 0.3},
-      {points: JAW, out: -0.22, radius: 0.45},
-      {points: CHIN, move: [0, -0.12], radius: 0.35},
+      {points: TEMPLES, out: 0.3, move: [0, -0.22]},
+      {points: EYES, out: 0.1},
+      {points: JAW, out: -0.22},
+      {points: CHIN, move: [0, -0.12]},
     ],
-    grade: {saturation: 1.25, contrast: 1.05, brightness: 1.02},
   },
   chipmunk: {
     name: 'Chipmunk',
+    reach: 4,
     controls: [
-      {points: CHEEKS, out: 0.22, move: [0, 0.1], radius: 0.45},
-      {points: EYES, out: 0.08, radius: 0.26},
-      {points: CHIN, move: [0, -0.06], radius: 0.3},
+      {points: CHEEKBONES, out: 0.22, move: [0, 0.1]},
+      {points: EYES, out: 0.08},
+      {points: CHIN, move: [0, -0.06]},
     ],
-    grade: null,
   },
 }
 
@@ -95,59 +100,48 @@ export function toWorld(pose, lx, ly, aspect) {
   return [(pose.x + px * pose.scale) / aspect, pose.y + py * pose.scale]
 }
 
-// ---------- Displacement field ----------
-// A compact quartic bump: full strength at the control point, exactly zero at `radius`. Compact
-// support is what keeps the warp local and the grid edges still.
-const weightAt = (distanceSquared, radiusSquared) => {
-  if (distanceSquared >= radiusSquared) return 0
-  const t = 1 - distanceSquared / radiusSquared
-  return t * t
-}
-
-// Flattens a filter's control groups into individual points placed in face units.
-export function controlPoints(filter, landmarks, pose, aspect) {
-  const points = []
-  for (const group of filter.controls) {
-    const [mx, my] = group.move || [0, 0]
-    for (const index of group.points) {
-      const landmark = landmarks[index]
-      if (!landmark) continue
-      const [lx, ly] = toLocal(pose, landmark.x, landmark.y, aspect)
-      // `out` is horizontal: widening a jaw means moving it away from the centre line, not away
-      // from the eyes. A point already on the centre line is left to `move` alone.
-      const sideways = group.out ? Math.sign(lx) * group.out : 0
-      if (!sideways && !mx && !my) continue
-      points.push({x: lx, y: ly, dx: sideways + mx, dy: my, radiusSquared: group.radius * group.radius})
-    }
-  }
-  return points
-}
-
-// Normalized blending: where several controls overlap the result is their weighted average rather
-// than their sum, so thirteen jaw points at 0.20 still widen the jaw by 0.20 and not by 2.6.
-export function displacementAt(points, lx, ly) {
-  let dx = 0
-  let dy = 0
-  let total = 0
-  for (const point of points) {
-    const ex = lx - point.x
-    const ey = ly - point.y
-    const weight = weightAt(ex * ex + ey * ey, point.radiusSquared)
-    if (!weight) continue
-    dx += weight * point.dx
-    dy += weight * point.dy
-    total += weight
-  }
-  if (!total) return [0, 0]
-  const divisor = Math.max(1, total)
-  return [dx / divisor, dy / divisor]
-}
-
 // ---------- Mesh ----------
-// The grid covers the head in face units and reaches past the mask, so the fade to transparent
-// happens on geometry that is itself no longer moving.
-export const GRID = 32
+// The grid the warp is drawn through. Its vertices never move — only the texture coordinates they
+// carry do — so the picture is resampled rather than stretched, and no two triangles can overlap.
+
+export const GRID = 48
 export const GRID_BOX = {x0: -2, x1: 2, y0: -2.2, y1: 2.8}
+
+// The anchors move with `reach`; the grid does not. They want opposite things, and only the anchors
+// benefit from distance:
+//   - anchors far out stop arguing the deformation back down to nothing, which is what makes a
+//     filter's numbers mean what they say.
+//   - the grid is also the region that gets drawn, so growing it paints over — and resamples —
+//     picture the warp never touches. At reach 4 that was most of the canvas, which the integration
+//     check catches as a slab of opaque pixels over the video.
+export const GRID_REACH = 1
+
+// Where the grid's own edge is faded out, as a fraction of the box. The deformation is tapered to
+// exactly nothing by MASK_FROM, so the fade happens entirely over picture the warp has not touched
+// — otherwise a border still moving by a fraction of a percent blends warped over unwarped and the
+// seam comes straight back. The unit test measures this, and it is how the taper got here.
+//
+// The taper starts outside the face: a jaw sits at about 0.62 of the box, so beginning at 0.68
+// leaves the warp itself at full strength and only flattens what is already nearly still.
+export const TAPER_FROM = 0.68
+export const MASK_FROM = 0.86
+export const MASK_TO = 1
+
+const scaleBox = (box, k) => ({x0: box.x0 * k, x1: box.x1 * k, y0: box.y0 * k, y1: box.y1 * k})
+
+const smoothstep = (edge0, edge1, x) => {
+  const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)))
+  return t * t * (3 - 2 * t)
+}
+
+// How far a point sits towards the edge of the box, 0 at the middle and 1 on the border.
+export function boxCoord(box, lx, ly) {
+  const cx = (box.x0 + box.x1) / 2
+  const cy = (box.y0 + box.y1) / 2
+  return Math.hypot((lx - cx) / ((box.x1 - box.x0) / 2), (ly - cy) / ((box.y1 - box.y0) / 2))
+}
+export const anchorBox = (reach = 1) => scaleBox(GRID_BOX, reach)
+export const gridBox = (reach = 1) => scaleBox(GRID_BOX, Math.min(reach, GRID_REACH))
 
 // Two triangles per cell, in the same order every time: built once and reused for every face.
 export function gridIndices(n = GRID) {
@@ -170,32 +164,139 @@ export function gridIndices(n = GRID) {
 
 export const gridVertexCount = (n = GRID) => (n + 1) * (n + 1)
 
-// `position` is where a vertex ends up, `uv` is the pixel it carries there, and `local` lets the
-// shader fade the edges. All three are normalized to the video frame.
+// ---------- Deformation ----------
+// A filter says where landmarks should end up. That is a scattered-data deformation problem and it
+// has a standard answer: Moving Least Squares (Schaefer, McPhail & Warren, SIGGRAPH 2006). Each
+// point is moved by the single similarity transform that best explains the controls near it, so
+// overlapping controls agree rather than stacking — thirteen jaw points asking for 0.3 widen the
+// jaw by 0.3, not by four.
+//
+// It is solved *backwards*: the controls go in as (where it ends up -> where it came from), so
+// asking the field about an output pixel answers "which pixel should I sample". A forward warp —
+// moving the vertices and leaving the texture put — tears wherever neighbouring cells move
+// differently and leaves a hard edge where the moved patch stops. This cannot: every output pixel
+// is written exactly once.
+
+const EPS = 1e-8
+const ANCHOR_RING = 16
+
+// The filter table read as pairs, plus a ring of anchors told to stay exactly put. Without them MLS
+// tends to a global similarity far from its controls rather than to the identity, and the whole
+// frame would drift.
+export function warpPairs(filter, landmarks, pose, aspect, reach = filter.reach || 1) {
+  const from = []
+  const to = []
+  for (const group of filter.controls) {
+    const [mx, my] = group.move || [0, 0]
+    for (const index of group.points) {
+      const landmark = landmarks[index]
+      if (!landmark) continue
+      const [lx, ly] = toLocal(pose, landmark.x, landmark.y, aspect)
+      // `out` is horizontal: widening a jaw means moving it away from the centre line, not away
+      // from the eyes. A point already on the centre line is left to `move` alone.
+      const sideways = group.out ? Math.sign(lx) * group.out : 0
+      if (!sideways && !mx && !my) continue
+      from.push(lx, ly)
+      to.push(lx + sideways + mx, ly + my)
+    }
+  }
+  const {x0, x1, y0, y1} = anchorBox(reach)
+  for (let i = 0; i < ANCHOR_RING; i++) {
+    const angle = (i / ANCHOR_RING) * Math.PI * 2
+    const ax = (x0 + x1) / 2 + (Math.cos(angle) * (x1 - x0)) / 2
+    const ay = (y0 + y1) / 2 + (Math.sin(angle) * (y1 - y0)) / 2
+    from.push(ax, ay)
+    to.push(ax, ay)
+  }
+  const count = to.length / 2
+  // Backwards: the deformed positions are the domain, the originals are the range.
+  return {p: Float64Array.from(to), q: Float64Array.from(from), n: count, weights: new Float64Array(count)}
+}
+
+// MLS similarity deformation at one point, in face units. Returns where to sample from.
+export function sourceAt(pairs, vx, vy) {
+  const {p, q, n, weights} = pairs
+  let sw = 0
+  let pwx = 0
+  let pwy = 0
+  let qwx = 0
+  let qwy = 0
+  for (let i = 0; i < n; i++) {
+    const dx = p[i * 2] - vx
+    const dy = p[i * 2 + 1] - vy
+    const d2 = dx * dx + dy * dy
+    // Landing exactly on a control means the answer is that control, by definition.
+    if (d2 < EPS) return [q[i * 2], q[i * 2 + 1]]
+    const w = 1 / d2
+    weights[i] = w
+    sw += w
+    pwx += w * p[i * 2]
+    pwy += w * p[i * 2 + 1]
+    qwx += w * q[i * 2]
+    qwy += w * q[i * 2 + 1]
+  }
+  if (!(sw > 0)) return [vx, vy]
+  const psx = pwx / sw
+  const psy = pwy / sw
+  const qsx = qwx / sw
+  const qsy = qwy / sw
+  const rx = vx - psx
+  const ry = vy - psy
+
+  let mu = 0
+  let ax = 0
+  let ay = 0
+  for (let i = 0; i < n; i++) {
+    const phx = p[i * 2] - psx
+    const phy = p[i * 2 + 1] - psy
+    const w = weights[i]
+    mu += w * (phx * phx + phy * phy)
+    // The per-control block is a scaled rotation: `s` along the control, `t` across it.
+    const s = phx * rx + phy * ry
+    const t = phx * ry - phy * rx
+    const qhx = q[i * 2] - qsx
+    const qhy = q[i * 2 + 1] - qsy
+    ax += w * (qhx * s - qhy * t)
+    ay += w * (qhx * t + qhy * s)
+  }
+  if (!(Math.abs(mu) > EPS)) return [vx, vy]
+  return [ax / mu + qsx, ay / mu + qsy]
+}
+
+// `position` is where a vertex sits (and stays), `uv` is the pixel it should carry there, and
+// `local` lets the shader fade the edges. All three are normalized to the video frame.
 export function buildMesh(filter, landmarks, aspect, n = GRID, out = null) {
   const pose = facePose(landmarks, aspect)
   if (!pose) return null
-  const points = controlPoints(filter, landmarks, pose, aspect)
+  const reach = filter.reach || 1
+  const box = gridBox(reach)
+  const pairs = warpPairs(filter, landmarks, pose, aspect, reach)
   const count = gridVertexCount(n)
   const mesh = out || {position: new Float32Array(count * 2), uv: new Float32Array(count * 2), local: new Float32Array(count * 2)}
   let at = 0
   for (let row = 0; row <= n; row++) {
-    const ly = GRID_BOX.y0 + ((GRID_BOX.y1 - GRID_BOX.y0) * row) / n
+    const ly = box.y0 + ((box.y1 - box.y0) * row) / n
     for (let column = 0; column <= n; column++) {
-      const lx = GRID_BOX.x0 + ((GRID_BOX.x1 - GRID_BOX.x0) * column) / n
-      const [dx, dy] = displacementAt(points, lx, ly)
-      const [ux, uy] = toWorld(pose, lx, ly, aspect)
-      const [px, py] = toWorld(pose, lx + dx, ly + dy, aspect)
-      mesh.uv[at] = ux
-      mesh.uv[at + 1] = uy
+      const lx = box.x0 + ((box.x1 - box.x0) * column) / n
+      const [rawX, rawY] = sourceAt(pairs, lx, ly)
+      // Distant anchors leave a little movement this far out. Taper it away so the border is exactly
+      // still, which is what lets the mask fade without showing.
+      const taper = 1 - smoothstep(TAPER_FROM, MASK_FROM, boxCoord(box, lx, ly))
+      const sx = lx + (rawX - lx) * taper
+      const sy = ly + (rawY - ly) * taper
+      const [px, py] = toWorld(pose, lx, ly, aspect)
+      const [ux, uy] = toWorld(pose, sx, sy, aspect)
       mesh.position[at] = px
       mesh.position[at + 1] = py
+      mesh.uv[at] = ux
+      mesh.uv[at + 1] = uy
       mesh.local[at] = lx
       mesh.local[at + 1] = ly
       at += 2
     }
   }
   mesh.pose = pose
+  mesh.box = box
   return mesh
 }
 
@@ -205,31 +306,15 @@ export function buildMesh(filter, landmarks, aspect, n = GRID, out = null) {
 // building the next warp on that measurement compounds it — a jaw that grows every frame until it
 // leaves the screen.
 //
-// Subtracting the displacement that was applied at the measured position turns the reading back
-// into the real face. Evaluating the field at the warped point rather than the true one leaves a
-// second-order error, which is small for a smooth displacement and settles rather than accumulates.
+// The backward field is exactly the inverse that is wanted: it takes a point in the warped picture
+// and says where it came from. Undoing the warp is therefore one evaluation per landmark, not the
+// fixed-point search a forward field needs.
 
-// Solves l = measured - displacement(l) by repeated substitution. One pass is not enough: the
-// field is steep enough near the jaw that the leftover error feeds the next frame and the warp
-// still creeps outward, just slowly. A handful of passes converges and then stays put.
-const UNWARP_STEPS = 8
-const UNWARP_SETTLED = 1e-4
-
-export function unwarpLandmarks(landmarks, points, pose, aspect) {
-  if (!pose || !points.length) return landmarks
+export function unwarpLandmarks(landmarks, pairs, pose, aspect) {
+  if (!pose || !pairs?.n) return landmarks
   return landmarks.map((point) => {
     const [mx, my] = toLocal(pose, point.x, point.y, aspect)
-    let lx = mx
-    let ly = my
-    for (let step = 0; step < UNWARP_STEPS; step++) {
-      const [dx, dy] = displacementAt(points, lx, ly)
-      const nx = mx - dx
-      const ny = my - dy
-      const moved = Math.hypot(nx - lx, ny - ly)
-      lx = nx
-      ly = ny
-      if (moved < UNWARP_SETTLED) break
-    }
+    const [lx, ly] = sourceAt(pairs, mx, my)
     if (lx === mx && ly === my) return point
     const [wx, wy] = toWorld(pose, lx, ly, aspect)
     return {x: wx, y: wy}

@@ -6,7 +6,7 @@
 // the cost scales with pixels and rate, and the renderer interpolates between results anyway.
 // Nothing here runs unless a filter is switched on.
 
-import {MAX_FACES, controlPoints, createSmoother, facePose, grayscale, holdOpacity, isCut, resetSmoother, smoothFace, unwarpLandmarks} from './filters.mjs'
+import {HOLD_MS, MAX_FACES, createSmoother, facePose, grayscale, holdOpacity, isCut, resetSmoother, smoothFace, unwarpLandmarks, warpPairs} from './filters.mjs'
 
 const ASSETS = 'svp-vision://assets'
 // The longest side the detector ever sees. Its own input is smaller still, so this throws away
@@ -68,6 +68,9 @@ const centre = (landmarks) => {
 
 // Faces come back in no particular order, so each detection is matched to the face it is nearest
 // to. Without this, two people on screen would swap smoothers every frame and both would shake.
+//
+// Whatever is left over is returned too, and that matters: detection misses a frontal face several
+// times a minute on ordinary footage, and dropping those outright is what made the filter flash.
 function matchFaces(tracked, detections) {
   const free = new Set(tracked)
   const result = []
@@ -87,7 +90,7 @@ function matchFaces(tracked, detections) {
     free.delete(face)
     result.push({face, landmarks, x, y})
   }
-  return result
+  return {matched: result, unmatched: [...free]}
 }
 
 export class FaceTracker {
@@ -177,14 +180,22 @@ export class FaceTracker {
       const now = performance.now()
       const result = this.landmarker.detectForVideo(this.canvas, now)
       const detections = (result?.faceLandmarks || []).slice(0, MAX_FACES)
-      const matched = matchFaces(this.tracked, detections)
-      this.tracked = matched.map(({face, landmarks, x, y}) => {
+      const {matched, unmatched} = matchFaces(this.tracked, detections)
+      const next = matched.map(({face, landmarks, x, y}) => {
         face.landmarks = smoothFace(face.smoother, this.correct(landmarks, face), this.aspect, now) || landmarks
         face.x = x
         face.y = y
         face.at = now
         return face
       })
+      // A face detection did not find this tick is held, not thrown away. `at` is deliberately left
+      // alone so it keeps ageing, which is what lets holdOpacity fade it out and, if detection does
+      // not come back within HOLD_MS, drop it. Without this the hold-and-fade below never ran at
+      // all: a single missed tick blanked the filter and the next one snapped it back.
+      for (const face of unmatched) {
+        if (face.landmarks && now - face.at < HOLD_MS) next.push(face)
+      }
+      this.tracked = next
     } catch (error) {
       this.error = error
     } finally {
@@ -198,7 +209,7 @@ export class FaceTracker {
     if (!this.unwarp || !face.landmarks) return landmarks
     const pose = facePose(face.landmarks, this.aspect)
     if (!pose) return landmarks
-    return unwarpLandmarks(landmarks, controlPoints(this.unwarp, face.landmarks, pose, this.aspect), pose, this.aspect)
+    return unwarpLandmarks(landmarks, warpPairs(this.unwarp, face.landmarks, pose, this.aspect), pose, this.aspect)
   }
 
   // What to draw right now: the last known faces, fading out if detection has lost them. Called

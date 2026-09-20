@@ -1659,7 +1659,14 @@ const filterOpen = () => ui.room.classList.contains('filter-open')
 
 // Filters need a moving picture. A still photograph has nothing to track, and there is no point
 // running the detector before any media is open.
-const canFilter = () => session.role !== 'idle' && !shownImage() && !session.mediaError
+// Not on YouTube. Reaching that picture means capturing this app's own window, and the window
+// already has the filter drawn on it — so the texture the warp samples is a picture this app warped
+// last frame, and frame N shows the picture warped N times. `unwarpLandmarks` fixes the *landmark*
+// side of that loop (measured jaw width converges and stays put) and does nothing about the pixels,
+// which smear to a featureless blob within a second. Composing the two maps would fix it properly:
+// sample the capture at prevForward(newSource(v)) rather than at newSource(v). Until that exists,
+// the button is off here rather than shipping something that destroys the picture.
+const canFilter = () => session.role !== 'idle' && !shownImage() && !session.mediaError && !youtube.videoId
 
 function teardownFilters() {
   filters.tracker?.stop()
@@ -1806,6 +1813,8 @@ function renderFilterTools() {
   ui.filterToggle.setAttribute('aria-pressed', String(filterOpen()))
   ui.filterToggle.classList.toggle('active', Boolean(session.filter))
   ui.filterToggle.disabled = !canFilter()
+  if (youtube.videoId) ui.filterToggle.title = 'Face filters are not available for YouTube videos yet'
+  else if (!ui.filterToggle.classList.contains('waiting')) ui.filterToggle.title = 'Face filters'
 }
 
 function setFilterOpen(open) {

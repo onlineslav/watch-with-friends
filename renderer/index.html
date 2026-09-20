@@ -2,9 +2,16 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
+    <!--
+      The sha256 in style-src is Electron's own <webview> stylesheet, which it injects into this
+      page to lay the YouTube player's guest out. Without it the player is there but unstyled, and
+      Electron keeps reapplying it. It is a fixed string per Electron version, so an upgrade can
+      change it; check-youtube.js fails on any policy violation so that shows up as a failing test
+      rather than as a flickering picture.
+    -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' svp-vision:; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob: mediastream:; worker-src 'self' blob:; connect-src 'self' wss: https: svp-vision:; frame-src svp-youtube:"
+      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' svp-vision:; style-src 'self' 'sha256-XNfYdUW7S7AWSxlvq47SGsGIxvvzKwvUGdsFQQ/zXf4='; img-src 'self' data: blob:; media-src 'self' blob: mediastream:; worker-src 'self' blob:; connect-src 'self' wss: https: svp-vision:; frame-src svp-youtube:"
     />
     <title>Watch With Friends</title>
     <link rel="stylesheet" href="styles.css" />

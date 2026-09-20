@@ -18,6 +18,12 @@ app.whenReady().then(async () => {
   guardWebviews(win.webContents)
   // Nothing here listens to the sound, and a test run should not be audible.
   win.webContents.setAudioMuted(true)
+  // A blocked policy is not a crash: the page keeps working and only looks wrong, which is how the
+  // webview's own stylesheet being refused turned into a flickering picture rather than an error.
+  const violations = []
+  win.webContents.on('console-message', ({message}) => {
+    if (/Content Security Policy/i.test(message)) violations.push(message)
+  })
   const run = (source) => win.webContents.executeJavaScript(source)
   const until = async (condition) => {
     for (let i = 0; i < 300; i++) {
@@ -32,7 +38,10 @@ app.whenReady().then(async () => {
     // The same Content-Security-Policy the real renderer runs under, so this check proves a
     // webview attaches under it and not only in a bare page.
     const policy = fs.readFileSync(path.join(root, 'renderer', 'index.html'), 'utf8').match(/content="(default-src[^"]+)"/)[1]
-    fs.writeFileSync(path.join(temporary, 'index.html'), `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${policy}" /></head><body><div id="player" style="width:900px;height:500px"></div></body></html>`)
+    // The size goes in a stylesheet, not a style attribute: the policy has no 'unsafe-inline', so
+    // an attribute is dropped and the player ends up with no size at all.
+    fs.writeFileSync(path.join(temporary, 'page.css'), '#player { width: 900px; height: 500px; }')
+    fs.writeFileSync(path.join(temporary, 'index.html'), `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${policy}" /><link rel="stylesheet" href="page.css" /></head><body><div id="player"></div></body></html>`)
     await win.loadFile(path.join(temporary, 'index.html'))
     const bundle = await esbuild.build({stdin: {contents: `
       import {YouTubePlayer} from './renderer/youtube.mjs';
@@ -62,5 +71,7 @@ app.whenReady().then(async () => {
     console.log(`PASS: YouTube playlist import returns ${await run('window.importResult.length')} video IDs in source order`)
     await run('player.close()')
     assert.equal(await run('document.querySelectorAll("webview").length'), 0)
+    assert.deepEqual(violations, [], `the page's Content-Security-Policy blocked something: ${violations.join(' | ')}`)
+    console.log('PASS: nothing the player needs is refused by the app policy')
   } finally { win.destroy() }
 }).then(() => app.exit(0), (error) => { console.error(error); app.exit(1) })

@@ -9,7 +9,7 @@ const path = require('node:path')
 const {pathToFileURL} = require('node:url')
 const {execFileSync} = require('node:child_process')
 const esbuild = require('esbuild')
-const {prepareYouTube, registerYouTube} = require('../main/youtube')
+const {prepareYouTube, registerYouTube, guardWebviews} = require('../main/youtube')
 prepareYouTube()
 const checkYouTube = process.argv.includes('--youtube')
 
@@ -140,10 +140,16 @@ app.whenReady().then(async () => {
   try {
     const {video, picture, sound} = await fixtures()
     require('../main/main').registerIpc()
+    // A <webview> guest does not inherit the embedder's partition: it runs in the default session,
+    // so the player's own scheme has to be served there as well as on each window's.
+    if (checkYouTube) registerYouTube()
     ipcMain.removeHandler('net:ice-servers')
     ipcMain.handle('net:ice-servers', () => [])
     for (const name of ['alpha', 'bravo', 'charlie']) {
-      const win = new BrowserWindow({show: false, webPreferences: {partition: `network-${name}`, backgroundThrottling: false, autoplayPolicy: 'no-user-gesture-required', preload: path.join(temporary, 'preload.js')}})
+      // webviewTag, because the YouTube player is a <webview>: without it the element is inert and
+      // the player never becomes ready.
+      const win = new BrowserWindow({show: false, webPreferences: {partition: `network-${name}`, backgroundThrottling: false, autoplayPolicy: 'no-user-gesture-required', webviewTag: true, preload: path.join(temporary, 'preload.js')}})
+      guardWebviews(win.webContents)
       // Muted at the output only. The Web Audio graph is untouched, so audioLevel() still
       // measures what is being played; it just does not come out of the speakers.
       win.webContents.setAudioMuted(true)

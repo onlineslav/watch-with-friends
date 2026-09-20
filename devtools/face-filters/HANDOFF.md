@@ -56,6 +56,21 @@ Registering them the other way round makes every `svp-vision://` fetch fail with
 do both keep their `standard`/`secure` privileges (measured), so it is `corsEnabled` specifically
 that does not survive being registered second. `scripts/check-filters.js` now matches main's order.
 
+## The CSP was refusing the webview's own stylesheet
+
+Reported as "the screen just keeps flashing", with no filter running and the video blinking under
+YouTube's own UI. Electron's `<webview>` injects a stylesheet into the embedding page to lay its
+guest out, and `style-src 'self'` refused it, so the guest was placed by a rule that never applied.
+`renderer/index.html` now carries that stylesheet's sha256.
+
+It did not reproduce here, on three harnesses — a bare page, a page with the whiteboard canvas over
+the player, and `app-flash-check.js`, which is the real renderer in a visible window playing a real
+video. All three were steady. What they did all report was the refusal, in the console, which is
+what a blocked policy looks like: the page keeps working and only looks wrong.
+
+`scripts/check-youtube.js` now fails on any policy violation, because the hash is per Electron
+version and an upgrade that changes it should be a failing test rather than a flickering picture.
+
 ## `style-src 'self'` drops inline style attributes
 
 This cost a debugging round and will again. The app's policy has no `'unsafe-inline'`, so a
@@ -97,6 +112,10 @@ node scripts/electron.js devtools/face-filters/clip-check.js --times=8 --label=2
 ```
 
 - `spike-guest.js` — loads the real player page in a webview and reports where the chain breaks.
+- `flash-check.js` — a real video in a real webview on a bare page. `--board` adds the whiteboard
+  canvas over it, `--iframe` is the before-and-after.
+- `app-flash-check.js` — the real renderer, real styles and real room logic in one visible window,
+  playing a real video. Samples the window and the guest side by side.
 - `loop-check.js` — reproduced the feedback loop the old window capture had. Kept as the proof of
   what capturing the guest avoids; it no longer describes how the app works.
 - `play-check.js` — flashing. Reports blank frames, fade frames, cut detections, detection latency.

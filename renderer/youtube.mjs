@@ -39,7 +39,6 @@ export class YouTubePlayer extends EventTarget {
     // need. It costs the handshake below, because the guest is then a top-level document.
     const frame = document.createElement('webview')
     frame.src = 'svp-youtube://player/index.html'
-    frame.setAttribute('allowpopups', 'false')
     this.frame = frame
     this.ready = false
     this.guestId = null

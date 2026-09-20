@@ -5,7 +5,7 @@
 //
 // Everything here is local and synthetic. It does not prove MediaPipe finds faces in a film — that
 // is MediaPipe's job, not this code's — it proves the pipeline around it is wired up and running.
-const {app, BrowserWindow, ipcMain, session} = require('electron')
+const {app, BrowserWindow, ipcMain, session, webContents} = require('electron')
 const {prepareVision, registerVision} = require('../main/vision')
 const {prepareYouTube, guardWebviews, captureGuest} = require('../main/youtube')
 const fs = require('node:fs')
@@ -36,11 +36,19 @@ const CSP = fs
 // Orange rather than green for the guest, because green is the one colour a red/blue channel mix-up
 // would leave looking correct.
 const GUEST = '<!doctype html><html><body style="margin:0;height:100vh;background:#ff8000"></body></html>'
+// In a stylesheet, not style attributes: the app's own policy is `style-src 'self'`, which drops an
+// inline style outright. A webview that silently loses its width and height falls back to a size
+// the player never had, and every landmark is then measured against the wrong aspect ratio.
+const PAGE_CSS = `body { margin: 0; background: #0000ff; }
+#guest { position: absolute; left: 0; top: 0; display: inline-flex; width: 640px; height: 360px; }
+#cover { position: absolute; left: 0; top: 0; width: 640px; height: 120px; background: #ff0000; }
+#filter { position: absolute; left: 0; top: 400px; }`
 const PAGE = `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${CSP}" />
-</head><body style="margin:0;background:#0000ff">
-<webview id="guest" src="svp-youtube://player/index.html" style="position:absolute;left:0;top:0;display:inline-flex;width:640px;height:360px"></webview>
-<div id="cover" style="position:absolute;left:0;top:0;width:640px;height:120px;background:#ff0000"></div>
-<canvas id="filter" style="position:absolute;left:0;top:400px"></canvas>
+<link rel="stylesheet" href="check.css" />
+</head><body>
+<webview id="guest" src="svp-youtube://player/index.html"></webview>
+<div id="cover"></div>
+<canvas id="filter"></canvas>
 </body></html>`
 
 app.whenReady().then(async () => {
@@ -76,6 +84,7 @@ app.whenReady().then(async () => {
     throw new Error(`Timed out: ${label}`)
   }
   try {
+    fs.writeFileSync(path.join(temporary, 'check.css'), PAGE_CSS)
     fs.writeFileSync(path.join(temporary, 'index.html'), PAGE)
     await win.loadFile(path.join(temporary, 'index.html'))
 
@@ -210,6 +219,16 @@ app.whenReady().then(async () => {
     `)
     assert.ok(Number.isInteger(guestId), 'the player webview did not attach under the app CSP')
     say(`PASS: the player's webview attaches under the app CSP (guest ${guestId})`)
+
+    // A webview has no intrinsic size, so it is worth knowing separately that it got the one the
+    // stylesheet gives it. Losing that is silent: the guest falls back to a size the player never
+    // had, and since the aspect ratio is what every landmark is measured against, the whole warp
+    // lands in the wrong place while every other check still passes.
+    const element = await run(`(() => { const g = document.getElementById('guest'); return [g.clientWidth, g.clientHeight] })()`)
+    assert.deepEqual(element, [640, 360], `the player webview is ${element[0]}x${element[1]}, not the size the stylesheet gives it`)
+    const inside = await webContents.fromId(guestId).executeJavaScript('[innerWidth, innerHeight]')
+    assert.ok(Math.abs(inside[0] / inside[1] - 640 / 360) < 0.05, `the guest's own view is ${inside[0]}x${inside[1]}, not the shape of the element`)
+    say(`PASS: the guest is laid out at the size the page gives it (${inside[0]}x${inside[1]})`)
 
     await run(`
       window.capture = null

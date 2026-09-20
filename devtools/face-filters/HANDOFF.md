@@ -10,7 +10,7 @@ the tree. Delete this folder when the work lands.
 | Local / shared video | Works. No seam, no halo, holds through detection misses. |
 | YouTube filters | **Re-enabled.** The player is a `<webview>` and the filter reads its guest. |
 | YouTube playback | `npm run test:youtube` 4/4 on the webview, under the real renderer CSP. |
-| Tests | 170/170 unit (the two unwarp tests are gone), 4/4 `test:youtube`, `test:filters` **failing** on one new assertion — see *Open* below. |
+| Tests | 170/170 unit (the two unwarp tests are gone), 4/4 `test:youtube`, 6/6 `test:filters`. |
 
 ## What changed in the tree
 
@@ -24,6 +24,8 @@ the tree. Delete this folder when the work lands.
 - `main/youtube.js` — `guardWebviews` (strips preload/node from any guest, allows only
   `svp-youtube://player/`) and `captureGuest` (`capturePage()` on a guest the caller owns).
 - `main/vision.js` — the `setDisplayMediaRequestHandler` is gone; nothing captures the window now.
+- `scripts/check-filters.js` — captures a synthetic guest instead of the window. No longer needs a
+  visible window or the `--capture` flag, because `capturePage()` on a guest works either way.
 - `scripts/check-*.js` — `setAudioMuted(true)` so test runs are silent. **Keep this.**
 
 ## The blocker, solved
@@ -54,26 +56,20 @@ Registering them the other way round makes every `svp-vision://` fetch fail with
 do both keep their `standard`/`secure` privileges (measured), so it is `corsEnabled` specifically
 that does not survive being registered second. `scripts/check-filters.js` now matches main's order.
 
-## Open: the capture size does not settle
+## `style-src 'self'` drops inline style attributes
 
-`test:filters` fails here, and it is a real finding, not a bad assertion:
+This cost a debugging round and will again. The app's policy has no `'unsafe-inline'`, so a
+`style="width:640px"` attribute is discarded **silently**: no console error, the element simply has
+no size. A `<webview>` has no intrinsic size either, so it falls back to something the player never
+had — 873x150 for what should have been 640x360 — and since `aspect = videoWidth / videoHeight` is
+what every landmark is measured against, the whole warp lands in the wrong place while every other
+check still passes.
 
-```
-FAIL: Timed out: the captured frame settles on the shape of the player
-```
-
-The first frame back is taken mid-layout — 1047x180 for a 640x360 element — and in the check it
-never reaches 16:9. A standalone spike (`$TEMP/size.js`, not kept) captured the same guest at a
-correct 768x433 (640x360 at DPR 1.2) and stable, so the capture itself is sound and something about
-the check's window keeps the guest at the wrong size.
-
-This matters beyond the test: `aspect = videoWidth / videoHeight` is what every landmark position is
-measured against, so a guest stuck at the wrong shape puts the whole warp in the wrong place.
-
-Next: log the guest's own `innerWidth/innerHeight/devicePixelRatio` from inside `check-filters`
-alongside each capture size. If the guest's own view is 640x360 while `capturePage()` returns
-1047x180, the bug is in the capture; if the guest itself is 872x150, it is the webview's layout
-under that page's CSS and the element needs a settled size before the first pull.
+The app was never affected: `.youtube-player webview` is styled from `styles.css`, which `'self'`
+allows. It was `scripts/check-filters.js` that built its page from style attributes, and the old
+self-capture checks were opt-in behind `--capture`, so nothing had ever run them under the real
+policy. The check now serves its own stylesheet and asserts both the element's size and the guest's
+own view, so losing either fails loudly instead of quietly moving the filter.
 
 ## Still not built
 

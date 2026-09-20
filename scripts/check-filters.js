@@ -1,7 +1,7 @@
 // Integration check for the face filters. Runs the real modules in a hidden window against the
 // app's own Content-Security-Policy, so it catches the things unit tests cannot: whether the
 // WebAssembly runtime is allowed to load at all, whether the model arrives over svp-vision://,
-// whether the shader compiles, and whether the YouTube player's webview can be photographed.
+// whether the shader compiles, and whether the YouTube player's webview can be streamed.
 //
 // Everything here is local and synthetic. It does not prove MediaPipe finds faces in a film — that
 // is MediaPipe's job, not this code's — it proves the pipeline around it is wired up and running.
@@ -41,6 +41,7 @@ const GUEST = '<!doctype html><html><body style="margin:0;height:100vh;backgroun
 // the player never had, and every landmark is then measured against the wrong aspect ratio.
 const PAGE_CSS = `body { margin: 0; background: #0000ff; }
 #guest { position: absolute; left: 0; top: 0; display: inline-flex; width: 640px; height: 360px; }
+#guest.resized { width: 500px; height: 400px; }
 #cover { position: absolute; left: 0; top: 0; width: 640px; height: 120px; background: #ff0000; }
 #filter { position: absolute; left: 0; top: 400px; }`
 const PAGE = `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${CSP}" />
@@ -57,8 +58,7 @@ app.whenReady().then(async () => {
   // the capture, not YouTube.
   session.defaultSession.protocol.handle('svp-youtube', async () => new Response(GUEST, {headers: {'Content-Type': 'text/html'}}))
   ipcMain.handle('youtube:capture', (event, guestId) => captureGuest(event, guestId))
-  // Hidden on purpose: capturePage() on a guest works whether or not the window is on screen, which
-  // is one of the reasons the player is a webview.
+  // Hidden on purpose: tab capture of a guest works without showing a test window.
   const win = new BrowserWindow({show: false, width: 900, height: 820, webPreferences: {preload: path.join(root, 'main', 'preload.js'), backgroundThrottling: false, autoplayPolicy: 'no-user-gesture-required', webviewTag: true}})
   guardWebviews(win.webContents)
   win.webContents.setAudioMuted(true)
@@ -154,13 +154,14 @@ app.whenReady().then(async () => {
     await until('Boolean(window.started)', 'MediaPipe loads')
     const started = await run('window.started')
     assert.equal(started.ok, true, `the face landmarker did not load: ${started.error}`)
-    say('PASS: MediaPipe loads under the app CSP, with the model served over svp-vision://')
+    say('PASS: MediaPipe loads in a worker under the app CSP, with the model served over svp-vision://')
 
     // ---- 2. Detection runs on real frames without throwing. A stripe pattern has no face in it,
     // so finding none is the correct answer; what is being checked is that it completes.
-    await pause(600)
-    const detected = await run('({error: String(window.tracker.error || ""), faces: window.tracker.visible().length})')
+    await until('window.tracker.stats.frames > 0 || window.tracker.error', 'worker completes its first inference')
+    const detected = await run('({error: String(window.tracker.error || ""), faces: window.tracker.visible().length, frames: window.tracker.stats.frames})')
     assert.equal(detected.error, '', `detection threw: ${detected.error}`)
+    assert.ok(detected.frames > 0, 'the worker never completed inference')
     say(`PASS: detectForVideo runs on live frames (${detected.faces} faces in a test pattern, as expected)`)
 
     // ---- 3. The shader compiles and the warp actually puts pixels on the canvas.
@@ -294,7 +295,10 @@ app.whenReady().then(async () => {
       (() => {
         const frame = window.capture.video
         const w = frame.videoWidth, h = frame.videoHeight
-        const c = frame.getContext('2d', {willReadFrequently: true})
+        const canvas = document.createElement('canvas')
+        canvas.width = w; canvas.height = h
+        const c = canvas.getContext('2d', {willReadFrequently: true})
+        c.drawImage(frame, 0, 0)
         const {data} = c.getImageData(0, 0, w, h)
         let guest = 0, cover = 0, page = 0
         for (let i = 0; i < data.length; i += 4) {
@@ -318,7 +322,26 @@ app.whenReady().then(async () => {
     assert.equal(stranger, null, "captureGuest photographed a webContents that is not this window's guest")
     say("PASS: a capture request for anything but the caller's own player is refused")
 
-    await run('window.capture.stop()')
+    await run("document.getElementById('guest').classList.add('resized')")
+    await until('Math.abs(window.capture.video.videoWidth / window.capture.video.videoHeight - 1.25) < 0.03', 'capture follows a resized guest')
+    const resized = await run(`(() => {
+      const v = window.capture.video, c = document.createElement('canvas')
+      c.width = 100; c.height = 100
+      const ctx = c.getContext('2d'); ctx.drawImage(v, 0, 0, 100, 100)
+      const pixels = ctx.getImageData(0, 0, 100, 100).data
+      let orange = 0
+      for (let i = 0; i < pixels.length; i += 4) if (pixels[i] > 150 && pixels[i+1] > 80 && pixels[i+2] < 100) orange++
+      return orange / 10000
+    })()`)
+    assert.ok(resized > 0.95, `resized tab capture added letterboxing: ${resized}`)
+    say('PASS: video capture follows guest resizing without adding letterboxing')
+
+    const stopped = await run(`(() => {
+      const tracks = window.capture.video.srcObject.getTracks()
+      window.capture.stop(); window.tracker.close()
+      return tracks.every(t => t.readyState === 'ended') && window.capture.video.srcObject === null
+    })()`)
+    assert.ok(stopped, 'capture tracks were not released')
 
     say('')
     say('All filter checks passed. Two things are deliberately not covered: whether MediaPipe finds')

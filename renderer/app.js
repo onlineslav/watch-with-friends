@@ -1644,7 +1644,7 @@ function setPeopleOpen(open) {
 // Whoever changes it last wins, ordered by revision like the whiteboard's clear, so the choice
 // survives the host leaving.
 
-const filters = {renderer: null, tracker: null, capture: null, capturing: false, guestId: null, source: null, installed: null, retryAt: 0, attempts: 0}
+const filters = {renderer: null, tracker: null, capture: null, capturing: false, captureGeneration: 0, guestId: null, source: null, installed: null, retryAt: 0, attempts: 0}
 
 // Reaching the YouTube picture can fail for reasons that pass on their own: the player has not
 // painted its first frame yet, or it is being reopened. None of those mean the filter was a
@@ -1669,6 +1669,7 @@ function teardownFilters() {
 }
 
 function releaseCapture() {
+  filters.captureGeneration++
   filters.capture?.stop()
   filters.capture = null
   filters.capturing = false
@@ -1699,13 +1700,16 @@ function filterSource() {
   if (youtube.videoId) {
     // A reopened player is a new guest, so the capture pointed at the old one is finished.
     if (filters.guestId && filters.guestId !== youtube.guestId) releaseCapture()
+    if (filters.capture && !filters.capture.active) releaseCapture()
     if (filters.capture) return filters.capture.video
     if (youtube.guestId && !filters.capturing && performance.now() >= filters.retryAt) {
       filters.capturing = true
       const guestId = youtube.guestId
+      filters.guestId = guestId
+      const generation = filters.captureGeneration
       captureGuest(guestId)
         .then((capture) => {
-          if (!session.filter || youtube.guestId !== guestId) return capture.stop()
+          if (generation !== filters.captureGeneration || !session.filter || youtube.guestId !== guestId) return capture.stop()
           filters.capture = capture
           filters.guestId = guestId
           filters.attempts = 0
@@ -1713,6 +1717,7 @@ function filterSource() {
           ui.filterToggle.title = 'Face filters'
         })
         .catch(() => {
+          if (generation !== filters.captureGeneration) return
           // Keep the filter on and come back to it. Say nothing for the first few tries, then mark
           // the button rather than interrupting with a message over the video.
           filters.attempts++
@@ -1722,7 +1727,7 @@ function filterSource() {
             ui.filterToggle.title = 'Face filters are waiting for the YouTube player to start.'
           }
         })
-        .finally(() => (filters.capturing = false))
+        .finally(() => { if (generation === filters.captureGeneration) filters.capturing = false })
     }
     return null
   }
@@ -1731,23 +1736,30 @@ function filterSource() {
 }
 
 // Runs every frame while a filter is on, and returns immediately when one is not. Detection is not
-// done here: the tracker runs on its own slower clock and this only draws what it last found.
+// done here: a worker processes new video frames while this draws the latest available landmarks.
 function drawFilters() {
   requestAnimationFrame(drawFilters)
   const filter = session.filter && FILTERS[session.filter]
   if (!filter || !canFilter()) return teardownFilters()
   const source = filterSource()
   if (!source?.videoWidth) {
+    if (filters.source) filters.tracker?.stop()
+    filters.source = null
     ui.filterCanvas.hidden = true
     return
   }
   if (filters.source !== source) {
     filters.source = source
     filters.tracker ||= new FaceTracker()
-    filters.tracker.start(source).then((started) => {
-      if (!started && filters.source === source) filterUnavailable(`Face filters could not start: ${errorMessage(filters.tracker.error)}`)
+    const starting = filters.tracker.start(source)
+    const generation = filters.tracker.generation
+    starting.then((started) => {
+      if (!started && filters.source === source && filters.tracker.generation === generation) {
+        filterUnavailable(`Face filters could not start: ${errorMessage(filters.tracker.error)}`)
+      }
     })
   }
+  if (filters.tracker?.error) return filterUnavailable(`Face tracking stopped: ${errorMessage(filters.tracker.error)}`)
   if (!filters.renderer) {
     try {
       filters.renderer = new FilterRenderer(ui.filterCanvas)
@@ -1756,7 +1768,11 @@ function drawFilters() {
     }
   }
   const dpr = window.devicePixelRatio || 1
-  const rect = currentPictureRect()
+  // A guest capture includes YouTube's own letterboxing, so its coordinates cover the entire
+  // player element. Applying the picture's letterbox a second time shifts and shrinks the mesh.
+  const rect = youtube.videoId
+    ? {x: ui.youtubePlayer.offsetLeft, y: ui.youtubePlayer.offsetTop, width: ui.youtubePlayer.clientWidth, height: ui.youtubePlayer.clientHeight}
+    : currentPictureRect()
   filters.renderer.resize(Math.round(ui.stage.clientWidth * dpr), Math.round(ui.stage.clientHeight * dpr))
   ui.filterCanvas.hidden = false
   filters.renderer.draw(source, filters.tracker.visible(), filter, {

@@ -34,7 +34,7 @@ export class YouTubePlayer extends EventTarget {
 
   ensureFrame() {
     if (this.frame) return
-    // A <webview>, not an <iframe>: capturePage() on a webview guest returns the guest's own
+    // A <webview>, not an <iframe>: tab capture of a webview guest returns the guest's own
     // pixels and excludes what this app paints over the player, which is what the face filters
     // need. It costs the handshake below, because the guest is then a top-level document.
     const frame = document.createElement('webview')

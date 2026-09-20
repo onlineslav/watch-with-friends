@@ -9,6 +9,7 @@ const path = require('node:path')
 // Nothing here is user-supplied: the file list is fixed, so a renderer cannot ask for anything else.
 
 const ASSETS = {
+  'face-worker.js': 'text/javascript',
   'vision_wasm_internal.js': 'text/javascript',
   'vision_wasm_internal.wasm': 'application/wasm',
   'face_landmarker.task': 'application/octet-stream',

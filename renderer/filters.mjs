@@ -312,7 +312,7 @@ export function buildMesh(filter, landmarks, aspect, n = GRID, out = null) {
 }
 
 // ---------- Smoothing ----------
-// Raw landmarks jitter, and detection runs far slower than the screen refreshes. Smoothing the
+// Raw landmarks jitter, and detection can run slower than the screen refreshes. Smoothing the
 // rigid pose slowly and the expression on top of it quickly is what makes a filter look locked to
 // the face instead of swimming over it: the head's position is the part that must not wobble, and
 // it is also the part that genuinely moves slowly.
@@ -426,7 +426,7 @@ export function grayscale(rgba) {
 }
 
 // ---------- Holding a face between detections ----------
-// Detection runs at a fraction of the frame rate and drops out over profiles, dark scenes and fast
+// Detection can skip frames and drops out over profiles, dark scenes and fast
 // motion. A face is kept for HOLD_MS and fades rather than vanishing, which reads as the filter
 // losing grip instead of flickering. A cut drops it immediately.
 

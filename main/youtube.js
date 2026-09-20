@@ -43,13 +43,61 @@ const guests = new Map()
 
 // The face filters read the YouTube picture back out of the player. Capturing the guest rather
 // than the window is the point: the guest has never had this app's filter canvas drawn over it, so
-// the detector measures the real face instead of one this app already warped. It also works while
-// the window is covered or minimized, which capturing the window did not.
+// the detector measures the real face instead of one this app already warped.
+//
+// How the frame is taken matters as much as which surface it comes from. `capturePage()` asks the
+// compositor to produce a frame on demand, and asking fifteen times a second makes the visible
+// window blink — this is measured, not inferred: with the app alone the picture is steady, and a
+// capturePage loop on either the window or the guest makes it flicker whether the video is playing
+// or paused. That is the whole of the "the screen keeps flashing" report, and it only ever
+// happened with a filter on, because nothing else reads the picture.
+//
+// A frame subscription takes the frames the compositor has already made instead, so nothing is
+// forced and nothing flashes. `devtools/face-filters/app-flash-check.js --watch` is the harness
+// that separated the two.
+const feeds = new Map()
+
+// A filter being switched off just stops the requests; nothing announces it. The subscription ends
+// itself once nobody has asked for a frame in a while.
+const FEED_IDLE_MS = 3000
+
+function feedFor(guest) {
+  const existing = feeds.get(guest.id)
+  if (existing) return existing
+  const feed = {image: null, at: Date.now(), timer: null}
+  const stop = () => {
+    clearInterval(feed.timer)
+    if (feeds.get(guest.id) === feed) feeds.delete(guest.id)
+    if (!guest.isDestroyed()) {
+      try { guest.endFrameSubscription() } catch {}
+    }
+  }
+  feeds.set(guest.id, feed)
+  guest.beginFrameSubscription(false, (image) => (feed.image = image))
+  guest.once('destroyed', stop)
+  feed.timer = setInterval(() => {
+    if (Date.now() - feed.at > FEED_IDLE_MS) stop()
+  }, 1000)
+  return feed
+}
+
 async function captureGuest(event, guestId) {
   if (!Number.isInteger(guestId) || guests.get(guestId) !== event.sender) return null
   const guest = webContents.fromId(guestId)
   if (!guest || guest.isDestroyed() || !guest.getURL().startsWith('svp-youtube://player/')) return null
-  const image = await guest.capturePage()
+  const feed = feedFor(guest)
+  feed.at = Date.now()
+  // Only when there is nothing at all to hand back. A surface that is not being composited —
+  // paused, covered, minimized — produces no frames, and one forced capture seeds the feed; a
+  // paused picture is then held, which is correct, because the held frame still is the picture.
+  // Forcing one here cannot bring the flicker back: what flickered was doing it repeatedly, and
+  // after the first frame this stops happening.
+  if (!feed.image) {
+    const forced = await guest.capturePage().catch(() => null)
+    if (forced && !feed.image) feed.image = forced
+  }
+  const image = feed.image
+  if (!image) return null
   const {width, height} = image.getSize()
   // toBitmap, not getBitmap: the buffer is serialized for IPC after this tick, and getBitmap's is
   // only valid within it.

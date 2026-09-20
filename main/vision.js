@@ -37,13 +37,6 @@ function registerVision(target = session.defaultSession) {
       return new Response('', {status: 404})
     }
   })
-
-  // Face filters read the picture back out of the window to find faces in it. Only the app's own
-  // top-level page may do that, and only of itself — never another window or the screen.
-  target.setDisplayMediaRequestHandler((request, callback) => {
-    if (request.frame && request.frame === request.frame.top) callback({video: request.frame})
-    else callback()
-  })
 }
 
 // Whether the assets are actually on disk, so the renderer can disable the filters up front instead

@@ -1,12 +1,12 @@
 // Finding faces in whatever is on screen. Everything impure about the filters lives here: loading
-// MediaPipe, running it on a schedule, and getting pixels out of a YouTube iframe. The maths it
+// MediaPipe, running it on a schedule, and getting pixels out of the YouTube player. The maths it
 // feeds is all in filters.mjs.
 //
 // Detection is deliberately slow and small — a few times a second, on a downscaled frame — because
 // the cost scales with pixels and rate, and the renderer interpolates between results anyway.
 // Nothing here runs unless a filter is switched on.
 
-import {HOLD_MS, MAX_FACES, createSmoother, facePose, grayscale, holdOpacity, isCut, resetSmoother, smoothFace, unwarpLandmarks, warpPairs} from './filters.mjs'
+import {HOLD_MS, MAX_FACES, createSmoother, facePose, grayscale, holdOpacity, isCut, resetSmoother, smoothFace} from './filters.mjs'
 
 const ASSETS = 'svp-vision://assets'
 // The longest side the detector ever sees. Its own input is smaller still, so this throws away
@@ -105,7 +105,6 @@ export class FaceTracker {
     this.detecting = false
     // Set to the active filter when the picture being read back already has that filter drawn
     // on it, which is the case for the YouTube path. Left null everywhere else.
-    this.unwarp = null
     this.canvas = document.createElement('canvas')
     this.context = this.canvas.getContext('2d', {willReadFrequently: false})
     this.thumb = document.createElement('canvas')
@@ -182,7 +181,7 @@ export class FaceTracker {
       const detections = (result?.faceLandmarks || []).slice(0, MAX_FACES)
       const {matched, unmatched} = matchFaces(this.tracked, detections)
       const next = matched.map(({face, landmarks, x, y}) => {
-        face.landmarks = smoothFace(face.smoother, this.correct(landmarks, face), this.aspect, now) || landmarks
+        face.landmarks = smoothFace(face.smoother, landmarks, this.aspect, now) || landmarks
         face.x = x
         face.y = y
         face.at = now
@@ -203,15 +202,6 @@ export class FaceTracker {
     }
   }
 
-  // Takes this app's own warp back out of a reading, using the filter as it stood over the face
-  // last time round. With nothing drawn yet there is nothing to undo.
-  correct(landmarks, face) {
-    if (!this.unwarp || !face.landmarks) return landmarks
-    const pose = facePose(face.landmarks, this.aspect)
-    if (!pose) return landmarks
-    return unwarpLandmarks(landmarks, warpPairs(this.unwarp, face.landmarks, pose, this.aspect), pose, this.aspect)
-  }
-
   // What to draw right now: the last known faces, fading out if detection has lost them. Called
   // every rendered frame, so it does no work beyond reading the clock.
   visible(now = performance.now()) {
@@ -225,49 +215,73 @@ export class FaceTracker {
 }
 
 // ---------- Getting at the YouTube picture ----------
-// A YouTube video plays inside a cross-origin iframe, so its pixels cannot be read the way a
-// <video> can. Capturing the app's own window gets them back: Element Capture narrows the capture
-// to one element and drops anything drawn over it, which matters because the filter canvas sits
-// directly on top and would otherwise be fed back into the detector.
+// A YouTube video plays inside a cross-origin frame, so its pixels cannot be read the way a
+// <video> can. The player is a <webview> for exactly this: capturePage() on the guest returns the
+// guest's own pixels, so what comes back has never had this app's filter canvas over it. Capturing
+// the window instead fed the warp its own output and the face smeared to a blob within a second.
 
-export async function captureElement(element) {
-  if (typeof CropTarget === 'undefined') throw new Error('This build cannot capture the YouTube picture')
-  const stream = await navigator.mediaDevices.getDisplayMedia({
-    video: {frameRate: DETECT_HZ},
-    audio: false,
-    preferCurrentTab: true,
-    selfBrowserSurface: 'include',
-    systemAudio: 'exclude',
-  })
-  const [track] = stream.getVideoTracks()
-  try {
-    await track.cropTo(await CropTarget.fromElement(element))
-  } catch (error) {
-    stream.getTracks().forEach((t) => t.stop())
-    throw error
+// Frames arrive as BGRA, which is what the platform hands back; a canvas wants RGBA. Swapping the
+// red and blue byte of each pixel as a 32-bit word is a few milliseconds for a full frame, where
+// encoding to PNG in the main process costs more than the capture itself.
+function toRgba({width, height, bitmap}) {
+  const bytes = bitmap.byteOffset % 4 ? bitmap.slice() : bitmap
+  const words = new Uint32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength >> 2)
+  for (let i = 0; i < words.length; i++) {
+    const pixel = words[i]
+    words[i] = (pixel & 0xff00ff00) | ((pixel & 0x000000ff) << 16) | ((pixel & 0x00ff0000) >>> 16)
   }
-  const video = document.createElement('video')
-  video.muted = true
-  video.playsInline = true
-  video.srcObject = stream
-  // Deliberately not awaited. play() on a detached element fed by a capture track can stay pending
-  // indefinitely rather than resolving or rejecting, and awaiting it would hang the whole filter on
-  // the YouTube path. Waiting for a frame to arrive is the reliable signal instead.
-  video.play().catch(() => {})
+  return new ImageData(new Uint8ClampedArray(bytes.buffer, bytes.byteOffset, bytes.byteLength), width, height)
+}
+
+// Stands in for the <video> the local and remote paths use: the tracker and the warp renderer only
+// ask a source for videoWidth/videoHeight and to be drawable.
+export async function captureGuest(guestId, capturePage = (id) => window.api.captureYouTube(id)) {
+  const canvas = document.createElement('canvas')
+  const context = canvas.getContext('2d')
+  Object.defineProperties(canvas, {
+    videoWidth: {get: () => canvas.width},
+    videoHeight: {get: () => canvas.height},
+  })
+  let stopped = false
+  let timer = null
   const capture = {
-    video,
+    video: canvas,
     stop() {
-      stream.getTracks().forEach((t) => t.stop())
-      video.srcObject = null
+      stopped = true
+      clearTimeout(timer)
     },
   }
-  // A capture that is set up correctly can still deliver nothing — the window has to be on screen
-  // and not wholly covered for the compositor to produce frames at all. Give it a moment, then say
-  // so plainly rather than leaving a filter switched on that will never draw anything.
+  // One capture at a time, scheduled after the last one landed rather than on a fixed interval, so
+  // a slow frame queues nothing up behind it.
+  const pull = async () => {
+    let frame = null
+    try { frame = await capturePage(guestId) } catch {}
+    if (stopped) return false
+    if (frame?.width) {
+      if (canvas.width !== frame.width || canvas.height !== frame.height) {
+        canvas.width = frame.width
+        canvas.height = frame.height
+      }
+      context.putImageData(toRgba(frame), 0, 0)
+    }
+    return Boolean(frame?.width)
+  }
+  const loop = async () => {
+    const started = performance.now()
+    await pull()
+    if (stopped) return
+    timer = setTimeout(loop, Math.max(0, 1000 / DETECT_HZ - (performance.now() - started)))
+  }
+  // A guest that has not painted yet returns nothing, which is ordinary a moment after the player
+  // opens. Say so plainly rather than leaving a filter switched on that will never draw anything.
   for (let waited = 0; waited < CAPTURE_TIMEOUT_MS; waited += 100) {
-    if (video.videoWidth) return capture
+    if (stopped) return capture
+    if (await pull()) {
+      loop()
+      return capture
+    }
     await new Promise((resolve) => setTimeout(resolve, 100))
   }
   capture.stop()
-  throw new Error('no picture came back from the window — it may be minimized or covered')
+  throw new Error('no picture came back from the YouTube player yet')
 }

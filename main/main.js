@@ -7,7 +7,7 @@ const updater = require('./updater')
 const {focusWindow} = require('./startup')
 const {watchZoom, zoomFactor} = require('./zoom')
 const IMAGES = require('../shared/images.json')
-const {prepareYouTube, registerYouTube, youTubeTitles} = require('./youtube')
+const {prepareYouTube, registerYouTube, guardWebviews, captureGuest, youTubeTitles} = require('./youtube')
 const {prepareVision, registerVision, visionReady} = require('./vision')
 
 const MEDIA_EXTENSIONS = [
@@ -35,8 +35,11 @@ function createWindow() {
       // The host keeps streaming while its window is minimized or behind other windows.
       backgroundThrottling: false,
       autoplayPolicy: 'no-user-gesture-required',
+      // The YouTube player is a <webview>; guardWebviews below keeps that to the player's page.
+      webviewTag: true,
     },
   })
+  guardWebviews(win.webContents)
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'))
   watchZoom(win.webContents)
   return win
@@ -56,6 +59,7 @@ function registerIpc() {
   ipcMain.handle('app:version', () => app.getVersion())
   ipcMain.handle('app:open-project', () => shell.openExternal('https://github.com/onlineslav/watch-with-friends'))
   ipcMain.handle('youtube:titles', (_event, ids) => youTubeTitles(ids))
+  ipcMain.handle('youtube:capture', (event, guestId) => captureGuest(event, guestId))
   ipcMain.handle('vision:ready', () => visionReady())
   ipcMain.handle('dialog:media', (event) => pickFile(event, 'Media', MEDIA_EXTENSIONS))
   ipcMain.handle('dialog:media-files', (event) => pickFiles(event, 'Media', MEDIA_EXTENSIONS, true))

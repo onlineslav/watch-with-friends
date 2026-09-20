@@ -300,27 +300,6 @@ export function buildMesh(filter, landmarks, aspect, n = GRID, out = null) {
   return mesh
 }
 
-// ---------- Undoing this app's own warp ----------
-// The YouTube picture is read back out of the app's own window, and that window already has the
-// filter drawn on it. So a detection made from it measures a face this app has itself widened, and
-// building the next warp on that measurement compounds it — a jaw that grows every frame until it
-// leaves the screen.
-//
-// The backward field is exactly the inverse that is wanted: it takes a point in the warped picture
-// and says where it came from. Undoing the warp is therefore one evaluation per landmark, not the
-// fixed-point search a forward field needs.
-
-export function unwarpLandmarks(landmarks, pairs, pose, aspect) {
-  if (!pose || !pairs?.n) return landmarks
-  return landmarks.map((point) => {
-    const [mx, my] = toLocal(pose, point.x, point.y, aspect)
-    const [lx, ly] = sourceAt(pairs, mx, my)
-    if (lx === mx && ly === my) return point
-    const [wx, wy] = toWorld(pose, lx, ly, aspect)
-    return {x: wx, y: wy}
-  })
-}
-
 // ---------- Smoothing ----------
 // Raw landmarks jitter, and detection runs far slower than the screen refreshes. Smoothing the
 // rigid pose slowly and the expression on top of it quickly is what makes a filter look locked to

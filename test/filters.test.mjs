@@ -20,7 +20,6 @@ import {
   sourceAt,
   toLocal,
   toWorld,
-  unwarpLandmarks,
   warpPairs,
 } from '../renderer/filters.mjs'
 
@@ -56,10 +55,6 @@ function makeFace({x = 0.5, y = 0.42, scale = 0.14, roll = 0} = {}) {
 }
 
 const close = (a, b, tolerance = 1e-6) => Math.abs(a - b) <= tolerance
-
-// The deformation is solved backwards, so tests that want to ask "where does this pixel end up"
-// rather than "where did it come from" swap the two sides and solve it the other way round.
-const forward = (pairs) => ({p: pairs.q, q: pairs.p, n: pairs.n, weights: new Float64Array(pairs.n)})
 
 test('the pose recovers the scale and roll the face was built with', () => {
   for (const roll of [0, 0.3, -0.55]) {
@@ -241,47 +236,3 @@ test('only known filter ids cross the room boundary', () => {
   assert.equal(cleanFilterId({}), null)
 })
 
-test('unwarping recovers a face this app had already warped', () => {
-  // What the YouTube path faces: the picture read back has the filter on it, so the same landmarks
-  // that built the warp must come back out of a reading taken through it.
-  const {landmarks, pose} = makeFace()
-  const pairs = warpPairs(FILTERS.chad, landmarks, pose, ASPECT)
-  const ahead = forward(pairs)
-  const warped = landmarks.map((p) => {
-    const [lx, ly] = toLocal(pose, p.x, p.y, ASPECT)
-    const [wx, wy] = sourceAt(ahead, lx, ly)
-    const [ix, iy] = toWorld(pose, wx, wy, ASPECT)
-    return {x: ix, y: iy}
-  })
-  const recovered = unwarpLandmarks(warped, pairs, pose, ASPECT)
-  let worst = 0
-  for (const index of [172, 136, 152, 234, 33, 263]) {
-    const [tx, ty] = toLocal(pose, landmarks[index].x, landmarks[index].y, ASPECT)
-    const [rx, ry] = toLocal(pose, recovered[index].x, recovered[index].y, ASPECT)
-    worst = Math.max(worst, Math.hypot(rx - tx, ry - ty))
-  }
-  // Forwards and backwards are two separate fits rather than exact inverses, so a little is left
-  // over. What matters is that it is far smaller than the displacement, so repeated frames settle
-  // instead of running away.
-  assert.ok(worst < 0.05, `unwarp should land back near the real face, off by ${worst.toFixed(4)}`)
-})
-
-test('unwarping repeatedly settles instead of running away', () => {
-  // The real loop: every frame warps the already-warped picture and unwarps the reading. If the
-  // correction were missing this would diverge, which is a jaw that grows until it leaves frame.
-  const {landmarks, pose} = makeFace()
-  let current = landmarks
-  for (let frame = 0; frame < 30; frame++) {
-    const pairs = warpPairs(FILTERS.chad, current, pose, ASPECT)
-    const ahead = forward(pairs)
-    const warped = current.map((p) => {
-      const [lx, ly] = toLocal(pose, p.x, p.y, ASPECT)
-      const [wx, wy] = sourceAt(ahead, lx, ly)
-      const [ix, iy] = toWorld(pose, wx, wy, ASPECT)
-      return {x: ix, y: iy}
-    })
-    current = unwarpLandmarks(warped, pairs, pose, ASPECT)
-  }
-  const [jawX] = toLocal(pose, current[172].x, current[172].y, ASPECT)
-  assert.ok(Math.abs(jawX - -0.9) < 0.05, `the jaw should stay put over 30 frames, ended at ${jawX.toFixed(3)}`)
-})

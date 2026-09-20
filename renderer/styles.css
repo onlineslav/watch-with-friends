@@ -2078,7 +2078,9 @@ button:disabled {
   inset: 64px 0 76px;
 }
 
-.youtube-player iframe {
+.youtube-player webview {
+  /* A webview has no intrinsic size. */
+  display: inline-flex;
   width: 100%;
   height: 100%;
   border: 0;

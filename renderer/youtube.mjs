@@ -34,19 +34,27 @@ export class YouTubePlayer extends EventTarget {
 
   ensureFrame() {
     if (this.frame) return
-    const frame = document.createElement('iframe')
+    // A <webview>, not an <iframe>: capturePage() on a webview guest returns the guest's own
+    // pixels and excludes what this app paints over the player, which is what the face filters
+    // need. It costs the handshake below, because the guest is then a top-level document.
+    const frame = document.createElement('webview')
     frame.src = 'svp-youtube://player/index.html'
-    frame.title = 'YouTube video player'
-    frame.allow = 'autoplay; fullscreen; encrypted-media; picture-in-picture'
-    frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-presentation')
+    frame.setAttribute('allowpopups', 'false')
     this.frame = frame
     this.ready = false
+    this.guestId = null
+    frame.addEventListener('dom-ready', () => {
+      if (this.frame !== frame) return
+      this.guestId = frame.getWebContentsId()
+      // The guest can only answer a window that has spoken to it first.
+      frame.contentWindow?.postMessage({channel: 'svp-youtube', token: this.token, command: 'attach'}, '*')
+    })
     this.container.replaceChildren(frame)
     this.timeout = setTimeout(() => this.fail('YouTube did not respond. Check your connection and try again.'), 20000)
   }
 
   post(command, value) {
-    this.frame?.contentWindow.postMessage({channel: 'svp-youtube', token: this.token, command, value}, '*')
+    this.frame?.contentWindow?.postMessage({channel: 'svp-youtube', token: this.token, command, value}, '*')
   }
 
   open(videoId, time = 0, playing = true) {
@@ -66,8 +74,8 @@ export class YouTubePlayer extends EventTarget {
     })
   }
 
-  receive({source, origin, data}) {
-    if (!this.frame || source !== this.frame.contentWindow || origin !== 'svp-youtube://player' || data?.channel !== 'svp-youtube') return
+  receive({origin, data}) {
+    if (!this.frame || origin !== 'svp-youtube://player' || data?.channel !== 'svp-youtube') return
     if (data.type === 'ready') {
       this.ready = true
       this.setVolume(this.volume)
@@ -134,6 +142,7 @@ export class YouTubePlayer extends EventTarget {
     this.importing = null
     this.frame?.remove()
     this.frame = null
+    this.guestId = null
     this.ready = false
     this.token++
     this.reset()

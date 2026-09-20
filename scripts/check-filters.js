@@ -1,12 +1,13 @@
 // Integration check for the face filters. Runs the real modules in a hidden window against the
 // app's own Content-Security-Policy, so it catches the things unit tests cannot: whether the
 // WebAssembly runtime is allowed to load at all, whether the model arrives over svp-vision://,
-// whether the shader compiles, and whether the window can capture itself for the YouTube path.
+// whether the shader compiles, and whether the YouTube player's webview can be photographed.
 //
 // Everything here is local and synthetic. It does not prove MediaPipe finds faces in a film — that
 // is MediaPipe's job, not this code's — it proves the pipeline around it is wired up and running.
-const {app, BrowserWindow} = require('electron')
+const {app, BrowserWindow, ipcMain, session} = require('electron')
 const {prepareVision, registerVision} = require('../main/vision')
+const {prepareYouTube, guardWebviews, captureGuest} = require('../main/youtube')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
@@ -15,6 +16,7 @@ const esbuild = require('esbuild')
 
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'svp-filters-check-'))
 app.setPath('userData', path.join(temporary, 'profile'))
+prepareYouTube()
 prepareVision()
 const root = path.resolve(__dirname, '..')
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -29,20 +31,28 @@ const CSP = fs
   .readFileSync(path.join(root, 'renderer', 'index.html'), 'utf8')
   .match(/content="(default-src[^"]+)"/)[1]
 
-// The capture test needs three distinguishable areas: the element being captured, something drawn
-// over it, and the page around it. Element Capture must return the first and neither of the others.
+// The capture test needs three distinguishable areas: the player's guest, something drawn over it,
+// and the page around it. Capturing the guest must return the first and neither of the others.
+// Orange rather than green for the guest, because green is the one colour a red/blue channel mix-up
+// would leave looking correct.
+const GUEST = '<!doctype html><html><body style="margin:0;height:100vh;background:#ff8000"></body></html>'
 const PAGE = `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${CSP}" />
 </head><body style="margin:0;background:#0000ff">
-<div id="surface" style="position:absolute;left:0;top:0;width:640px;height:360px;isolation:isolate;background:#00cc00"></div>
+<webview id="guest" src="svp-youtube://player/index.html" style="position:absolute;left:0;top:0;display:inline-flex;width:640px;height:360px"></webview>
 <div id="cover" style="position:absolute;left:0;top:0;width:640px;height:120px;background:#ff0000"></div>
 <canvas id="filter" style="position:absolute;left:0;top:400px"></canvas>
 </body></html>`
 
 app.whenReady().then(async () => {
   registerVision()
-  // Visible on purpose: getDisplayMedia never resolves for a window that is not being shown, so a
-  // hidden window would hang this check rather than fail it.
-  const win = new BrowserWindow({show: true, width: 900, height: 820, webPreferences: {backgroundThrottling: false, autoplayPolicy: 'no-user-gesture-required'}})
+  // A stand-in for the real player page: everything here stays local, and what is being checked is
+  // the capture, not YouTube.
+  session.defaultSession.protocol.handle('svp-youtube', async () => new Response(GUEST, {headers: {'Content-Type': 'text/html'}}))
+  ipcMain.handle('youtube:capture', (event, guestId) => captureGuest(event, guestId))
+  // Hidden on purpose: capturePage() on a guest works whether or not the window is on screen, which
+  // is one of the reasons the player is a webview.
+  const win = new BrowserWindow({show: false, width: 900, height: 820, webPreferences: {preload: path.join(root, 'main', 'preload.js'), backgroundThrottling: false, autoplayPolicy: 'no-user-gesture-required', webviewTag: true}})
+  guardWebviews(win.webContents)
   win.webContents.setAudioMuted(true)
   const run = (source) => win.webContents.executeJavaScript(source)
   const until = async (condition, label = condition) => {
@@ -72,11 +82,11 @@ app.whenReady().then(async () => {
     const bundle = await esbuild.build({
       stdin: {
         contents: `
-          import {FaceTracker, captureElement} from './renderer/faces.mjs'
+          import {FaceTracker, captureGuest} from './renderer/faces.mjs'
           import {FilterRenderer} from './renderer/filter-gl.mjs'
           import {FILTERS, buildMesh, toWorld} from './renderer/filters.mjs'
           window.failure = null
-          Object.assign(window, {FaceTracker, captureElement, FilterRenderer, FILTERS, buildMesh, toWorld})
+          Object.assign(window, {FaceTracker, captureGuest, FilterRenderer, FILTERS, buildMesh, toWorld})
 
           // A synthetic "video": a canvas of coloured stripes, streamed into a <video> so it has
           // the videoWidth/videoHeight the pipeline reads. Stripes make a warp visible.
@@ -184,25 +194,28 @@ app.whenReady().then(async () => {
     say(`PASS: the filter shader draws the warp over the face alone (${share.toFixed(1)}% of the canvas, centred at x=${Math.round(centreX)})`)
 
     say('')
-    say('Core filter pipeline verified. Two things are deliberately not covered: whether MediaPipe')
-    say('finds faces in real footage, and whether a cross-origin YouTube iframe survives Element')
-    say('Capture. Play a film, then a YouTube video, with a filter on to confirm those.')
-    say('')
 
-    // ---- 4 and 5. Self-capture, which is what the whole YouTube path stands on. Opt-in, because
-    // the compositor only produces frames while the window is genuinely on screen and not covered:
-    // on a busy desktop or a headless machine this fails for reasons unrelated to this code, and a
-    // check that fails for unrelated reasons is worse than no check.
-    if (!process.argv.includes('--capture')) {
-      say('SKIP: self-capture checks — pass --capture with the window visible and uncovered')
-      return
-    }
-    assert.equal(await run('typeof RestrictionTarget'), 'function', 'this Electron build has no Element Capture')
+    // ---- 4 and 5. Capturing the player's guest, which is what the whole YouTube path stands on.
+    // The guest is orange, a strip drawn over it by the embedder is red, and the page behind it is
+    // blue. Only orange may come back: red proves the filter canvas would be fed into the detector
+    // it came from, and blue proves the capture is the window rather than the guest, which would
+    // put every landmark in the wrong place.
+    const guestId = await run(`
+      new Promise((resolve, reject) => {
+        const guest = document.getElementById('guest')
+        if (guest.getWebContentsId) { try { return resolve(guest.getWebContentsId()) } catch {} }
+        guest.addEventListener('dom-ready', () => resolve(guest.getWebContentsId()), {once: true})
+        setTimeout(() => reject(new Error('the webview never attached')), 10000)
+      })
+    `)
+    assert.ok(Number.isInteger(guestId), 'the player webview did not attach under the app CSP')
+    say(`PASS: the player's webview attaches under the app CSP (guest ${guestId})`)
+
     await run(`
       window.capture = null
       window.captureError = ''
       window.tracker.stop()
-      captureElement(document.getElementById('surface')).then(
+      captureGuest(${guestId}).then(
         (capture) => (window.capture = capture),
         (error) => (window.captureError = String(error)),
       )
@@ -211,45 +224,50 @@ app.whenReady().then(async () => {
       // here for the capture instead of polling for it, and a stall looks like a dead harness.
       null
     `)
-    await until('Boolean(window.capture) || Boolean(window.captureError)', 'self-capture resolves')
+    await until('Boolean(window.capture) || Boolean(window.captureError)', 'the guest capture resolves')
     const captureError = await run('window.captureError || ""')
-    assert.equal(captureError, '', `self-capture failed: ${captureError}`)
-    await until('Boolean(window.capture && window.capture.video.videoWidth > 0)', 'the captured element produces frames')
+    assert.equal(captureError, '', `capturing the guest failed: ${captureError}`)
+    await until('Boolean(window.capture && window.capture.video.videoWidth > 0)', 'the guest produces frames')
+    // The first frame back can be taken mid-layout, at a size the player never actually had. The
+    // aspect ratio is what every landmark position is measured against, so it has to settle on the
+    // shape of the element rather than stay at whatever the attach happened to catch.
+    await until(`Math.abs(window.capture.video.videoWidth / window.capture.video.videoHeight - 640 / 360) < 0.05`,
+      'the captured frame settles on the shape of the player')
 
-    // ---- 5. What the capture actually contains. The target is green, the strip drawn over it is
-    // red, and the page behind it is blue. Only green may come back: red proves the filter canvas
-    // would be fed into the detector it came from, and blue proves the capture is really the whole
-    // window, which would put every landmark in the wrong place.
     const seen = await run(`
-      (async () => {
-        const video = window.capture.video
-        await new Promise((r) => setTimeout(r, 600))
-        const w = video.videoWidth, h = video.videoHeight
-        const canvas = document.createElement('canvas')
-        Object.assign(canvas, {width: w, height: h})
-        const c = canvas.getContext('2d', {willReadFrequently: true})
-        c.drawImage(video, 0, 0)
+      (() => {
+        const frame = window.capture.video
+        const w = frame.videoWidth, h = frame.videoHeight
+        const c = frame.getContext('2d', {willReadFrequently: true})
         const {data} = c.getImageData(0, 0, w, h)
-        let green = 0, red = 0, blue = 0
+        let guest = 0, cover = 0, page = 0
         for (let i = 0; i < data.length; i += 4) {
           const r = data[i], g = data[i + 1], b = data[i + 2]
-          if (g > 150 && r < 100 && b < 100) green++
-          else if (r > 150 && g < 100 && b < 100) red++
-          else if (b > 150 && r < 100 && g < 100) blue++
+          if (r > 150 && g > 80 && g < 180 && b < 100) guest++
+          else if (r > 150 && g < 80 && b < 100) cover++
+          else if (b > 150 && r < 100 && g < 100) page++
         }
         const total = data.length / 4
-        return {w, h, green: (green / total) * 100, red: (red / total) * 100, blue: (blue / total) * 100}
+        return {w, h, guest: (guest / total) * 100, cover: (cover / total) * 100, page: (page / total) * 100}
       })()
     `)
-    assert.ok(seen.green > 95, `the capture is not the target element (${seen.green.toFixed(1)}% of it)`)
-    assert.ok(seen.red < 1, `content drawn over the target leaked into the capture (${seen.red.toFixed(1)}%)`)
-    assert.ok(seen.blue < 1, `the page around the target leaked into the capture (${seen.blue.toFixed(1)}%)`)
-    say(`PASS: Element Capture returns the target alone (${seen.green.toFixed(1)}% target, ${seen.red.toFixed(1)}% occluder, ${seen.blue.toFixed(1)}% page) at ${seen.w}x${seen.h}`)
+    assert.ok(seen.guest > 95, `the capture is not the player's guest (${seen.guest.toFixed(1)}% of it) — a red/blue mix-up looks like this`)
+    assert.ok(seen.cover < 1, `content drawn over the player leaked into the capture (${seen.cover.toFixed(1)}%)`)
+    assert.ok(seen.page < 1, `the page around the player leaked into the capture (${seen.page.toFixed(1)}%)`)
+    say(`PASS: the capture is the guest alone, in the right channel order (${seen.guest.toFixed(1)}% guest, ${seen.cover.toFixed(1)}% occluder, ${seen.page.toFixed(1)}% page) at ${seen.w}x${seen.h}`)
+
+    // A guest belonging to no window at all must be refused, or any renderer could photograph any
+    // other window's contents.
+    const stranger = await captureGuest({sender: win.webContents}, guestId + 1000)
+    assert.equal(stranger, null, "captureGuest photographed a webContents that is not this window's guest")
+    say("PASS: a capture request for anything but the caller's own player is refused")
+
     await run('window.capture.stop()')
 
-    say('\nAll filter checks passed. One thing is not covered here: whether a cross-origin')
-    say('YouTube iframe inside the captured element survives. Play a YouTube video in the')
-    say('app with a filter on to confirm that.')
+    say('')
+    say('All filter checks passed. Two things are deliberately not covered: whether MediaPipe finds')
+    say('faces in real footage, and whether a real YouTube video inside the guest is captured the')
+    say('same way as this stand-in. Play a film, then a YouTube video, with a filter on.')
   } finally {
     win.destroy()
   }

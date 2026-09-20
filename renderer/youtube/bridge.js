@@ -1,7 +1,18 @@
 // This page has its own origin and no IPC access. Only bounded player commands are accepted.
 let player
 let token = null
-const send = (type, value) => parent.postMessage({channel: 'svp-youtube', token, type, value}, '*')
+// In an <iframe> the embedder is `parent`. This page is loaded in a <webview>, so it is a
+// top-level document: `parent` is this window itself and the embedder is only reachable as the
+// source of the message it sends on attach.
+let host = parent === window ? null : parent
+const queued = []
+const send = (type, value) => {
+  const message = {channel: 'svp-youtube', token, type, value}
+  // Before the embedder has spoken, keep the one-shot events and drop the periodic reports:
+  // another one follows in 250ms.
+  if (!host) { if (type !== 'state' && queued.length < 8) queued.push(message); return }
+  host.postMessage(message, '*')
+}
 const videoId = (value) => typeof value === 'string' && /^[\w-]{11}$/.test(value)
 const seconds = (value) => Number.isFinite(value) && value >= 0 && value <= 1e9
 let importing = false
@@ -32,7 +43,9 @@ window.onYouTubeIframeAPIReady = () => {
 }
 
 window.addEventListener('message', ({source, data}) => {
-  if (source !== parent || data?.channel !== 'svp-youtube' || !player?.cueVideoById) return
+  if (data?.channel !== 'svp-youtube' || (host ? source !== host : source === window)) return
+  if (!host) { host = source; for (const message of queued.splice(0)) host.postMessage(message, '*') }
+  if (!player?.cueVideoById) return
   const {command, value} = data
   if (command === 'load' && videoId(value?.videoId) && seconds(value?.time)) {
     token = data.token

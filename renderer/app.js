@@ -28,7 +28,7 @@ import {RoomHistory} from './room-history.mjs'
 import {RoomPresence} from './room-presence.mjs'
 import {drawConfetti, launchConfetti, stepConfetti} from './confetti.mjs'
 import {FILTERS, FILTER_IDS, cleanFilterId} from './filters.mjs'
-import {FaceTracker, captureElement} from './faces.mjs'
+import {FaceTracker, captureGuest} from './faces.mjs'
 import {FilterRenderer} from './filter-gl.mjs'
 import {REACTIONS, createRateLimiter, playReactionSound} from './reactions.mjs'
 import {clampZoom, stepZoom, parseZoom, formatZoom, zoomPercent, MIN_ZOOM, MAX_ZOOM, DEFAULT_ZOOM} from './zoom.mjs'
@@ -1644,10 +1644,10 @@ function setPeopleOpen(open) {
 // Whoever changes it last wins, ordered by revision like the whiteboard's clear, so the choice
 // survives the host leaving.
 
-const filters = {renderer: null, tracker: null, capture: null, capturing: false, source: null, installed: null, retryAt: 0, attempts: 0}
+const filters = {renderer: null, tracker: null, capture: null, capturing: false, guestId: null, source: null, installed: null, retryAt: 0, attempts: 0}
 
-// Reaching the YouTube picture can fail for reasons that pass on their own: the window is covered or
-// minimized, or the player has not painted its first frame yet. None of those mean the filter was a
+// Reaching the YouTube picture can fail for reasons that pass on their own: the player has not
+// painted its first frame yet, or it is being reopened. None of those mean the filter was a
 // mistake, so it stays chosen and keeps trying, backing off so a genuinely dead path is not retried
 // in a tight loop.
 const CAPTURE_RETRY_MS = 600
@@ -1659,14 +1659,7 @@ const filterOpen = () => ui.room.classList.contains('filter-open')
 
 // Filters need a moving picture. A still photograph has nothing to track, and there is no point
 // running the detector before any media is open.
-// Not on YouTube. Reaching that picture means capturing this app's own window, and the window
-// already has the filter drawn on it — so the texture the warp samples is a picture this app warped
-// last frame, and frame N shows the picture warped N times. `unwarpLandmarks` fixes the *landmark*
-// side of that loop (measured jaw width converges and stays put) and does nothing about the pixels,
-// which smear to a featureless blob within a second. Composing the two maps would fix it properly:
-// sample the capture at prevForward(newSource(v)) rather than at newSource(v). Until that exists,
-// the button is off here rather than shipping something that destroys the picture.
-const canFilter = () => session.role !== 'idle' && !shownImage() && !session.mediaError && !youtube.videoId
+const canFilter = () => session.role !== 'idle' && !shownImage() && !session.mediaError
 
 function teardownFilters() {
   filters.tracker?.stop()
@@ -1679,6 +1672,7 @@ function releaseCapture() {
   filters.capture?.stop()
   filters.capture = null
   filters.capturing = false
+  filters.guestId = null
   filters.retryAt = 0
   filters.attempts = 0
   if (ui.filterToggle) {
@@ -1697,18 +1691,23 @@ function filterUnavailable(message) {
   renderFilterTools()
 }
 
-// The <video> holding the picture to look for faces in. YouTube plays inside a cross-origin iframe
-// whose pixels are out of reach, so there the app captures its own window instead. Returning null
-// only means there is nothing to look at this frame; the filter stays on and this is asked again.
+// The <video> holding the picture to look for faces in. YouTube plays inside a cross-origin frame
+// whose pixels are out of reach, so there the app captures the player's webview guest instead.
+// Returning null only means there is nothing to look at this frame; the filter stays on and this is
+// asked again.
 function filterSource() {
   if (youtube.videoId) {
+    // A reopened player is a new guest, so the capture pointed at the old one is finished.
+    if (filters.guestId && filters.guestId !== youtube.guestId) releaseCapture()
     if (filters.capture) return filters.capture.video
-    if (!filters.capturing && performance.now() >= filters.retryAt) {
+    if (youtube.guestId && !filters.capturing && performance.now() >= filters.retryAt) {
       filters.capturing = true
-      captureElement(ui.youtubePlayer)
+      const guestId = youtube.guestId
+      captureGuest(guestId)
         .then((capture) => {
-          if (!session.filter || !youtube.videoId) return capture.stop()
+          if (!session.filter || youtube.guestId !== guestId) return capture.stop()
           filters.capture = capture
+          filters.guestId = guestId
           filters.attempts = 0
           ui.filterToggle.classList.remove('waiting')
           ui.filterToggle.title = 'Face filters'
@@ -1720,7 +1719,7 @@ function filterSource() {
           filters.retryAt = performance.now() + Math.min(CAPTURE_RETRY_MAX_MS, CAPTURE_RETRY_MS * filters.attempts)
           if (filters.attempts >= CAPTURE_QUIET_ATTEMPTS) {
             ui.filterToggle.classList.add('waiting')
-            ui.filterToggle.title = 'Face filters are waiting for the YouTube picture. Bring the window to the front if it is covered.'
+            ui.filterToggle.title = 'Face filters are waiting for the YouTube player to start.'
           }
         })
         .finally(() => (filters.capturing = false))
@@ -1742,9 +1741,6 @@ function drawFilters() {
     ui.filterCanvas.hidden = true
     return
   }
-  // The YouTube picture is read back out of this window, which already has the filter drawn on it,
-  // so the detector has to take its own warp back out of what it measures. Nothing else does.
-  if (filters.tracker) filters.tracker.unwarp = youtube.videoId ? filter : null
   if (filters.source !== source) {
     filters.source = source
     filters.tracker ||= new FaceTracker()
@@ -1813,8 +1809,7 @@ function renderFilterTools() {
   ui.filterToggle.setAttribute('aria-pressed', String(filterOpen()))
   ui.filterToggle.classList.toggle('active', Boolean(session.filter))
   ui.filterToggle.disabled = !canFilter()
-  if (youtube.videoId) ui.filterToggle.title = 'Face filters are not available for YouTube videos yet'
-  else if (!ui.filterToggle.classList.contains('waiting')) ui.filterToggle.title = 'Face filters'
+  if (!ui.filterToggle.classList.contains('waiting')) ui.filterToggle.title = 'Face filters'
 }
 
 function setFilterOpen(open) {

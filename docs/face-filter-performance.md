@@ -86,3 +86,66 @@ packaged worker under `renderer/vision/`.
 Regression checks cover one in-flight frame, duplicate-frame suppression, stale results after
 source changes, pause/hold/fade, worker errors, closing during startup, actual worker inference
 under the app CSP, filter pixels, guest-only capture, resize aspect ratio, and capture cleanup.
+
+## Follow-up: reduce tracking lag
+
+The next bottleneck was the smoothing response, even at an adequate detection rate. The previous
+pose filter estimated velocity from its **filtered** position rather than its previous raw sample.
+Its translation lead could overshoot when a person stopped, while size and head roll had slow
+smoothing without that compensation. A size change took roughly a quarter second to settle.
+
+The smoother now uses successive raw samples for velocity, adapts its cutoff more strongly to
+motion, and measures translation/size motion relative to eye distance. Small faces and close-ups
+therefore have comparable responsiveness. It retains damping at rest and removes the old lead
+term. Expression smoothing is also faster. Histories reset after a tracking gap over 200 ms.
+The tuning follows the speed/jitter tradeoff described by the
+[One Euro filter authors](https://gery.casiez.net/1euro/).
+
+Controlled trajectories compared with commit `45365b9`, using 478 landmarks, a 16:9 frame,
+eye distance 0.2 in aspect-correct coordinates, at 30 and 60 samples/s:
+
+| Tracking measurement | Before, 30 / 60 Hz | After, 30 / 60 Hz |
+| --- | ---: | ---: |
+| Mean horizontal error during steady motion, fraction of frame width | 0.00782 / 0.01074 | 0.00209 / 0.00209 |
+| Maximum position error from the stop sample onward | 0.03190 / 0.03321 | 0.00209 / 0.00209 |
+| Time to reach 90% of a 50% size increase | 267 / 217 ms | 33 / 17 ms |
+| Time to reach 90% of a 0.5-radian head turn | 167 / 133 ms | 0 / 17 ms |
+
+Motion advances 0.3 frame widths/s for 45 samples then stops; mean error uses samples 11–44.
+The step tests change on sample 10 after a stationary warm-up. Zero milliseconds means the
+first changed sample already reaches 90%; these figures measure **smoothing response**, not
+camera-to-display latency. Regression tests cover these trajectories, smaller faces, jitter,
+stopping without overshoot, and reacquisition.
+
+Scheduling now uses video-frame callbacks, bootstraps the currently available frame (including
+paused video), and immediately checks for a newer frame when the worker finishes. The one-frame
+in-flight limit remains. Video callbacks follow presented video frames but are still subject to
+browser compositing delay; they do not guarantee zero latency, as explained in the
+[Chromium video callback guide](https://web.dev/articles/requestvideoframecallback-rvfc).
+
+Face association now minimizes the total assignment cost across all three faces, using position,
+aspect ratio and face size. Detection order cannot greedily steal the closest history from
+another observation. This improves association; it is not identity recognition and cannot
+guarantee identity through complete overlap or occlusion.
+
+Seeking clears the overlay and invalidates pending results. On playing video, old faces fade
+during an inference stall. A result over 200 ms old is discarded if the source frame changed;
+an unchanged paused frame may still use it. `tracker.stats.discarded` counts these rejections.
+This matters in practice: one follow-up live run exposed a 2.6-second inference outlier.
+
+With the same live YouTube benchmark, a fresh pre-change Face map run measured 29.7 detections/s
+and 29.7 render callbacks/s. Follow-up runs measured 29.5 / 29.6 for Face map and 29.6 / 29.6 for
+Chad. Median landmark age at the first draw stayed around 33 ms; p95 was about 49–51 ms after
+versus 33.5 ms in the pre-change run. Inference medians varied from 14.5 ms before to 16–17 ms
+after, though the inference algorithm is unchanged. These live-service samples **do not show
+an end-to-end latency or throughput improvement**. The established gain is the controlled
+tracking response and handling of stale results. Further visual tuning on real motion remains
+valuable; synthetic landmarks do not establish detection accuracy on real faces.
+
+For a further performance pass, measure with a visible window and a known 60 fps moving-face
+source. Separate source-frame age, inference time and display delay before changing models.
+For directly owned camera/local/WebRTC sources, a frame-processing path before video-element
+presentation is a candidate for removing a compositing wait. For YouTube, guest capture adds
+another stage that this benchmark does not time. Bounded motion prediction is another candidate,
+but needs stop/reversal/occlusion tests so it does not reintroduce overshoot. Neither is implemented
+or claimed as a measured gain here.

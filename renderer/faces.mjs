@@ -1,43 +1,38 @@
 // Frame-driven face tracking. Only one inference is in flight; a slow detector skips frames
 // instead of building latency. MediaPipe and pixel readback live in face-worker.mjs.
-import {HOLD_MS, MAX_FACES, createSmoother, holdOpacity, isCut, smoothFace} from './filters.mjs'
+import {HOLD_MS, MAX_FACES, createSmoother, facePose, holdOpacity, isCut, smoothFace} from './filters.mjs'
 
 const ASSETS = 'svp-vision://assets'
 const CAPTURE_TIMEOUT_MS = 5000
 let connections = []
 export const faceConnections = () => connections
 
-const centre = (landmarks) => {
-  const eye = landmarks[33]
-  const other = landmarks[263]
-  return eye && other ? [(eye.x + other.x) / 2, (eye.y + other.y) / 2] : [0, 0]
-}
-
-// Faces come back in no particular order, so each detection is matched to the face it is nearest
-// to. Without this, two people on screen would swap smoothers every frame and both would shake.
-//
-// Whatever is left over is returned too, and that matters: detection misses a frontal face several
-// times a minute on ordinary footage, and dropping those outright is what made the filter flash.
-function matchFaces(tracked, detections) {
-  const free = new Set(tracked)
-  const result = []
-  for (const landmarks of detections) {
-    const [x, y] = centre(landmarks)
-    let best = null
-    let bestDistance = Infinity
-    for (const face of free) {
-      const distance = Math.hypot(face.x - x, face.y - y)
-      if (distance < bestDistance) {
-        bestDistance = distance
-        best = face
-      }
+// Find the best assignment for the whole frame, rather than letting the first detection steal
+// another person's history. With at most three faces an exhaustive assignment is tiny. Distances
+// use head size and aspect-correct coordinates, not a fixed fraction of the video width.
+function matchFaces(tracked, detections, aspect, at) {
+  const observations = detections.slice(0, MAX_FACES).map(landmarks => ({landmarks, pose: facePose(landmarks, aspect)})).filter(item => item.pose)
+  const costs = observations.map(({pose}) => tracked.map(face => {
+    if (at - face.at >= HOLD_MS) return Infinity
+    const ratio = pose.scale / face.pose.scale
+    const distance = Math.hypot(pose.x - face.pose.x, pose.y - face.pose.y) / ((pose.scale + face.pose.scale) / 2)
+    return ratio > 0.5 && ratio < 2 && distance < 1.5 ? distance + Math.abs(Math.log(ratio)) * 0.5 : Infinity
+  }))
+  let bestCost = Infinity, assignment = []
+  const visit = (indices, used, cost) => {
+    if (cost >= bestCost) return
+    const index = indices.length
+    if (index === observations.length) { bestCost = cost; assignment = indices; return }
+    visit([...indices, -1], used, cost + 1.75)
+    for (let i = 0; i < tracked.length; i++) {
+      if (!(used & (1 << i))) visit([...indices, i], used | (1 << i), cost + costs[index][i])
     }
-    // Further than a head away is a different person, not the same one having moved.
-    const face = best && bestDistance < 0.25 ? best : {smoother: createSmoother(), x, y, landmarks: null, at: 0}
-    free.delete(face)
-    result.push({face, landmarks, x, y})
   }
-  return {matched: result, unmatched: [...free]}
+  visit([], 0, 0)
+  const matched = observations.map((observation, i) => ({...observation,
+    face: assignment[i] >= 0 ? tracked[assignment[i]] : {smoother: createSmoother(), landmarks: null, at: 0},
+  }))
+  return {matched, unmatched: tracked.filter((_, i) => !assignment.includes(i))}
 }
 
 export class FaceTracker {
@@ -48,13 +43,14 @@ export class FaceTracker {
     this.thumbnail = null
     this.error = null
     this.timer = null
+    this.videoTimer = null
     this.source = null
     this.aspect = 16 / 9
     this.detecting = false
     this.generation = 0
     this.lastTimestamp = null
     this.lastFrameAt = 0
-    this.stats = {delegate: null, frames: 0, inferenceMs: 0, latencyMs: 0}
+    this.stats = {delegate: null, frames: 0, discarded: 0, inferenceMs: 0, latencyMs: 0}
   }
 
   async load() {
@@ -95,6 +91,9 @@ export class FaceTracker {
             } else if (data.type === 'result') {
               this.detecting = false
               if (data.generation === this.generation && this.source) this.accept(data)
+              // A new frame may have arrived while inference was busy. Submit the current frame
+              // immediately instead of idling until another display refresh. Never queue frames.
+              this.detect()
             }
           }
         })
@@ -113,15 +112,25 @@ export class FaceTracker {
       return false
     }
     if (this.generation !== generation || this.source !== source) return false
+    this.onSeeking = () => this.reset()
+    source.addEventListener?.('seeking', this.onSeeking)
     this.schedule()
+    this.detect()
     return true
   }
 
   stop() {
     cancelAnimationFrame(this.timer)
+    if (this.videoTimer !== null) this.source?.cancelVideoFrameCallback?.(this.videoTimer)
+    this.source?.removeEventListener?.('seeking', this.onSeeking)
     this.timer = null
-    this.generation++
+    this.videoTimer = null
     this.source = null
+    this.reset()
+  }
+
+  reset() {
+    this.generation++
     this.tracked = []
     this.thumbnail = null
     this.lastTimestamp = null
@@ -138,16 +147,20 @@ export class FaceTracker {
   }
 
   schedule() {
-    if (!this.source) return
-    this.timer = requestAnimationFrame(() => {
+    const source = this.source
+    if (!source) return
+    const tick = () => {
+      if (this.source !== source) return
       this.detect()
       this.schedule()
-    })
+    }
+    if (source.requestVideoFrameCallback) this.videoTimer = source.requestVideoFrameCallback(tick)
+    else this.timer = requestAnimationFrame(tick)
   }
 
   detect() {
     const source = this.source
-    if (!source || !this.worker || this.detecting || !source.videoWidth || source.readyState < 2) return
+    if (!source || !this.worker || this.error || source.seeking || this.detecting || !source.videoWidth || source.readyState < 2) return
     let frame
     try {
       frame = new VideoFrame(source)
@@ -164,18 +177,34 @@ export class FaceTracker {
     } finally { frame?.close() }
   }
 
-  accept({detections, thumbnail, aspect, at, inferenceMs}) {
+  accept({detections, thumbnail, aspect, at, inferenceMs, timestamp}) {
     this.stats.frames++
     this.stats.inferenceMs = inferenceMs
     this.stats.latencyMs = performance.now() - at
+    // A cold GPU or suspended window can finish seconds late. Do not paint that old face onto
+    // advancing video. A genuinely unchanged/paused frame is still safe to use.
+    if (this.stats.latencyMs > 200 && timestamp !== undefined) {
+      let current
+      try {
+        current = new VideoFrame(this.source)
+        if (current.timestamp !== timestamp) {
+          this.stats.discarded++
+          this.tracked = []
+          return
+        }
+      } catch {
+        this.stats.discarded++
+        this.tracked = []
+        return
+      } finally { current?.close() }
+    }
     if (this.aspect !== aspect || (this.thumbnail && isCut(this.thumbnail, thumbnail))) this.tracked = []
     this.aspect = aspect
     this.thumbnail = thumbnail
-    const {matched, unmatched} = matchFaces(this.tracked, detections)
-    const next = matched.map(({face, landmarks, x, y}) => {
+    const {matched, unmatched} = matchFaces(this.tracked, detections, aspect, at)
+    const next = matched.map(({face, landmarks, pose}) => {
       face.landmarks = smoothFace(face.smoother, landmarks, aspect, at) || landmarks
-      face.x = x
-      face.y = y
+      face.pose = pose
       face.at = at
       return face
     })
@@ -188,9 +217,9 @@ export class FaceTracker {
   visible(now = performance.now()) {
     const faces = []
     if (this.source?.videoWidth / this.source?.videoHeight !== this.aspect) return faces
-    // On a paused frame the filter stays with the face. Missed detections on advancing video
-    // still age and fade normally. Age uses capture time, not worker completion time.
-    const clock = Math.min(now, this.lastFrameAt)
+    // On a paused frame the filter stays with the face. During an inference stall on playing
+    // video, age it on wall time so the old mask cannot freeze over seconds of newer footage.
+    const clock = this.detecting && this.source?.paused === false ? now : Math.min(now, this.lastFrameAt)
     for (const face of this.tracked) {
       const opacity = holdOpacity(clock - face.at)
       if (opacity > 0 && face.landmarks) faces.push({landmarks: face.landmarks, opacity})

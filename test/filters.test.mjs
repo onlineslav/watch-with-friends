@@ -208,6 +208,46 @@ test('smoothing follows a face that actually moves', () => {
   assert.ok(Math.abs(last[LM.noseTip].x - target[LM.noseTip].x) < 0.01, 'should keep up with a moving face')
 })
 
+test('tracking follows motion at 30/60 Hz without overshooting when the face stops', () => {
+  for (const hz of [30, 60]) {
+    const smoother = createSmoother()
+    for (let i = 0; i < 90; i++) {
+      const x = 0.3 + Math.min(i, 45) * (0.3 / hz)
+      const result = smoothFace(smoother, makeFace({x, scale: 0.2}).landmarks, ASPECT, 1000 + i * 1000 / hz)
+      const trackedX = facePose(result, ASPECT).x / ASPECT
+      if (i > 10) assert.ok(Math.abs(trackedX - x) < 0.005, `${hz} Hz moving/stop error: ${trackedX - x}`)
+      assert.ok(trackedX <= x + 1e-9, 'tracking must not keep travelling past a stopped face')
+    }
+  }
+})
+
+test('head turns and size changes settle quickly for small faces as well as close-ups', () => {
+  for (const hz of [30, 60]) for (const size of [0.06, 0.2]) for (const field of ['scale', 'roll']) {
+    const smoother = createSmoother()
+    let settled = false
+    for (let i = 0; i < 15; i++) {
+      const changed = i >= 10
+      const scale = size * (changed && field === 'scale' ? 1.5 : 1)
+      const roll = changed && field === 'roll' ? 0.5 : 0
+      const result = smoothFace(smoother, makeFace({scale, roll}).landmarks, ASPECT, i * 1000 / hz)
+      const pose = facePose(result, ASPECT)
+      const error = field === 'scale' ? Math.abs(pose.scale - scale) / (size * 0.5) : Math.abs(Math.atan2(pose.sin, pose.cos) - roll) / 0.5
+      if (changed && (i - 10) * 1000 / hz <= 67 && error < 0.1) settled = true
+    }
+    assert.ok(settled, `${field} should settle within 67 ms at ${hz} Hz, eye distance ${size}`)
+  }
+})
+
+test('reacquisition after a gap does not ease through the old face position', () => {
+  const smoother = createSmoother()
+  smoothFace(smoother, makeFace({x: 0.3}).landmarks, ASPECT, 0)
+  smoothFace(smoother, makeFace({x: 0.31}).landmarks, ASPECT, 33)
+  const moved = makeFace({x: 0.5, roll: 0.4})
+  const pose = facePose(smoothFace(smoother, moved.landmarks, ASPECT, 300), ASPECT)
+  assert.ok(close(pose.x, moved.pose.x))
+  assert.ok(close(pose.cos, moved.pose.cos))
+})
+
 test('a cut is told apart from a moving camera', () => {
   const still = grayscale(new Uint8ClampedArray(32 * 18 * 4).fill(90))
   const nudged = grayscale(new Uint8ClampedArray(32 * 18 * 4).fill(96))
@@ -237,4 +277,3 @@ test('only known filter ids cross the room boundary', () => {
   assert.equal(cleanFilterId(null), null)
   assert.equal(cleanFilterId({}), null)
 })
-

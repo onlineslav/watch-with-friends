@@ -312,63 +312,51 @@ export function buildMesh(filter, landmarks, aspect, n = GRID, out = null) {
 }
 
 // ---------- Smoothing ----------
-// Raw landmarks jitter, and detection can run slower than the screen refreshes. Smoothing the
-// rigid pose slowly and the expression on top of it quickly is what makes a filter look locked to
-// the face instead of swimming over it: the head's position is the part that must not wobble, and
-// it is also the part that genuinely moves slowly.
+// Damp stationary jitter, but follow translation, head turns and zooms quickly. Velocity must
+// come from successive raw observations: differentiating the filtered position exaggerates
+// motion and leaves the filter moving after the person stops.
 
 const alphaFor = (cutoff, dt) => 1 / (1 + 1 / (2 * Math.PI * cutoff * dt))
 
 // One Euro filter: the more something is moving, the less it is smoothed, so a still face is rock
 // steady and a fast one does not lag behind.
 function oneEuro(state, value, dt, minCutoff, beta) {
-  if (!state) return {value, speed: 0, alpha: 1}
-  const speed = state.speed + alphaFor(1, dt) * ((value - state.value) / dt - state.speed)
+  if (!state) return {value, raw: value, speed: 0}
+  const speed = state.speed + alphaFor(5, dt) * ((value - state.raw) / dt - state.speed)
   const alpha = alphaFor(minCutoff + beta * Math.abs(speed), dt)
-  return {value: state.value + alpha * (value - state.value), speed, alpha}
+  return {value: state.value + alpha * (value - state.value), raw: value, speed}
 }
 
-// Smoothing a moving target always trails it, by exactly speed * dt * (1 - alpha) / alpha. Detection
-// also runs a frame or two behind the picture. Adding that much back puts the filter where the face
-// is now rather than where it was: a still face is unaffected because its speed is zero, and the
-// clamp keeps a bad detection from flinging the warp across the screen.
-const LEAD = 0.9
-const MAX_LEAD_FACES = 0.3
+const POSE_CUTOFF = 1.5
+const POSE_BETA = 8
+const LOCAL_CUTOFF = 6
+const LOCAL_BETA = 2
 
-function withLead(state, dt) {
-  if (!dt || !state.alpha) return state.value
-  return state.value + LEAD * state.speed * dt * ((1 - state.alpha) / state.alpha)
-}
-
-const POSE_CUTOFF = 1.2
-const POSE_BETA = 0.35
-const LOCAL_CUTOFF = 4
-const LOCAL_BETA = 1.5
-
-export const createSmoother = () => ({pose: null, local: null, at: 0})
+export const createSmoother = () => ({pose: null, local: null, at: null})
 
 // Returns landmarks in the same shape they arrived in, smoothed. `now` is in milliseconds.
 export function smoothFace(smoother, landmarks, aspect, now) {
   const pose = facePose(landmarks, aspect)
   if (!pose) return null
-  const dt = smoother.at ? Math.min(0.5, Math.max(1e-3, (now - smoother.at) / 1000)) : 0
+  // Do not drag a reappearing face through its position before an occlusion or seek.
+  if (smoother.at !== null && (now <= smoother.at || now - smoother.at > 200)) resetSmoother(smoother)
+  const dt = smoother.at !== null ? Math.max(1e-3, (now - smoother.at) / 1000) : 0
   smoother.at = now
   // Roll is smoothed as its unit vector, which has no wrap-around to get wrong.
   const fields = ['x', 'y', 'scale', 'cos', 'sin']
   const nextPose = {}
   for (const field of fields) {
-    const state = dt ? oneEuro(smoother.pose?.[field], pose[field], dt, POSE_CUTOFF, POSE_BETA) : {value: pose[field], speed: 0}
+    // Translation/size velocity is measured in eye distances per second, so small faces get
+    // the same response as close-ups. Roll's unit vector is already independent of face size.
+    const units = field === 'cos' || field === 'sin' ? 1 : pose.scale
+    const state = oneEuro(dt ? smoother.pose?.[field] : null, pose[field], dt, POSE_CUTOFF, POSE_BETA / units)
     nextPose[field] = state
   }
   const length = Math.hypot(nextPose.cos.value, nextPose.sin.value) || 1
   const scale = nextPose.scale.value
-  // Only the head's travel is led forward. Expression that ran ahead of itself would look wrong,
-  // and a face's position is what the eye notices trailing.
-  const limit = MAX_LEAD_FACES * scale
-  const lead = (field) => Math.min(limit, Math.max(-limit, withLead(nextPose[field], dt) - nextPose[field].value))
   const fitted = {
-    x: nextPose.x.value + lead('x'),
-    y: nextPose.y.value + lead('y'),
+    x: nextPose.x.value,
+    y: nextPose.y.value,
     scale,
     cos: nextPose.cos.value / length,
     sin: nextPose.sin.value / length,
@@ -383,8 +371,8 @@ export function smoothFace(smoother, landmarks, aspect, now) {
   const result = new Array(count)
   for (let i = 0; i < count; i++) {
     const [lx, ly] = toLocal(pose, landmarks[i].x, landmarks[i].y, aspect)
-    const sx = dt ? oneEuro(smoother.local[i * 2], lx, dt, LOCAL_CUTOFF, LOCAL_BETA) : {value: lx, speed: 0}
-    const sy = dt ? oneEuro(smoother.local[i * 2 + 1], ly, dt, LOCAL_CUTOFF, LOCAL_BETA) : {value: ly, speed: 0}
+    const sx = oneEuro(dt ? smoother.local[i * 2] : null, lx, dt, LOCAL_CUTOFF, LOCAL_BETA)
+    const sy = oneEuro(dt ? smoother.local[i * 2 + 1] : null, ly, dt, LOCAL_CUTOFF, LOCAL_BETA)
     smoother.local[i * 2] = sx
     smoother.local[i * 2 + 1] = sy
     const [wx, wy] = toWorld(fitted, sx.value, sy.value, aspect)
@@ -396,7 +384,7 @@ export function smoothFace(smoother, landmarks, aspect, now) {
 export function resetSmoother(smoother) {
   smoother.pose = null
   smoother.local = null
-  smoother.at = 0
+  smoother.at = null
 }
 
 // ---------- Shot changes ----------

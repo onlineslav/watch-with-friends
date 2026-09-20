@@ -48,6 +48,7 @@ self.onmessage = ({data}) => {
     const thumbnail = grayscale(thumbContext.getImageData(0, 0, 32, 18).data)
     const result = landmarker.detectForVideo(canvas, at)
     self.postMessage({type: 'result', generation, at, thumbnail,
+      timestamp: frame.timestamp,
       aspect: frame.displayWidth / frame.displayHeight,
       detections: (result?.faceLandmarks || []).slice(0, MAX_FACES),
       inferenceMs: performance.now() - started})

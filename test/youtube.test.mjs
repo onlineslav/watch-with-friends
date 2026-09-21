@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {parseYouTubeUrl, droppedYouTubeUrl} from '../shared/youtube.mjs'
+import {YouTubePlayer} from '../renderer/youtube.mjs'
 import {createPlaylist, addItem, orderedItems, mergePlaylist, playlistSnapshot} from '../renderer/playlist.mjs'
 import {RoomHistory} from '../renderer/room-history.mjs'
 
@@ -47,4 +48,66 @@ test('YouTube playlist order and duplicate videos survive room synchronization a
   history.save({code: 'ABCDEFGH', playlist: copy, ownFiles: new Map(), claimedAt: 1})
   assert.deepEqual(orderedItems(history.load('ABCDEFGH').playlist).map((item) => item.youtubeId), videos)
   assert.equal(addItem(copy, {id: 'bad', title: 'Invalid', position: 5, youtubeId: 'https://evil.com'}, 'peer'), null)
+})
+
+// The embed reports its state on a 250 ms timer with no play or pause events, while the room
+// broadcasts host state the moment a command is applied. A player that still says "playing" right
+// after a pause tells every viewer to start again, which is what made a viewer's pause look ignored.
+globalThis.window ??= {addEventListener() {}, removeEventListener() {}} // the player listens for the frame's messages
+
+const fakeWindow = () => {
+  const frame = {contentWindow: {posted: [], postMessage(message) { this.posted.push(message) }}}
+  const player = new YouTubePlayer({replaceChildren() {}})
+  player.frame = frame
+  player.ready = true
+  const report = (state) => player.receive({source: frame.contentWindow, origin: 'svp-youtube://player',
+    data: {channel: 'svp-youtube', token: player.token, type: 'state', value: {state, time: 12, duration: 300, title: 'Clip'}}})
+  return {player, report, posted: frame.contentWindow.posted}
+}
+
+test('a requested pause or play is reported before the embed confirms it, then the embed takes over', () => {
+  const {player, report, posted} = fakeWindow()
+  player.videoId = 'M7lc1UVf-VE'
+  report(1)
+  assert.equal(player.playing, true)
+
+  player.pause()
+  assert.equal(posted.at(-1).command, 'pause')
+  assert.equal(player.playing, false, 'a pause is believed before the embed reports it')
+  report(1) // the embed is still catching up
+  assert.equal(player.playing, false)
+  report(2)
+  assert.equal(player.playing, false)
+  assert.equal(player.intent, null, 'the embed agreed, so its own state is the truth again')
+
+  player.play()
+  assert.equal(player.playing, true)
+  report(1)
+  assert.equal(player.playing, true)
+})
+
+test('a play state turnover is announced once, not on every report the embed sends', () => {
+  const {player, report} = fakeWindow()
+  player.videoId = 'M7lc1UVf-VE'
+  let turnovers = 0
+  player.addEventListener('playstate', () => turnovers++)
+  report(1)
+  assert.equal(turnovers, 1)
+  report(1)
+  report(1)
+  assert.equal(turnovers, 1, 'four reports a second must not become four broadcasts a second')
+  player.pause()
+  assert.equal(turnovers, 2)
+  report(2)
+  assert.equal(turnovers, 2, 'the embed confirming a pause already announced is not a second turnover')
+})
+
+test('a refused play stops being reported as playback instead of sticking', () => {
+  const {player, report} = fakeWindow()
+  player.videoId = 'M7lc1UVf-VE'
+  report(2)
+  player.play()
+  assert.equal(player.playing, true)
+  player.intentAt -= 5000 // the embed never started: blocked autoplay, or a video that will not play
+  assert.equal(player.playing, false)
 })

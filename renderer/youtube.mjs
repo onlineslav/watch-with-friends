@@ -5,6 +5,11 @@ const errors = {2: 'The YouTube video URL is invalid.', 5: 'YouTube could not pl
   101: 'This video does not allow playback outside YouTube.', 150: 'This video does not allow playback outside YouTube.',
   153: 'YouTube could not identify this app. Please update SVP and try again.'}
 
+// How long a requested play/pause is believed before the embed's own reports take over again.
+// Long enough to cover the postMessage round trip, short enough that a refused command (blocked
+// autoplay, a video that will not start) stops being reported as playback.
+const INTENT_MS = 2000
+
 export class YouTubePlayer extends EventTarget {
   constructor(container) {
     super()
@@ -25,10 +30,20 @@ export class YouTubePlayer extends EventTarget {
     this.title = ''
     this.pending = null
     this.lastCorrection = 0
+    this.intent = null
+    this.intentAt = 0
   }
 
   get loaded() { return Boolean(this.videoId && this.ready) }
-  get playing() { return this.state === 1 || this.state === 3 }
+  // The embed only reports its state on a timer, so for a moment after play() or pause() it still
+  // says the old thing. A <video> flips `paused` synchronously and the room broadcasts host state
+  // the instant a command is applied, so without this a viewer's pause is answered with "still
+  // playing" and the viewer starts itself again.
+  get playing() {
+    if (this.intent !== null && performance.now() - this.intentAt < INTENT_MS) return this.intent
+    return this.reportedPlaying
+  }
+  get reportedPlaying() { return this.state === 1 || this.state === 3 }
   get ended() { return this.state === 0 }
   get buffering() { return this.state === -1 || this.state === 3 }
 
@@ -54,6 +69,7 @@ export class YouTubePlayer extends EventTarget {
     this.close()
     this.videoId = videoId
     this.pending = {videoId, time, playing}
+    this.expect(playing)
     this.ensureFrame()
   }
 
@@ -95,9 +111,15 @@ export class YouTubePlayer extends EventTarget {
         !Number.isFinite(value.time) || value.time < 0 || value.time > 1e9 ||
         !Number.isFinite(value.duration) || value.duration < 0 || value.duration > 1e9) return
     const ended = this.ended
+    const playing = this.playing
     Object.assign(this, {state: value.state, time: value.time, duration: value.duration,
       title: typeof value.title === 'string' ? value.title.slice(0, 200) : ''})
+    // Once the embed agrees, or the video has ended, its own state is the truth again.
+    if (this.intent === this.reportedPlaying || this.ended) this.intent = null
     this.dispatchEvent(new Event('state'))
+    // Only the turnover, so the room can broadcast a play or pause the way a <video> does rather
+    // than on every one of the embed's four reports a second.
+    if (this.playing !== playing) this.dispatchEvent(new Event('playstate'))
     if (this.ended && !ended) this.dispatchEvent(new Event('ended'))
   }
 
@@ -114,8 +136,15 @@ export class YouTubePlayer extends EventTarget {
     else if (!playing && this.playing) this.pause()
   }
 
-  play() { this.post('play') }
-  pause() { this.post('pause') }
+  play() { this.expect(true); this.post('play') }
+  pause() { this.expect(false); this.post('pause') }
+
+  expect(playing) {
+    const was = this.playing
+    this.intent = playing
+    this.intentAt = performance.now()
+    if (this.playing !== was) this.dispatchEvent(new Event('playstate'))
+  }
   seek(time) { this.post('seek', time) }
   setVolume(volume) { this.volume = volume; if (this.ready) this.post('volume', Math.min(100, Math.max(0, volume * 100))) }
 

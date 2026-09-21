@@ -1653,7 +1653,7 @@ function element(tag, className, text) {
 
 function renderPeople() {
   if (document.activeElement !== ui.roomName) ui.roomName.value = session.details?.name || ''
-  ui.roomName.placeholder = session.connection.joining ? 'Joining room…' : 'Room name'
+  ui.roomName.placeholder = session.connection.joining && !session.peers.size ? 'Joining room…' : 'Room name'
   syncRoomNameSave()
   const host = isHost()
   const hostId = host ? selfId : session.hostId
@@ -3344,6 +3344,9 @@ youtube.addEventListener('state', () => {
   if (session.preview && youtube.playing) activatePreview()
   render()
 })
+// The embed has no play/pause events, so a host who uses YouTube's own controls would otherwise
+// only reach viewers on the next one-second tick. This is the counterpart to the <video> events above.
+youtube.addEventListener('playstate', () => { if (isHost()) broadcastState() })
 youtube.addEventListener('error', ({detail}) => {
   logError('media', 'youtube-error', {message: String(detail), host: isHost()})
   if (isHost()) failHosting(detail); else toast(detail, true)

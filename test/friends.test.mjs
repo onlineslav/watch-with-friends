@@ -281,6 +281,8 @@ test('presenceText explains friends who have not added you back yet', () => {
   assert.equal(presenceText({confirmed: false, requested: false}), 'Request queued · waiting for a connection')
   assert.equal(presenceText({confirmed: false, connectionError: 'failed'}), 'Could not deliver request · still trying')
   assert.equal(presenceText({confirmed: true, online: false, connectionError: 'failed'}), 'Connection unavailable · retrying')
+  // A peer that is on the channel but not yet verified is neither offline nor a connection fault.
+  assert.equal(presenceText({confirmed: true, online: false, connecting: true, connectionError: 'failed'}), 'Connecting…')
   assert.equal(presenceText({confirmed: true, online: true, connectionError: 'old error'}), 'Online')
   assert.equal(presenceText({confirmed: true, online: true, status: {hosting: true, title: null}}), 'Hosting a room')
 })

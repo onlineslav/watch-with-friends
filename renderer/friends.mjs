@@ -20,14 +20,22 @@ export const cleanStatus = (status) => ({
   title: status?.hosting ? cleanText(status.title, MAX_TITLE_LENGTH) : null,
 })
 
+// A peer on the channel whose hello is still on its way or still being checked. One that has been
+// checked and failed isn't proving anything, so it can't leave the list saying "Connecting…" forever.
+const stillProving = (link) => [...link.connectedPeers].some((peerId) =>
+  !link.peers.has(peerId) && (link.verifying.has(peerId) || !link.attempts.has(peerId)))
+
 // The line under a friend's name.
-export function presenceText({confirmed, requested, online, status, connectionError, delivery}) {
+export function presenceText({confirmed, requested, online, connecting, status, connectionError, delivery}) {
   if (!confirmed) {
     if (delivery === 'expired') return 'Request unanswered · retry to send again'
     if (delivery === 'declined') return 'Request declined'
     if (requested) return 'Request delivered · awaiting acceptance'
     return connectionError ? 'Could not deliver request · still trying' : 'Request queued · waiting for a connection'
   }
+  // A peer is on the channel but hasn't proved who it is yet: they're there, just not confirmed.
+  // Saying "offline" or blaming the connection would both be wrong, and both sides see this at once.
+  if (!online && connecting) return 'Connecting…'
   if (!online && connectionError) return 'Connection unavailable · retrying'
   if (!online) return 'Offline'
   if (status?.hosting) return status.title ? `Hosting ${status.title}` : 'Hosting a room'
@@ -122,9 +130,11 @@ export class FriendNetwork extends EventTarget {
       const status = online ? this.presence.get(friend.username) || null : null
       const pair = this.links.get(pairRoomId(this.identity?.username, friend.username))
       const request = this.links.get(inboxRoomId(friend.username))
-      const connectionError = !online && (request?.error || pair?.error)
+      const connecting = !online && Boolean(pair && stillProving(pair))
+      const connectionError = !online && !connecting && (request?.error || pair?.error)
       const {requestedAt, ...shown} = friend
-      return {...shown, online, status, asked: this.asks.has(friend.username), invited: this.invites.has(friend.username), ...(connectionError && {connectionError})}
+      return {...shown, online, status, asked: this.asks.has(friend.username), invited: this.invites.has(friend.username),
+        ...(connecting && {connecting}), ...(connectionError && {connectionError})}
     })
   }
 
@@ -256,12 +266,17 @@ export class FriendNetwork extends EventTarget {
     room.onPeerJoin = (peerId) => {
       if (this.links.get(roomId) !== link) return
       if (link.connectedPeers.size >= 32) { room.getPeers?.()[peerId]?.close(); return }
+      // A failure is reported per peer attempt, so one stale peer id left on a relay must not
+      // describe the channel for as long as it lasts. A peer connecting is the newer fact.
+      link.error = null
       link.connectedPeers.add(peerId)
       this.sendHello(link, peerId).catch(() => {})
+      if (link.kind === 'pair') this.changed()
     }
     room.onPeerLeave = (peerId) => {
       if (this.links.get(roomId) !== link) return
       link.connectedPeers.delete(peerId)
+      if (!link.connectedPeers.size) link.error = null // a clean departure is not a connection fault
       const username = link.peers.get(peerId)
       link.peers.delete(peerId)
       link.early.delete(peerId)

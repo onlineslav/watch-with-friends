@@ -102,6 +102,22 @@ test('an export flushes what has not been written yet', () => {
   assert.match(fs.readFileSync(target, 'utf8'), /"ev":"leave"/, 'the last seconds are the interesting ones')
 })
 
+test('launching again appends to the file rather than starting it over', () => {
+  const dir = workspace()
+  for (const version of ['0.5.0', '0.5.1', '0.5.2']) {
+    log.start({dir, info: {version}})
+    log.record('room', 'entered', {room: `CODE-${version}`})
+    log.stop()
+  }
+  const written = lines(dir)
+  assert.deepEqual(
+    written.filter((l) => l.ev === 'launch').map((l) => l.version),
+    ['0.5.0', '0.5.1', '0.5.2'],
+    'every session is still in the file: size is the only thing that removes history',
+  )
+  assert.equal(written.filter((l) => l.ev === 'entered').length, 3, 'and so is what happened in each')
+})
+
 test('an event from before the file opened is kept and written once it does', () => {
   log.stop()
   log.record('error', 'main-uncaught', {message: 'died during startup'}, 'error')

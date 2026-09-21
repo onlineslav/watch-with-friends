@@ -146,6 +146,15 @@
           </div>
         </section>
         <section class="settings-section">
+          <h2>Having problems?</h2>
+          <p class="hint">Saves a file describing the last few hours: connection quality, who joined, and anything that failed. Send it to whoever is helping you. File names and network addresses are removed.</p>
+          <textarea id="diagnostics-note" class="settings-note" maxlength="2000" rows="3" spellcheck="true" placeholder="What went wrong? (optional, but it helps to know roughly when)" aria-label="What went wrong"></textarea>
+          <div class="settings-row">
+            <span id="diagnostics-status" class="hint" role="status"></span>
+            <button id="save-diagnostics" type="button">Save diagnostics&hellip;</button>
+          </div>
+        </section>
+        <section class="settings-section">
           <h2>Username</h2>
           <p class="hint">Friends add you by this. Changing it gives you a new one, and friends who added you will have to add you again.</p>
           <div class="settings-row">

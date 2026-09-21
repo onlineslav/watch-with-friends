@@ -20,6 +20,8 @@ contextBridge.exposeInMainWorld('api', {
   setZoom: (factor) => ipcRenderer.invoke('window:zoom', factor),
   onZoomStep: (handler) => ipcRenderer.on('zoom:step', (_event, direction) => handler(direction)),
   setInRoom: (inRoom) => ipcRenderer.send('app:in-room', inRoom),
+  logEvents: (entries) => ipcRenderer.invoke('log:events', entries),
+  saveDiagnostics: (options) => ipcRenderer.invoke('log:save', options),
   checkForUpdate: () => ipcRenderer.invoke('update:check'),
   openUpdate: (which) => ipcRenderer.invoke('update:open', which),
 })

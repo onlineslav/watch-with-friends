@@ -1,6 +1,8 @@
 const path = require('node:path')
 const fs = require('node:fs')
+const os = require('node:os')
 const {app, BrowserWindow, dialog, ipcMain, shell} = require('electron')
+const log = require('./log')
 const media = require('./media')
 const {loadIceServers} = require('./turn')
 const updater = require('./updater')
@@ -16,6 +18,19 @@ const MEDIA_EXTENSIONS = [
   ...Object.keys(IMAGES.native), ...IMAGES.convert,
 ]
 const SUBTITLE_EXTENSIONS = ['srt', 'ass', 'ssa', 'vtt']
+
+// Written at the top of every log file and repeated in an export, because the first question
+// about any of this is which build, on what, and whether it was a packaged app or a dev run.
+const systemInfo = () => ({
+  version: app.getVersion(),
+  electron: process.versions.electron,
+  chrome: process.versions.chrome,
+  platform: `${process.platform} ${os.release()}`,
+  arch: process.arch,
+  cpus: os.cpus().length,
+  memoryGb: Math.round(os.totalmem() / 1e9),
+  packaged: app.isPackaged,
+})
 
 const turnConfigPath = () =>
   app.isPackaged ? path.join(process.resourcesPath, 'turn.json') : path.join(__dirname, '..', 'config', 'turn.json')
@@ -67,9 +82,26 @@ function registerIpc() {
     }))
   })
   ipcMain.handle('media:image', (_event, filePath) => media.readImage(filePath))
-  ipcMain.handle('session:start', (_event, options) => media.startSession(options))
-  ipcMain.handle('session:pull', (_event, id) => media.pull(id))
-  ipcMain.handle('session:stop', (_event, id) => media.stopSession(id))
+  ipcMain.handle('session:start', async (_event, options) => {
+    try {
+      const started = await media.startSession(options)
+      log.record('ffmpeg', 'start', {...started, start: options?.start, forceTranscode: options?.forceTranscode})
+      return started
+    } catch (error) {
+      log.record('ffmpeg', 'start-failed', {message: error?.message, start: options?.start}, 'error')
+      throw error
+    }
+  })
+  ipcMain.handle('session:pull', async (_event, id) => {
+    const result = await media.pull(id)
+    if (result?.error) log.record('ffmpeg', 'failed', {id, message: result.error}, 'error')
+    else if (result?.done) log.record('ffmpeg', 'done', {id})
+    return result
+  })
+  ipcMain.handle('session:stop', (_event, id) => {
+    log.record('ffmpeg', 'stop', {id})
+    return media.stopSession(id)
+  })
   ipcMain.handle('subtitle:cues', (_event, options) => media.subtitleCues(options))
   ipcMain.handle('net:ice-servers', () => {
     const local = path.join(app.getPath('userData'), 'turn.json')
@@ -86,25 +118,53 @@ function registerIpc() {
     return win.isAlwaysOnTop()
   })
   ipcMain.on('app:in-room', (_event, inRoom) => updater.setInRoom(inRoom))
+  ipcMain.handle('log:events', (_event, entries) => log.recordBatch(entries))
+  ipcMain.handle('log:save', async (event, {note} = {}) => {
+    const result = await dialog.showSaveDialog(BrowserWindow.fromWebContents(event.sender), {
+      title: 'Save diagnostics',
+      defaultPath: path.join(app.getPath('desktop'), log.defaultExportName()),
+      filters: [{name: 'Log', extensions: ['log']}],
+    })
+    if (result.canceled || !result.filePath) return null
+    log.record('log', 'export', {note: Boolean(note)})
+    const saved = log.exportTo(result.filePath, {note})
+    shell.showItemInFolder(saved)
+    return saved
+  })
   ipcMain.handle('update:check', () => updater.checkMacUpdate())
   ipcMain.handle('update:open', (_event, which) => updater.openMacUpdate(which))
 }
 
 function start() {
+  // Main-process faults otherwise leave nothing behind but a closed window. Registered before
+  // anything else runs; log.record buffers until whenReady opens the file.
+  const trace = (error) => String(error?.stack || '').split('\n').slice(0, 6).join(' | ') || null
+  process.on('uncaughtException', (error) => log.record('error', 'main-uncaught', {message: error?.message, stack: trace(error)}, 'error'))
+  process.on('unhandledRejection', (reason) => log.record('error', 'main-rejection', {message: String(reason?.message || reason), stack: trace(reason)}, 'error'))
   prepareYouTube()
   app.on('second-instance', () => focusWindow(BrowserWindow.getAllWindows()[0]))
   app.whenReady().then(() => {
+    // app.getPath('logs') is only meaningful once the app name is settled, so the file opens here.
+    log.start({dir: app.getPath('logs'), info: systemInfo()})
     registerYouTube()
     registerIpc()
     createWindow()
-    media.detectCapabilities() // warm up so the first transcode starts instantly
+    // warm up so the first transcode starts instantly, and record which encoder this machine got
+    media.detectCapabilities().then(
+      (caps) => log.record('media', 'capabilities', caps),
+      (error) => log.record('media', 'capabilities-failed', {message: error?.message}, 'warn'),
+    )
     updater.checkForUpdates()
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()
     })
   })
   app.on('window-all-closed', () => app.quit())
-  app.on('before-quit', () => media.stopAll())
+  app.on('before-quit', () => {
+    media.stopAll()
+    log.record('app', 'quit')
+    log.stop()
+  })
 }
 
 module.exports = {createWindow, registerIpc, start}

@@ -20,6 +20,7 @@ import {StreamPlayer} from './player.mjs'
 import {YouTubePlayer} from './youtube.mjs'
 import {parseYouTubeUrl, droppedYouTubeUrl} from '../shared/youtube.mjs'
 import {roomConnection} from './connection.mjs'
+import {installErrorLogging, flushLog, logEvent, logError, logWarn, saveDiagnostics, setLogContext} from './log.mjs'
 import {FriendNetwork, presenceText} from './friends.mjs'
 import {HANDLE_HINT, createIdentity, createKeys, isValidIdentity, normalizeHandle, normalizeUsername, usernameFor} from './identity.mjs'
 import {cleanDisplayName, cleanText} from './profile.mjs'
@@ -160,6 +161,9 @@ const ui = {
   zoomReset: $('zoom-reset'),
   zoomBadge: $('zoom-badge'),
   settingsUsername: $('settings-username'),
+  diagnosticsNote: $('diagnostics-note'),
+  diagnosticsStatus: $('diagnostics-status'),
+  saveDiagnostics: $('save-diagnostics'),
   settingsBack: $('settings-back'),
   addFriend: $('add-friend'),
   friendUsername: $('friend-username'),
@@ -438,6 +442,7 @@ async function enterRoom(code, {joining = true} = {}) {
     await openRoom(code, joining)
   } catch (error) {
     if (session.room) await leaveRoom()
+    logError('room', 'enter-failed', {code, message: errorMessage(error)})
     toast(`Could not open the room: ${errorMessage(error)}`, true)
   } finally {
     enteringRoom = false
@@ -548,6 +553,7 @@ async function openRoom(code, joining) {
       session.playlistAction.send({type: 'sync', ...playlistSnapshot(session.playlist)}, {target: peerId}).catch(() => {})
     }
     shareAvailability(peerId)
+    logEvent('peer', 'join', {peer: peerId, username: peerIdentities.get(peerId) || null, peers: session.peers.size})
     toast('Participant connected')
     if (session.role === 'host' && !session.preview) {
       if (session.stream) Promise.all(room.addStream(session.stream, {target: peerId, metadata: {claimedAt: session.claimedAt}})).then(tuneSenders, () => {})
@@ -580,6 +586,7 @@ async function openRoom(code, joining) {
       const coordinator = [selfId, ...session.peers].sort()[0]
       if (wasPlaying && coordinator === selfId) playNext(previous)
     }
+    logEvent('peer', 'leave', {peer: peerId, peers: session.peers.size})
     toast('Participant left')
     render()
   }
@@ -610,6 +617,8 @@ async function openRoom(code, joining) {
     }
   })
 
+  setLogContext({room: code, self: selfId})
+  logEvent('room', 'entered', {joining, persistent: connection.persistent, hasTurn: connection.hasTurn, saved: Boolean(saved)})
   window.api.setInRoom(true)
   ui.code.textContent = formatRoomCode(code)
   ui.home.hidden = ui.settings.hidden = true
@@ -625,6 +634,9 @@ async function openRoom(code, joining) {
 async function leaveRoom() {
   if (leavingRoom) return leavingRoom
   const current = session
+  logEvent('room', 'leave', {peers: current.peers.size, role: current.role})
+  flushLog()
+  setLogContext({room: null, role: null, claimedAt: null})
   checkpointPlayback()
   saveRoom()
   const finalSnapshot = current.playlistAction?.send({type: 'sync', ...playlistSnapshot(current.playlist)}).catch(() => {})
@@ -668,6 +680,10 @@ async function leaveRoom() {
 }
 
 function setRole(role) {
+  if (session.role !== role) {
+    logEvent('room', 'role', {role, host: session.hostId, claimedAt: session.claimedAt})
+    setLogContext({role})
+  }
   session.role = role
   ui.stage.dataset.role = role
   render()
@@ -707,6 +723,15 @@ async function hostFile(filePath, item = null, {preview = false, start, autoplay
   try {
     const opened = await player.open(filePath, start ?? (resume?.completed ? 0 : resume?.time || 0))
     if (session !== current || current.closed || current.claimedAt !== claimedAt || !isHost()) return
+    logEvent('media', 'opened', {
+      file: filePath,
+      transcoding: player.transcoding,
+      video: player.media?.video?.codec || null,
+      audio: player.media?.audio?.length ?? 0,
+      subtitles: player.media?.subtitles?.length ?? 0,
+      duration: Math.round(player.media?.duration || 0),
+      preview,
+    })
     current.openingMedia = false
     if (opened && autoplay && !current.preview) ui.localVideo.play().catch((error) => {
       if (session === current && !current.closed && current.claimedAt === claimedAt && isHost()) failHosting(error)
@@ -751,6 +776,7 @@ function hostYouTube(item, {preview = false, start, autoplay = true} = {}) {
   session.hostId = selfId
   session.remote = null
   detachRemoteStream()
+  logEvent('media', 'youtube', {item: item.id, videoId: item.youtubeId, preview})
   youtube.open(item.youtubeId, start ?? (resume?.completed ? 0 : resume?.time || 0), autoplay && !preview)
   setRole('host')
   broadcastState()
@@ -962,6 +988,39 @@ function applyViewerBuffer(pc) {
   }
 }
 
+// The 2-second sample is the backbone of the log: a quality drop is only explainable if the
+// measurements that caused it were recorded at the cadence the decision was made on. The host
+// also records what it decided, because the ladder in chooseSendQuality is invisible from the
+// outside — a viewer sees the picture change with no way to tell loss from a bandwidth estimate.
+function logSendQuality(peerId, stats, before, after) {
+  logEvent('telemetry', 'host-sample', {
+    peer: peerId,
+    rttMs: stats.rttMs,
+    relayed: stats.relayed,
+    capacity: stats.capacity ?? null,
+    sender: stats.outbound,
+    receiver: after.receiver,
+    bitrate: after.quality?.bitrate ?? null,
+    scale: after.quality?.scale ?? null,
+    calmMs: after.quality?.calmMs ?? null,
+  })
+  const was = before?.bitrate
+  const now = after.quality?.bitrate
+  // Worth its own line: this is the event people actually report, and grep finds it.
+  if (was && now && now !== was) {
+    logWarn('telemetry', 'send-quality-change', {
+      peer: peerId,
+      from: was,
+      to: now,
+      change: `${now > was ? '+' : ''}${Math.round((100 * (now - was)) / was)}%`,
+      reason: now < was ? (after.receiver?.freezes > 0 ? 'freezes' : after.receiver?.lossPct > 2 ? 'loss' : 'capacity') : 'recovery',
+      lossPct: after.receiver?.lossPct ?? null,
+      freezes: after.receiver?.freezes ?? null,
+      capacity: stats.capacity ?? null,
+    })
+  }
+}
+
 // Every couple of seconds: measure the connection to everyone in the room. Viewers also adapt
 // their buffer and report what they're receiving so the host can see it.
 async function sampleConnection() {
@@ -984,7 +1043,9 @@ async function sampleConnection() {
         p.sender = stats.outbound
         if (performance.now() - (p.receiverAt || 0) > HOST_TIMEOUT_MS) p.receiver = null
         const dimensions = current.stream?.getVideoTracks()[0]?.getSettings() || {}
+        const before = p.quality
         p.quality = chooseSendQuality(p.quality, {receiver: p.receiver, capacity: stats.capacity, peerCount: current.peers.size, ...dimensions})
+        if (current.stream) logSendQuality(id, stats, before, p)
       }
     }
   }
@@ -1020,6 +1081,16 @@ async function sampleConnection() {
       delayMs: Math.max(0, Math.min(10000, session.frameDelayMs ?? (session.playoutDelayMs || session.buffer.bufferMs) + (stats.rttMs || 0) / 2 + DECODE_DELAY_MS)),
     }
     session.link = {...base, receiver, sender: session.remote?.senders?.[selfId] || null}
+    logEvent('telemetry', 'viewer-sample', {
+      host: session.hostId,
+      rttMs: stats.rttMs,
+      relayed: stats.relayed,
+      steady,
+      jitterMs: stats.inbound.jitterMs,
+      ...receiver,
+      sender: session.remote?.senders?.[selfId] || null,
+      epoch: session.remote?.epoch ?? null,
+    })
     session.telemetryAction.send({receiver, hostId: session.hostId, claimedAt: session.remote.claimedAt}, {target: session.hostId, signal: session.lifetime.signal}).catch(() => {})
   } else {
     session.link = base
@@ -1030,7 +1101,13 @@ async function sampleConnection() {
     const sent = performance.now()
     try {
       const reply = await session.clockAction.request({}, {target: hostId, timeoutMs: 1500, signal: current.lifetime.signal})
-      if (session === current && session.hostId === hostId && session.remote?.claimedAt === claimedAt) session.clock = updateClock(session.clock, sent, performance.now(), reply?.now)
+      if (session === current && session.hostId === hostId && session.remote?.claimedAt === claimedAt) {
+        const clock = updateClock(session.clock, sent, performance.now(), reply?.now)
+        // Logged whenever it is replaced: it is what puts the host's file and the viewer's file
+        // on one timeline, and a 2-second control loop needs that to be better than guesswork.
+        if (clock !== session.clock) logEvent('clock', 'offset', {host: hostId, offsetMs: Math.round(clock.offset), rttMs: Math.round(clock.rtt)})
+        session.clock = clock
+      }
     } catch {}
   }
   if (session === current) render()
@@ -1081,6 +1158,7 @@ function broadcastState(target) {
 
 function failHosting(error) {
   if (!isHost() || session.closed) return
+  logError('media', 'host-failed', {message: errorMessage(error), item: session.playing?.id || null})
   youtube.close()
   // Keep this claim alive with a terminal state so late/rejoining viewers learn it too.
   session.mediaError = 'The host could not play this media. Open another file to continue.'
@@ -2775,6 +2853,15 @@ loadIdentity().then((loaded) => {
   ui.startupStatus.textContent = `Could not load your profile: ${errorMessage(error)}. Restart the app to try again.`
 })
 
+installErrorLogging()
+setLogContext({self: selfId})
+// One anchor line per launch, so a log always says which window it came from even if the person
+// never got as far as a room. Screen size is here because it is the other half of UI scale.
+logEvent('app', 'renderer-ready', {
+  screen: `${screen.width}x${screen.height}`,
+  pixelRatio: window.devicePixelRatio,
+  language: navigator.language,
+})
 window.api.getVersion().then((version) => {
   if (typeof version === 'string' && version.length <= 40) ui.appVersion.textContent = `Version ${version}`
 }, () => {})
@@ -2972,6 +3059,21 @@ async function setPinned(next) {
   }
 }
 for (const button of ui.pinButtons) button.addEventListener('click', () => setPinned(!pinned))
+ui.saveDiagnostics.addEventListener('click', async () => {
+  ui.saveDiagnostics.disabled = true
+  ui.diagnosticsStatus.textContent = 'Collecting…'
+  try {
+    const saved = await saveDiagnostics(ui.diagnosticsNote.value)
+    // A cancelled save dialog is not a failure, and saying nothing is the honest response to it.
+    ui.diagnosticsStatus.textContent = saved ? 'Saved. Send that file on.' : ''
+    if (saved) ui.diagnosticsNote.value = ''
+  } catch (error) {
+    ui.diagnosticsStatus.textContent = `Could not save: ${errorMessage(error)}`
+  } finally {
+    ui.saveDiagnostics.disabled = false
+  }
+})
+
 ui.newUsername.addEventListener('click', () => showWelcome('change'))
 
 for (const button of ui.openButtons) {
@@ -3228,17 +3330,24 @@ ui.localVideo.addEventListener('loadedmetadata', () => {
 player.addEventListener('media', () => broadcastState())
 player.addEventListener('session', () => {
   session.epoch++
+  logEvent('media', 'pipeline-restart', {epoch: session.epoch, transcoding: player.transcoding, time: currentTime()})
   broadcastState()
 })
 player.addEventListener('loading', () => render())
-player.addEventListener('error', ({detail}) => { if (isHost()) failHosting(detail); else toast(detail, true) })
+player.addEventListener('error', ({detail}) => {
+  logError('media', 'player-error', {message: String(detail), host: isHost()})
+  if (isHost()) failHosting(detail); else toast(detail, true)
+})
 
 youtube.addEventListener('ready', () => { if (isHost()) broadcastState() })
 youtube.addEventListener('state', () => {
   if (session.preview && youtube.playing) activatePreview()
   render()
 })
-youtube.addEventListener('error', ({detail}) => { if (isHost()) failHosting(detail); else toast(detail, true) })
+youtube.addEventListener('error', ({detail}) => {
+  logError('media', 'youtube-error', {message: String(detail), host: isHost()})
+  if (isHost()) failHosting(detail); else toast(detail, true)
+})
 youtube.addEventListener('blocked', () => toast('Click Play in the YouTube player to allow playback.'))
 youtube.addEventListener('ended', () => {
   if (!isHost()) return

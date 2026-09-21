@@ -14,6 +14,7 @@
     "test": "node --test",
     "test:startup": "npm run bundle && node scripts/electron.js scripts/check-startup.js && node scripts/check-profiles.js",
     "test:youtube": "node scripts/electron.js scripts/check-youtube.js",
+    "test:logging": "npm run bundle && node scripts/electron.js scripts/check-logging.js",
     "test:network": "node scripts/patch-trystero.js && node scripts/electron.js scripts/check-network.js",
     "test:discovery": "node scripts/patch-trystero.js && node scripts/electron.js scripts/check-network.js --public-discovery",
     "test:connections": "node scripts/patch-trystero.js && node scripts/electron.js scripts/check-connection-regression.js --relay-outage working",

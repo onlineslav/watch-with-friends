@@ -830,6 +830,25 @@ button:disabled {
   gap: 8px;
 }
 
+.settings-note {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: inherit;
+  font: inherit;
+  font-size: 15px;
+  line-height: 1.45;
+  resize: vertical;
+}
+
+.settings-note:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
 .zoom-row {
   --ratio: 0.33;
   display: flex;

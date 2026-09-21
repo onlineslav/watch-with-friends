@@ -28,6 +28,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('net:ice-servers', () => new Promise((resolve) => pendingNetwork.push(resolve)))
   ipcMain.handle('update:check', () => null)
   ipcMain.handle('session:stop', () => {})
+  ipcMain.handle('log:events', () => {}) // this check has no log file; the renderer flushes anyway
   try {
     const win = new BrowserWindow({show: false, webPreferences: {
       backgroundThrottling: false,

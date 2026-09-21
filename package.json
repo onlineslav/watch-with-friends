@@ -1,7 +1,7 @@
 {
   "name": "watch-with-friends",
   "productName": "Watch With Friends",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Watch With Friends - Synced Media Player. One host streams, everyone stays in sync.",
   "main": "main/index.js",
   "private": true,

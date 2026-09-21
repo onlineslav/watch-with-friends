@@ -1,17 +1,14 @@
-## What's new in 0.5.0
+## What's new in 0.5.1
 
-**Synced Video Player is now Watch With Friends.** Updating keeps everything: your
-username, friends list and saved rooms carry over on first launch, and you stay
-connected to friends still on 0.4.
+Fixes for the three things most likely to interrupt a watch, plus a way to send
+a log when something still goes wrong.
 
 Windows installs the update automatically; on a Mac, use the download button on the home screen.
 
-- **UI scale:** Ctrl and `+` / `-` / `0` or Ctrl and the scroll wheel resize the whole app, and Settings has a slider and a typed percent for anything between 50% and 200%.
-- **Drop a YouTube link on the video** to play it, the same as dropping a file.
-- **Steadier drawing:** the pen no longer stops mid-line, and each tool has its own cursor.
-- **Playlist rows show position out of total**, so you can see how far into an item you are without opening it.
-- **Tidier home screen:** a long list of saved rooms scrolls on its own instead of pushing the page, the edges light up under the pointer, and the version label links to the project page.
-- **Room name** has a clearer field that saves with a checkmark, and the people sidebar closes when you click away from it.
+- **Pausing a friend's YouTube video now pauses it for them.** The embed reports its state on a timer, so a pause was announced as "still playing" and the viewer started itself again. Using YouTube's own controls as host now reaches everyone at once instead of on the next tick.
+- **"Connection unavailable, retrying" no longer appears while you are both online.** One old failed peer used to describe the whole friends list until it went away. A friend who is connected but still proving who they are now reads **Connecting...**.
+- **The room name stops saying "Joining room..."** once you have actually joined.
+- **Having problems?** Settings can now save a diagnostic log covering the last few hours: what the connection did, and why the picture quality changed. It saves to a file you choose and send yourself, with file paths and addresses stripped out. Nothing is uploaded.
 
 ## Download
 

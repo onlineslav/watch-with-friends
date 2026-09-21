@@ -1,6 +1,9 @@
 
 Video Screen - Open Media or Enter Link
 
+sometimes the video randomly gets smaller (was watching friend's stream)
+
+- was watching a stream my friend put on - sometimes it would go down to like 240p for me... how come? 
 
 add loop button (synced)
 change word 'video' to 'media' and allow all media types.

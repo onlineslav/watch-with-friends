@@ -230,7 +230,7 @@ async function main() {
       const marker = path.join(qaRoot, 'electron.json')
       const command = path.join(qaRoot, 'room.json')
       const storedData = {identity: 'qa-saved-identity', friends: '["friend#qa"]', rooms: '{"QA123456":{"progress":42}}', settings: '{"uiScale":125,"volume":0.7}'}
-      const storageScript = `(() => {const initial = ${JSON.stringify(storedData)}; const data = {}; for (const [key,value] of Object.entries(initial)) {if (!localStorage.getItem(key)) localStorage.setItem(key,value); data[key] = localStorage.getItem(key)}; return data})()`
+      const storageScript = (seed) => `(() => {const initial = ${JSON.stringify(storedData)}; const data = {}; for (const [key,value] of Object.entries(initial)) {if (${seed} && !localStorage.getItem(key)) localStorage.setItem(key,value); data[key] = localStorage.getItem(key)}; return data})()`
       fs.writeFileSync(command, 'true')
       const label = 'electron'
       async function electronFixture(version, destination) {
@@ -250,7 +250,7 @@ const updater = require('./main/updater'); const log = require('./main/log'); le
 app.whenReady().then(async () => {
   log.start({dir: ${JSON.stringify(path.join(profile, 'logs'))}});
   win = new BrowserWindow({show:false}); await win.loadFile(require('node:path').join(__dirname, 'qa.html'));
-  const data = await win.webContents.executeJavaScript(${JSON.stringify(storageScript)});
+  const data = await win.webContents.executeJavaScript(${JSON.stringify(storageScript(version === '1.0.0'))});
   updater.setInRoom(JSON.parse(fs.readFileSync(${JSON.stringify(command)})));
   updater.checkForUpdates();
   setInterval(() => {updater.setInRoom(JSON.parse(fs.readFileSync(${JSON.stringify(command)}))); fs.writeFileSync(${JSON.stringify(marker)}, JSON.stringify({version:app.getVersion(), data, status:updater.getStatus()}));}, 200);

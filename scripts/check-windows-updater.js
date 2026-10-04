@@ -36,7 +36,7 @@ async function main() {
   const command = path.join(scratch, 'commands.json')
   const marker = path.join(scratch, 'state.json')
   const data = {identity: 'qa-identity', friends: '["friend#qa"]', rooms: '{"QA123456":{"progress":42}}', settings: '{"uiScale":125,"volume":0.7}'}
-  const storage = `(() => {const initial=${JSON.stringify(data)}; const saved={}; for (const [key,value] of Object.entries(initial)) {if (!localStorage.getItem(key)) localStorage.setItem(key,value); saved[key]=localStorage.getItem(key)}; return saved})()`
+  const storage = (seed) => `(() => {const initial=${JSON.stringify(data)}; const saved={}; for (const [key,value] of Object.entries(initial)) {if (${seed} && !localStorage.getItem(key)) localStorage.setItem(key,value); saved[key]=localStorage.getItem(key)}; return saved})()`
   const routes = new Map()
   const server = http.createServer((req, res) => {
     const bytes = routes.get(req.url.split('?')[0])
@@ -65,7 +65,7 @@ const updater=require('./main/updater'); let win; let retry=0; const faults=[];
 process.on('unhandledRejection',(error)=>faults.push(String(error?.message||error)));
 app.whenReady().then(async()=>{
   win=new BrowserWindow({show:false}); await win.loadFile(require('node:path').join(__dirname,'qa.html'));
-  const data=await win.webContents.executeJavaScript(${JSON.stringify(storage)});
+  const data=await win.webContents.executeJavaScript(${JSON.stringify(storage(version === '1.0.0'))});
   updater.setInRoom(true); updater.checkForUpdates();
   setInterval(()=>{let c; try{c=JSON.parse(fs.readFileSync(${JSON.stringify(command)}))}catch{return}
     updater.setInRoom(c.inRoom); if(c.retry>retry){retry=c.retry; updater.retry()}

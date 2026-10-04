@@ -221,3 +221,17 @@ test('Windows retains automatic download, installation on ordinary quit, silent 
   updater.emit('update-not-available')
   assert.equal(statuses.at(-1).phase, 'current')
 })
+
+test('Windows consumes the separate automatic download rejection and reports one authoritative error', async () => {
+  const updater = new EventEmitter()
+  updater.checkForUpdates = async () => ({downloadPromise: Promise.resolve().then(() => {
+    const error = new Error('sha512 checksum mismatch')
+    updater.emit('error', error)
+    throw error
+  })})
+  const driver = windowsDriver(updater)
+  const statuses = []
+  driver.on('status', (status) => statuses.push(status))
+  await driver.check()
+  assert.deepEqual(statuses, [{phase: 'error', message: 'sha512 checksum mismatch'}])
+})

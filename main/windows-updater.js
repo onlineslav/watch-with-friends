@@ -15,7 +15,14 @@ function windowsDriver(updater) {
   updater.on('update-downloaded', (info) => driver.emit('status', {phase: 'ready', version: info.version}))
   updater.on('update-not-available', () => driver.emit('status', {phase: 'current'}))
   updater.on('error', (error) => driver.emit('status', {phase: 'error', message: error.message}))
-  driver.check = () => updater.checkForUpdates().catch(() => {}) // error event is authoritative
+  driver.check = async () => {
+    // Version checks and automatic downloads have separate promises. Both
+    // reject on failure; the updater's error event is authoritative for status.
+    try {
+      const result = await updater.checkForUpdates()
+      await result?.downloadPromise
+    } catch {}
+  }
   driver.install = () => updater.quitAndInstall(true, true)
   return driver
 }

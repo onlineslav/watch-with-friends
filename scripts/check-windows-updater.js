@@ -61,14 +61,15 @@ async function main() {
     fs.writeFileSync(path.join(expanded, 'qa-main.js'), `
 const {app,BrowserWindow}=require('electron'); const fs=require('node:fs');
 app.setPath('userData',${JSON.stringify(profile)}); app.setPath('sessionData',${JSON.stringify(profile)});
-const updater=require('./main/updater'); let win; let retry=0;
+const updater=require('./main/updater'); let win; let retry=0; const faults=[];
+process.on('unhandledRejection',(error)=>faults.push(String(error?.message||error)));
 app.whenReady().then(async()=>{
   win=new BrowserWindow({show:false}); await win.loadFile(require('node:path').join(__dirname,'qa.html'));
   const data=await win.webContents.executeJavaScript(${JSON.stringify(storage)});
   updater.setInRoom(true); updater.checkForUpdates();
   setInterval(()=>{let c; try{c=JSON.parse(fs.readFileSync(${JSON.stringify(command)}))}catch{return}
     updater.setInRoom(c.inRoom); if(c.retry>retry){retry=c.retry; updater.retry()}
-    fs.writeFileSync(${JSON.stringify(marker)},JSON.stringify({version:app.getVersion(),data,status:updater.getStatus()}));
+    fs.writeFileSync(${JSON.stringify(marker)},JSON.stringify({version:app.getVersion(),pid:process.pid,data,faults,status:updater.getStatus()}));
     if(c.quit) app.quit();
   },100);
 }); app.on('before-quit',()=>updater.dispose());
@@ -102,6 +103,7 @@ app.whenReady().then(async()=>{
     await until(() => read().status?.phase === 'error', 'real NSIS checksum rejection')
     assert.equal(read().version, '1.0.0', 'bad bytes cannot replace the installed app')
     assert.match(read().status.message, /sha512|checksum/i)
+    assert.deepEqual(read().faults, [], 'a failed download cannot leave an unhandled rejection')
     console.log('PASS: real Windows updater rejects a checksum mismatch without installing')
     routes.set('/latest.yml', feed(createHash('sha512').update(bytes).digest('base64')))
     control(true, 1)
@@ -114,6 +116,7 @@ app.whenReady().then(async()=>{
     control(false, 1)
     await until(() => read().version === '1.0.1', 'NSIS silent replacement and relaunch', 180_000)
     assert.deepEqual(read().data, data, 'identity, friends, rooms and settings survive the real NSIS update')
+    assert.deepEqual(read().faults, [])
     console.log('PASS: real NSIS install updates silently, defers rooms/rejoining, relaunches and preserves saved data')
     control(false, 1, true)
     await pause(1500)
@@ -123,12 +126,14 @@ app.whenReady().then(async()=>{
     await pause(1500)
     running?.kill()
     const uninstaller = path.join(installed, 'Uninstall Watch With Friends.exe')
-    if (fs.existsSync(uninstaller)) await run(uninstaller, ['/S'])
+    // _? keeps NSIS from returning early after copying/spawning itself, so disk
+    // cleanup waits for the actual uninstallation (including paths with spaces).
+    if (fs.existsSync(uninstaller)) await run(uninstaller, ['/S', `_?=${installed}`])
     server.closeAllConnections(); await new Promise((resolve) => server.close(resolve))
     // Every recursive cleanup target was allocated directly under this fixture.
     assert.equal(path.dirname(path.resolve(scratch)), path.resolve(os.tmpdir()))
     assert.ok(path.basename(scratch).startsWith('wwf-nsis-qa-'))
-    fs.rmSync(scratch, {recursive: true, force: true, maxRetries: 10, retryDelay: 500})
+    await fs.promises.rm(scratch, {recursive: true, force: true, maxRetries: 25, retryDelay: 200})
   }
 }
-main().catch((error) => {console.error(error); process.exitCode = 1})
+main().then(() => process.exit(0), (error) => {console.error(error); process.exit(1)})

@@ -16,7 +16,7 @@ async function fixture(t, size = DOWNLOAD_CHUNK_BYTES * 3 + 73) {
   for (let i = 0; i < bytes.length; i++) bytes[i] = i % 251
   await fs.writeFile(source, bytes)
   const owner = new DownloadFiles(), viewer = new DownloadFiles()
-  const messages = [], failures = [], completed = []
+  const messages = [], failures = [], completed = [], closing = []
   let available = true
   const ownerApi = {
     downloadInfo: (file) => owner.info(file), downloadOpen: (file, length) => owner.open(file, length),
@@ -36,7 +36,7 @@ async function fixture(t, size = DOWNLOAD_CHUNK_BYTES * 3 + 73) {
   }
   const client = new RoomDownloads({api, resolveFile: () => null, isActive: () => true,
     infoAction: request(server.info.bind(server)), chunkAction: request(server.chunk.bind(server)),
-    closeAction: {send: (value) => server.close(value, 'viewer')}, failed: (message) => failures.push(message), completed: (name) => completed.push(name),
+    closeAction: {send: (value) => { const pending = server.close(value, 'viewer'); closing.push(pending); return pending }}, failed: (message) => failures.push(message), completed: (name) => completed.push(name),
   })
   t.after(async () => {
     server.dispose(); client.dispose()
@@ -45,7 +45,8 @@ async function fixture(t, size = DOWNLOAD_CHUNK_BYTES * 3 + 73) {
     assert.ok(path.basename(directory).startsWith('wwf-download-test-'))
     await fs.rm(directory, {recursive: true, force: true})
   })
-  return {source, target, directory, bytes, owner, viewer, server, client, api, ownerApi, messages, failures, completed, revoke: () => { available = false }}
+  return {source, target, directory, bytes, owner, viewer, server, client, api, ownerApi, messages, failures, completed,
+    waitForClose: () => Promise.all(closing), revoke: () => { available = false }}
 }
 
 test('peer download saves exact bytes in bounded chunks and sends IDs instead of paths', async (t) => {
@@ -108,6 +109,9 @@ test('cancellation cleans partial downloads and preserves a pre-existing destina
   assert.equal(await fs.readFile(f.target, 'utf8'), 'keep this')
   assert.deepEqual(f.completed, [])
   assert.deepEqual(f.failures, [])
+  // Peer close is deliberately sent without blocking the client's cancellation.
+  // Await the fixture's transport delivery before asserting remote disk cleanup.
+  await f.waitForClose()
   assert.equal(f.owner.files.size + f.viewer.files.size, 0)
   assert.ok((await fs.readdir(f.directory)).every((name) => !name.endsWith('.part')))
 })

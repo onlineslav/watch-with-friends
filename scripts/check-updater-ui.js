@@ -1,6 +1,6 @@
 // Real preload/IPC and Home-card checks with a disposable identity. Networking
-// stays pending, so this test sends no discovery traffic.
-const {app, BrowserWindow, ipcMain} = require('electron')
+// is blocked; the pending-join case gets its own window before the ICE deadline.
+const {app, BrowserWindow, ipcMain, session} = require('electron')
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const os = require('node:os')
@@ -8,6 +8,7 @@ const path = require('node:path')
 const root = path.resolve(__dirname, '..')
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'wwf-updater-ui-'))
 app.setPath('userData', profile)
+app.on('window-all-closed', () => {}) // two isolated windows run sequentially
 let window
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const run = (source) => window.webContents.executeJavaScript(source)
@@ -16,6 +17,7 @@ async function until(source) {
   assert.fail(`Timed out: ${source}`)
 }
 app.whenReady().then(async () => {
+  session.defaultSession.webRequest.onBeforeRequest({urls: ['http://*/*', 'https://*/*', 'ws://*/*', 'wss://*/*']}, (_details, reply) => reply({cancel: true}))
   let initialReply
   let retries = 0
   const roomFlags = []
@@ -26,12 +28,22 @@ app.whenReady().then(async () => {
   ipcMain.handle('update:check', () => new Promise((resolve) => {initialReply = resolve}))
   ipcMain.handle('update:retry', () => { retries++; window.webContents.send('update:status', {phase: 'checking'}); return {phase: 'checking'} })
   ipcMain.handle('log:events', () => {})
-  window = new BrowserWindow({show: false, width: 1000, height: 780, webPreferences: {preload: path.join(root, 'main/preload.js'), offscreen: true, backgroundThrottling: false}})
+  const makeWindow = () => new BrowserWindow({show: false, width: 1000, height: 780, webPreferences: {preload: path.join(root, 'main/preload.js'), offscreen: true, backgroundThrottling: false}})
+  window = makeWindow()
   await window.loadFile(path.join(root, 'renderer/index.html'))
   await until('!document.getElementById("welcome").hidden')
   await run(`document.getElementById('handle').value='updaterqa'; document.getElementById('welcome-name').value='Updater QA'; document.getElementById('welcome-form').dispatchEvent(new Event('submit',{cancelable:true}));`)
   await until('!document.getElementById("home").hidden')
   const send = async (status) => {window.webContents.send('update:status', status); await pause(75)}
+  await send({phase: 'ready'})
+  await run('document.getElementById("create").click()')
+  await until('document.getElementById("create").disabled')
+  assert.deepEqual(roomFlags, [true], 'joining defers the restart before stalled network setup finishes')
+  window.destroy()
+  roomFlags.length = 0
+  window = makeWindow()
+  await window.loadFile(path.join(root, 'renderer/index.html'))
+  await until('!document.getElementById("home").hidden')
   const text = () => run('document.querySelector("[data-update]")?.textContent || ""')
   await send({phase: 'downloading', version: '1.2.3', progress: 40})
   assert.match(await text(), /40%/)
@@ -68,9 +80,5 @@ app.whenReady().then(async () => {
   await run('document.getElementById("create").click()')
   await pause(50)
   assert.equal(roomFlags.length, 0, 'new rooms cannot start during a committed restart')
-  await send({phase: 'ready'})
-  await run('document.getElementById("create").click()')
-  await until('document.getElementById("create").disabled')
-  assert.deepEqual(roomFlags, [true], 'joining defers the restart before stalled network setup finishes')
   console.log('PASS: real updater IPC, late snapshot race, one progress card, room messaging, retry, error privacy and 50–200% zoom')
 }).then(() => {window?.destroy(); app.exit(0)}, (error) => {console.error(error); window?.destroy(); app.exit(1)})

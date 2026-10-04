@@ -42,6 +42,9 @@ jobs:
         shell: bash
         run: printf '%s' "$TURN_CONFIG" > config/turn.json
       - run: ${{ matrix.command }}
+      - name: Verify Windows NSIS replacement, room deferral and saved data
+        if: runner.os == 'Windows'
+        run: node scripts/check-windows-updater.js
       - name: Sign Mac update archives and feeds
         if: runner.os == 'macOS'
         env:

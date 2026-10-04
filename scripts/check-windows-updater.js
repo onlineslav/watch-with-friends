@@ -78,7 +78,8 @@ app.whenReady().then(async()=>{
     fs.writeFileSync(path.join(app, 'resources/app-update.yml'), `provider: generic\nurl: ${base}\nupdaterCacheDirName: wwf-nsis-qa-${path.basename(scratch)}\n`)
     const output = path.join(directory, 'installers')
     await build({projectDir: expanded, prepackaged: app, targets: Platform.WINDOWS.createTarget('nsis'), publish: 'never', config: {
-      extends: null, appId: 'app.syncedvideoplayer.updaterqa', productName: 'WWF Updater QA', executableName: 'Watch With Friends',
+      extends: null, electronVersion: require('electron/package.json').version,
+      appId: 'app.syncedvideoplayer.updaterqa', productName: 'WWF Updater QA', executableName: 'Watch With Friends',
       directories: {output}, win: {target: 'nsis', signAndEditExecutable: false},
       nsis: {oneClick: true, perMachine: false, runAfterFinish: false, createDesktopShortcut: false, createStartMenuShortcut: false, artifactName: 'qa-${version}.exe'},
       publish: {provider: 'generic', url: base},

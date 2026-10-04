@@ -222,6 +222,8 @@ async function main() {
       const profile = path.join(qaRoot, 'profile')
       const marker = path.join(qaRoot, 'electron.json')
       const command = path.join(qaRoot, 'room.json')
+      const storedData = {identity: 'qa-saved-identity', friends: '["friend#qa"]', rooms: '{"QA123456":{"progress":42}}', settings: '{"uiScale":125,"volume":0.7}'}
+      const storageScript = `(() => {const initial = ${JSON.stringify(storedData)}; const data = {}; for (const [key,value] of Object.entries(initial)) {if (!localStorage.getItem(key)) localStorage.setItem(key,value); data[key] = localStorage.getItem(key)}; return data})()`
       fs.writeFileSync(command, 'true')
       const label = 'electron'
       async function electronFixture(version, destination) {
@@ -241,10 +243,10 @@ const updater = require('./main/updater'); const log = require('./main/log'); le
 app.whenReady().then(async () => {
   log.start({dir: ${JSON.stringify(path.join(profile, 'logs'))}});
   win = new BrowserWindow({show:false}); await win.loadFile(require('node:path').join(__dirname, 'qa.html'));
-  const identity = await win.webContents.executeJavaScript("localStorage.getItem('identity') || (localStorage.setItem('identity', 'qa-saved-identity'), 'qa-saved-identity')");
+  const data = await win.webContents.executeJavaScript(${JSON.stringify(storageScript)});
   updater.setInRoom(JSON.parse(fs.readFileSync(${JSON.stringify(command)})));
   updater.checkForUpdates();
-  setInterval(() => {updater.setInRoom(JSON.parse(fs.readFileSync(${JSON.stringify(command)}))); fs.writeFileSync(${JSON.stringify(marker)}, JSON.stringify({version:app.getVersion(), identity, status:updater.getStatus()}));}, 200);
+  setInterval(() => {updater.setInRoom(JSON.parse(fs.readFileSync(${JSON.stringify(command)}))); fs.writeFileSync(${JSON.stringify(marker)}, JSON.stringify({version:app.getVersion(), data, status:updater.getStatus()}));}, 200);
 }); app.on('before-quit', () => {updater.dispose(); log.stop()}); app.on('window-all-closed',()=>app.quit());
 `)
         fs.rmSync(path.join(contents, 'Resources/app.asar'))
@@ -268,7 +270,7 @@ app.whenReady().then(async () => {
       assert.equal(read().version, '1.0.0', 'real Electron stays open in its room')
       fs.writeFileSync(command, 'false')
       await until(() => read().version === '1.0.1', 'packaged Electron replacement/relaunch', 120_000)
-      assert.equal(read().identity, 'qa-saved-identity', 'Chromium localStorage survives the update')
+      assert.deepEqual(read().data, storedData, 'identity, friends, rooms and settings survive in Chromium localStorage')
       run('/usr/bin/codesign', ['--verify', '--deep', '--strict', oldApp])
       run('/usr/bin/osascript', ['-e', 'tell application id "app.syncedvideoplayer.qa.electron" to quit'])
       console.log('PASS: packaged Electron updater waits for room exit, replaces, relaunches and preserves localStorage')

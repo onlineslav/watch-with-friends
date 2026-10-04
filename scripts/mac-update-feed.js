@@ -31,7 +31,13 @@ function writeFeed({archive, version, arch, secret, out, vendor}) {
   const feed = appcast({version, arch, name: path.basename(archive), length: data.length, signature})
   fs.writeFileSync(out, feed)
   // Sparkle itself signs the feed, so feed metadata is authenticated too.
-  execFileSync(path.join(vendor, 'bin', 'sign_update'), ['--ed-key-file', '-', out], {input: `${secret}\n`, stdio: ['pipe', 'pipe', 'pipe']})
+  const signer = path.join(vendor, 'bin', 'sign_update')
+  const options = {input: `${secret}\n`, stdio: ['pipe', 'pipe', 'pipe']}
+  execFileSync(signer, ['--ed-key-file', '-', out], options)
+  // Independently validate Node's archive signature and Sparkle's signed feed
+  // with the native verifier before either can reach a release.
+  execFileSync(signer, ['--ed-key-file', '-', '--verify', archive, signature], options)
+  execFileSync(signer, ['--ed-key-file', '-', '--verify', out], options)
 }
 if (require.main === module) {
   const arch = process.argv[2]

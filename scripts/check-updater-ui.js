@@ -18,6 +18,8 @@ async function until(source) {
 app.whenReady().then(async () => {
   let initialReply
   let retries = 0
+  const roomFlags = []
+  ipcMain.on('app:in-room', (_event, value) => roomFlags.push(value))
   ipcMain.handle('app:version', () => app.getVersion())
   ipcMain.handle('net:ice-servers', () => new Promise(() => {}))
   ipcMain.handle('window:zoom', (event, factor) => {event.sender.setZoomFactor(factor); return factor})
@@ -62,5 +64,13 @@ app.whenReady().then(async () => {
   }
   await send({phase: 'current'})
   assert.equal(await run('document.querySelectorAll("[data-update]").length'), 0)
+  await send({phase: 'installing'})
+  await run('document.getElementById("create").click()')
+  await pause(50)
+  assert.equal(roomFlags.length, 0, 'new rooms cannot start during a committed restart')
+  await send({phase: 'ready'})
+  await run('document.getElementById("create").click()')
+  await until('document.getElementById("create").disabled')
+  assert.deepEqual(roomFlags, [true], 'joining defers the restart before stalled network setup finishes')
   console.log('PASS: real updater IPC, late snapshot race, one progress card, room messaging, retry, error privacy and 50–200% zoom')
 }).then(() => {window?.destroy(); app.exit(0)}, (error) => {console.error(error); window?.destroy(); app.exit(1)})

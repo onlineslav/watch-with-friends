@@ -171,8 +171,8 @@ function registerIpc() {
     shell.showItemInFolder(saved)
     return saved
   })
-  ipcMain.handle('update:check', () => updater.checkMacUpdate())
-  ipcMain.handle('update:open', (_event, which) => updater.openMacUpdate(which))
+  ipcMain.handle('update:check', () => updater.getStatus())
+  ipcMain.handle('update:retry', () => updater.retry())
 }
 
 function start() {
@@ -201,6 +201,7 @@ function start() {
   })
   app.on('window-all-closed', () => app.quit())
   app.on('before-quit', () => {
+    updater.dispose()
     media.stopAll()
     log.record('app', 'quit')
     log.stop()

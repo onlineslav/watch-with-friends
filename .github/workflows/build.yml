@@ -17,9 +17,11 @@ jobs:
           - os: macos-latest
             command: npm run dist:mac -- --arm64 --publish never
             artifact: mac-apple-silicon
+            arch: arm64
           - os: macos-15-intel
             command: npm run dist:mac -- --x64 --publish never
             artifact: mac-intel
+            arch: x64
     runs-on: ${{ matrix.os }}
     env:
       TURN_CONFIG: ${{ secrets.TURN_CONFIG }}
@@ -40,6 +42,14 @@ jobs:
         shell: bash
         run: printf '%s' "$TURN_CONFIG" > config/turn.json
       - run: ${{ matrix.command }}
+      - name: Sign Mac update archives and feeds
+        if: runner.os == 'macOS'
+        env:
+          MAC_UPDATE_PRIVATE_KEY: ${{ secrets.MAC_UPDATE_PRIVATE_KEY }}
+        run: node scripts/mac-update-feed.js ${{ matrix.arch }}
+      - name: Verify Mac updater and packaged profile preservation
+        if: runner.os == 'macOS'
+        run: npm run test:updater:mac -- --packaged
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
@@ -48,6 +58,8 @@ jobs:
             dist/*.exe.blockmap
             dist/latest.yml
             dist/*.dmg
+            dist/*.zip
+            dist/appcast-*.xml
           if-no-files-found: error
 
   release:

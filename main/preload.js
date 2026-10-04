@@ -30,5 +30,10 @@ contextBridge.exposeInMainWorld('api', {
   logEvents: (entries) => ipcRenderer.invoke('log:events', entries),
   saveDiagnostics: (options) => ipcRenderer.invoke('log:save', options),
   checkForUpdate: () => ipcRenderer.invoke('update:check'),
-  openUpdate: (which) => ipcRenderer.invoke('update:open', which),
+  retryUpdate: () => ipcRenderer.invoke('update:retry'),
+  onUpdate: (handler) => {
+    const listener = (_event, status) => handler(status)
+    ipcRenderer.on('update:status', listener)
+    return () => ipcRenderer.removeListener('update:status', listener)
+  },
 })

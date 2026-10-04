@@ -51,6 +51,22 @@ Once accepted, the friends list shows an online count and each friend's **Online
   xattr -cr "/Applications/Watch With Friends.app"
   ```
 
+## Automatic updates
+
+Windows and Mac check for updates at launch, hourly while open, and after waking
+from sleep. Updates download inside the app. A finished update waits until you
+leave your watch room, then installs and reopens the app. Your identity, friends,
+saved rooms and settings stay in your existing profile. Failed downloads retry
+automatically; Home also offers **Retry update**.
+
+Mac updates use Sparkle with our own Ed25519 signatures, without an Apple
+Developer membership. Copy the app out of its DMG into a writable Applications
+folder before launching it. The first installation is still not notarized and
+uses the first-launch steps above. People using an older Mac build need one
+manual upgrade to the first release containing this updater.
+
+Maintainer setup and updater QA are documented in [docs/auto-updates.md](docs/auto-updates.md).
+
 ## Connection problems
 
 The apps connect directly using WebRTC. Networks that block direct connections need a TURN relay. The desktop uses short-lived credentials from an HTTPS endpoint, renews them before expiry, and retries failed requests in the background. It also attempts reconnection after a network change or waking from sleep.

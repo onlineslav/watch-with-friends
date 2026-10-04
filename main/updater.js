@@ -1,53 +1,50 @@
-const {app, net, shell} = require('electron')
-const {macUpdate} = require('./release')
-
-const LATEST_RELEASE = 'https://api.github.com/repos/onlineslav/watch-with-friends/releases/latest'
-
-// Windows checks the GitHub releases once at launch and installs a newer version without asking.
-// Mac can't: Squirrel.Mac refuses to update an app that isn't signed with a Developer ID, and the
-// Mac builds are ad-hoc signed. There the home screen offers the download instead (checkMacUpdate).
+const {app, BrowserWindow, powerMonitor} = require('electron')
+const {EventEmitter} = require('node:events')
+const {UpdateController} = require('./update-controller')
+const {SparkleDriver} = require('./sparkle')
+const log = require('./log')
+let controller = null
 let inRoom = false
-let downloaded = false
-let macRelease = null
 
-// Required lazily, so a Mac never creates the updater it can't use.
-const autoUpdater = () => require('electron-updater').autoUpdater
-
-// Silent install, then the installer relaunches the app.
-const install = () => autoUpdater().quitAndInstall(true, true)
-
-// A finished download waits while you're in a room, so an update never cuts off a watch session.
+function windowsDriver() {
+  const updater = require('electron-updater').autoUpdater
+  const driver = new EventEmitter()
+  updater.autoDownload = true
+  updater.autoInstallOnAppQuit = true
+  updater.allowDowngrade = false
+  let version
+  updater.on('update-available', (info) => {
+    version = info.version
+    driver.emit('status', {phase: 'downloading', version, progress: 0})
+  })
+  updater.on('download-progress', (info) => driver.emit('status', {phase: 'downloading', version, progress: Math.floor(info.percent)}))
+  updater.on('update-downloaded', (info) => driver.emit('status', {phase: 'ready', version: info.version}))
+  updater.on('update-not-available', () => driver.emit('status', {phase: 'current'}))
+  updater.on('error', (error) => driver.emit('status', {phase: 'error', message: error.message}))
+  driver.check = () => updater.checkForUpdates().catch(() => {}) // error event is authoritative
+  driver.install = () => updater.quitAndInstall(true, true)
+  return driver
+}
+function checkForUpdates() {
+  if (controller || !app.isPackaged || !['win32', 'darwin'].includes(process.platform)) return
+  const driver = process.platform === 'darwin'
+    ? new SparkleDriver({executable: app.getPath('exe'), resources: process.resourcesPath})
+    : windowsDriver()
+  controller = new UpdateController(driver, {record: log.record})
+  controller.setInRoom(inRoom)
+  controller.on('status', (status) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.webContents.isDestroyed()) win.webContents.send('update:status', status)
+    }
+  })
+  controller.start()
+  powerMonitor.on('resume', () => controller.check())
+}
 function setInRoom(value) {
   inRoom = Boolean(value)
-  if (!inRoom && downloaded) install()
+  controller?.setInRoom(inRoom)
 }
-
-function checkForUpdates() {
-  if (!app.isPackaged || process.platform !== 'win32') return
-  const updater = autoUpdater()
-  updater.on('update-downloaded', () => {
-    downloaded = true
-    if (!inRoom) install()
-  })
-  updater.on('error', (error) => console.error('Update failed:', error.message))
-  updater.checkForUpdates().catch(() => {})
-}
-
-async function checkMacUpdate() {
-  if (!app.isPackaged || process.platform !== 'darwin') return null
-  try {
-    const response = await net.fetch(LATEST_RELEASE, {headers: {Accept: 'application/vnd.github+json'}})
-    macRelease = response.ok ? macUpdate(await response.json(), app.getVersion(), process.arch) : null
-  } catch {
-    macRelease = null
-  }
-  return macRelease && {version: macRelease.version}
-}
-
-// Opens only the links of the release checkMacUpdate found, never a URL from the renderer.
-function openMacUpdate(which) {
-  const url = macRelease?.[which === 'page' ? 'page' : 'download']
-  if (url) shell.openExternal(url)
-}
-
-module.exports = {checkForUpdates, checkMacUpdate, openMacUpdate, setInRoom}
+const getStatus = () => controller?.snapshot() || null
+const retry = () => controller?.check() || null
+const dispose = () => controller?.dispose()
+module.exports = {checkForUpdates, getStatus, retry, setInRoom, dispose}

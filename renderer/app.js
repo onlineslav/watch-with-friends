@@ -4,6 +4,7 @@ import {createNetwork} from './network.mjs'
 import {RoomDownloads} from './downloads.mjs'
 import {authenticateRoomPeer} from './room-auth.mjs'
 import {estimatedMediaTime, updateClock, chooseSendQuality, aggregateLinks} from './sync.mjs'
+import {describeUpdate} from './update.mjs'
 import {
   errorMessage,
   formatRoomCode,
@@ -3007,24 +3008,35 @@ window.api.getVersion().then((version) => {
 }, () => {})
 ui.appVersion.addEventListener('click', () => window.api.openProject())
 
-// Mac can't install updates itself, so home shows a card when a newer release is out.
-window.api.checkForUpdate().then((update) => {
-  if (!update) return
-  const card = element('div', 'join-request')
-  const label = element('span', null, `Version ${update.version} is out`)
-  const download = element('button', 'primary small', 'Download')
-  const steps = element('button', 'small', 'Install steps')
-  const close = element('button', 'ghost small', 'Not now')
-  download.addEventListener('click', () => {
-    window.api.openUpdate('download')
-    label.textContent = 'Open the download and drag the app into Applications'
-    download.replaceWith(steps)
-    close.textContent = 'Done'
-  })
-  steps.addEventListener('click', () => window.api.openUpdate('page'))
-  close.addEventListener('click', () => card.remove())
-  card.append(label, download, close)
-  ui.homeInvites.append(card)
+// Both platforms update inside the app. Reuse the existing Home notification.
+let updateCard = null
+let updateLabel = null
+let updateRetry = null
+let updateRevision = 0
+function showUpdate(status) {
+  const view = describeUpdate(status)
+  if (!view) { updateCard?.remove(); updateCard = null; return }
+  if (!updateCard) {
+    updateCard = element('div', 'join-request')
+    updateCard.dataset.update = ''
+    updateCard.setAttribute('role', 'status')
+    updateLabel = element('span')
+    updateRetry = element('button', 'primary small', 'Retry update')
+    updateRetry.addEventListener('click', () => {
+      updateRetry.disabled = true
+      window.api.retryUpdate().catch(() => { updateRetry.disabled = false })
+    })
+    updateCard.append(updateLabel, updateRetry)
+    ui.homeInvites.append(updateCard)
+  }
+  updateLabel.textContent = view.text
+  updateRetry.hidden = !view.retry
+  updateRetry.disabled = false
+}
+window.api.onUpdate((status) => { updateRevision++; showUpdate(status) })
+const initialUpdateRevision = updateRevision
+window.api.checkForUpdate().then((status) => {
+  if (updateRevision === initialUpdateRevision) showUpdate(status)
 }, () => {})
 
 ui.handle.addEventListener('input', updateWelcome)

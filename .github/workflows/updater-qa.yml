@@ -1,0 +1,52 @@
+name: Updater QA
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'main/*update*'
+      - 'main/sparkle.js'
+      - 'native/updater/**'
+      - 'scripts/*mac*update*'
+      - 'scripts/prepare-package.js'
+      - 'test/*update*'
+      - 'config/update-key.json'
+      - '.github/workflows/updater-qa.yml'
+jobs:
+  mac:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            arch: arm64
+          - os: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: Native signatures, failures, staging and relaunch
+        run: npm run test:updater:mac
+      - name: Package the real Electron app
+        run: npm run dist:mac -- --${{ matrix.arch }} --dir --publish never
+      - name: Test packaged updater and profile preservation
+        run: npm run test:updater:mac -- --packaged
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run test:startup
+      - run: npm run test:logging

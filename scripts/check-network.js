@@ -1,7 +1,7 @@
 // Real WebRTC and application code; discovery normally uses local IPC.
 // --public-discovery checks Nostr with different room startup orders instead.
 // Hidden windows use disposable identities and loopback media connections.
-const {app, BrowserWindow, ipcMain} = require('electron')
+const {app, BrowserWindow, ipcMain, dialog} = require('electron')
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const os = require('node:os')
@@ -26,6 +26,7 @@ async function until(win, condition, timeoutMs = publicDiscovery ? 90000 : 15000
     if (await run(win, condition)) return
     await pause(100)
   }
+  console.error(await run(win, `JSON.stringify({identity:__test.identity?.username, friendIdentity:__test.friendNetwork.identity?.username, homeHidden:document.getElementById('home').hidden, welcomeHidden:document.getElementById('welcome').hidden, startupHidden:document.getElementById('startup').hidden, startup:document.getElementById('startup-status').textContent})`))
     console.error(await run(win, `JSON.stringify({friends:__test.friendNetwork.list(), role:__test.session.role, peers:[...__test.session.peers], remote:__test.session.remote, connection:__test.session.connection, video:{ready:document.getElementById('remote-video').readyState, frames:document.getElementById('remote-video').getVideoPlaybackQuality().totalVideoFrames}, streams:[...__test.session.peerStreams].map(([id, entry]) => ({id, claimedAt:entry.claimedAt, tracks:entry.stream.getTracks().map(t => ({kind:t.kind, muted:t.muted, state:t.readyState}))})), errors:__test.errors})`))
   assert.fail(`Timed out: ${condition}`)
 }
@@ -200,6 +201,96 @@ app.whenReady().then(async () => {
     await Promise.all([b, c].map((win) => until(win, '__test.audioState().running && __test.audioState().connected')))
     await Promise.all([b, c].map((win) => until(win, '__test.audioLevel() > 0.01')))
     console.log('PASS: Both viewers receive moving video and clock synchronization')
+    const downloadItem = await run(c, `__test.addToPlaylist([${JSON.stringify(video)}])[0].id`)
+    await until(b, `__test.playable(__test.session.playlist.items.get(${JSON.stringify(downloadItem)}))`)
+    const originalSaveDialog = dialog.showSaveDialog
+    const {DownloadFiles} = require('../main/downloads')
+    const originalRead = DownloadFiles.prototype.read
+    const downloaded = path.join(temporary, 'downloaded-original.mp4')
+    let saveResult = {canceled: false, filePath: downloaded}
+    let delayReads = false
+    dialog.showSaveDialog = async () => saveResult
+    DownloadFiles.prototype.read = async function (...args) {
+      if (delayReads) await pause(300)
+      return originalRead.apply(this, args)
+    }
+    const showDownloadMenu = (win) => run(win, `(() => {
+      __test.setPlaylistOpen(true);
+      document.querySelector('[data-id="${downloadItem}"] .playlist-options').click();
+    })()`)
+    const downloadFromMenu = async (win) => {
+      await showDownloadMenu(win)
+      assert.equal(await run(win, 'document.getElementById("playlist-download").disabled'), false)
+      await run(win, 'document.getElementById("playlist-download").click()')
+    }
+    const downloadsIdle = (win) => until(win, '__test.session.downloads.jobs.size === 0')
+    try {
+      await showDownloadMenu(b)
+      assert.equal(await run(b, `document.activeElement.id`), 'playlist-download')
+      await run(b, `document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {key:'ArrowDown',code:'ArrowDown',bubbles:true}))`)
+      assert.equal(await run(b, 'document.activeElement.id'), 'playlist-menu-remove')
+      await run(b, `document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape',code:'Escape',bubbles:true}))`)
+      assert.equal(await run(b, 'document.getElementById("playlist-item-menu").matches(":popover-open")'), false)
+      assert.equal(await run(b, 'document.activeElement.classList.contains("playlist-options")'), true)
+      await downloadFromMenu(b)
+      await downloadsIdle(b)
+      assert.deepEqual(fs.readFileSync(downloaded), fs.readFileSync(video))
+      assert.equal(await run(b, '__test.session.role'), 'viewer')
+      assert.equal(await run(a, '__test.session.role'), 'host')
+      assert.equal(await run(b, `__test.session.ownFiles.has(${JSON.stringify(downloadItem)})`), false)
+      assert.equal(await run(c, '__test.session.downloads.sources.size'), 0)
+      console.log('PASS: Playlist menu downloads the original file from a non-host owner over WebRTC while playback continues')
+
+      saveResult = {canceled: false, filePath: path.join(temporary, 'local-copy.mp4')}
+      await downloadFromMenu(c)
+      await downloadsIdle(c)
+      assert.deepEqual(fs.readFileSync(saveResult.filePath), fs.readFileSync(video))
+      console.log('PASS: Owner can save a local copy through the same menu and native save IPC')
+
+      saveResult = {canceled: true}
+      await downloadFromMenu(b)
+      await downloadsIdle(b)
+      assert.equal(await run(c, '__test.session.downloads.sources.size'), 0)
+      console.log('PASS: Cancelling the save dialog opens no peer file transfer')
+
+      saveResult = {canceled: false, filePath: path.join(temporary, 'cancelled.mp4')}
+      fs.writeFileSync(saveResult.filePath, 'existing file')
+      delayReads = true
+      await downloadFromMenu(b)
+      await until(b, `(__test.session.downloads.jobs.get(${JSON.stringify(downloadItem)})?.received || 0) > 0`)
+      await showDownloadMenu(b)
+      assert.equal(await run(b, 'document.getElementById("playlist-download").textContent'), 'Cancel download')
+      assert.equal(await run(b, `document.querySelector('[data-id="${downloadItem}"] .playlist-download-progress').hidden`), false)
+      if (process.argv.includes('--screenshots')) {
+        await pause(100)
+        const screenshot = path.join(temporary, 'download-progress.png')
+        fs.writeFileSync(screenshot, (await b.capturePage()).toPNG())
+        console.log(`Progress screenshot: ${screenshot}`)
+      }
+      await run(b, 'document.getElementById("playlist-download").click()')
+      await downloadsIdle(b)
+      await until(c, '__test.session.downloads.sources.size === 0')
+      assert.equal(fs.readFileSync(saveResult.filePath, 'utf8'), 'existing file')
+      assert.ok(fs.readdirSync(temporary).every((name) => !name.endsWith('.part')))
+      console.log('PASS: Progress and menu cancellation remove partial files without overwriting an existing destination')
+
+      saveResult = {canceled: false, filePath: path.join(temporary, 'removed.mp4')}
+      await downloadFromMenu(b)
+      await until(b, `(__test.session.downloads.jobs.get(${JSON.stringify(downloadItem)})?.received || 0) > 0`)
+      await showDownloadMenu(c)
+      await run(c, 'document.getElementById("playlist-menu-remove").click()')
+      await downloadsIdle(b)
+      await until(c, '__test.session.downloads.sources.size === 0')
+      assert.equal(fs.existsSync(saveResult.filePath), false)
+      assert.ok(fs.readdirSync(temporary).every((name) => !name.endsWith('.part')))
+      console.log('PASS: Removing a shared item stops its download and cleans both peers')
+
+    } finally {
+      dialog.showSaveDialog = originalSaveDialog
+      DownloadFiles.prototype.read = originalRead
+      await run(b, '__test.setPlaylistOpen(false)')
+      await run(c, '__test.setPlaylistOpen(false)')
+    }
     await until(b, '__test.session.remote.subtitles.length === 1')
     assert.equal(await run(b, 'JSON.stringify(__test.session.remote.subtitles).includes("external:")'), false)
     await run(b, '__test.selectSubtitle(__test.session.remote.subtitles[0].value)')
@@ -481,6 +572,53 @@ app.whenReady().then(async () => {
       await run(b, '__test.control("play")')
       await until(b, '!__test.session.preview && __test.youtube.playing && __test.youtube.time >= 12')
       console.log('PASS: Reopening YouTube restores the observed timestamp paused and resumes on Play')
+    }
+    // Isolate departure checks from the audiovisual fixture: transferring a playlist
+    // file must work in an idle room too, and late replies must not enter a new room.
+    await Promise.all(windows.map((win) => run(win, '__test.leaveRoom()')))
+    await run(a, '__test.enterRoom("DWNLOAD1", {joining:false})')
+    await Promise.all([b, c].map((win) => run(win, '__test.enterRoom("DWNLOAD1")')))
+    await connected()
+    const departureItem = await run(c, `__test.addToPlaylist([${JSON.stringify(video)}])[0].id`)
+    await until(b, `__test.playable(__test.session.playlist.items.get(${JSON.stringify(departureItem)}))`)
+    const departureSave = path.join(temporary, 'departed-owner.mp4')
+    let departurePath = departureSave
+    dialog.showSaveDialog = async () => ({canceled: false, filePath: departurePath})
+    DownloadFiles.prototype.read = async function (...args) { await pause(300); return originalRead.apply(this, args) }
+    const startDepartureDownload = () => run(b, `__test.session.downloads.download(${JSON.stringify(departureItem)}, [...__test.session.peers].find(id => __test.session.identities.get(id) === ${JSON.stringify(names[2])})); true`)
+    const departureHasProgress = () => until(b, `(__test.session.downloads.jobs.get(${JSON.stringify(departureItem)})?.received || 0) > 0`)
+    try {
+      await startDepartureDownload()
+      await departureHasProgress()
+      await run(c, '__test.leaveRoom()')
+      await downloadsIdle(b)
+      assert.equal(fs.existsSync(departureSave), false)
+      assert.ok(fs.readdirSync(temporary).every((name) => !name.endsWith('.part')))
+      await run(b, `__test.setPlaylistOpen(true); document.querySelector('[data-id="${departureItem}"] .playlist-options').click()`)
+      assert.equal(await run(b, 'document.getElementById("playlist-download").disabled'), true)
+      await run(c, '__test.enterRoom("DWNLOAD1")')
+      await connected()
+      await until(c, `__test.session.availableFiles.has(${JSON.stringify(departureItem)})`)
+      await until(b, `__test.playable(__test.session.playlist.items.get(${JSON.stringify(departureItem)}))`)
+      console.log('PASS: Owner departure stops the download and removes its temporary file; downloading becomes available after rejoining')
+
+      departurePath = path.join(temporary, 'departed-viewer.mp4')
+      await run(b, 'window.departedDownloads=__test.session.downloads; true')
+      await startDepartureDownload()
+      await departureHasProgress()
+      await run(b, '__test.leaveRoom()')
+      await until(b, 'window.departedDownloads.jobs.size === 0')
+      await until(c, '__test.session.downloads.sources.size === 0')
+      assert.equal(fs.existsSync(departurePath), false)
+      assert.ok(fs.readdirSync(temporary).every((name) => !name.endsWith('.part')))
+      await run(b, '__test.enterRoom("DWNLOAD2", {joining:false})')
+      await pause(400)
+      assert.equal(await run(b, '__test.session.downloads.jobs.size + __test.session.downloads.sources.size'), 0)
+      assert.equal(await run(b, '__test.session.downloads === window.departedDownloads'), false)
+      console.log('PASS: Downloader departure cleans both peers; late transfer replies cannot enter the next room')
+    } finally {
+      dialog.showSaveDialog = originalSaveDialog
+      DownloadFiles.prototype.read = originalRead
     }
     for (const win of windows) assert.deepEqual(await run(win, '__test.errors'), [])
   } finally {

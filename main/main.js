@@ -10,6 +10,8 @@ const {focusWindow} = require('./startup')
 const {watchZoom, zoomFactor} = require('./zoom')
 const IMAGES = require('../shared/images.json')
 const {prepareYouTube, registerYouTube, youTubeTitles} = require('./youtube')
+const {DownloadFiles} = require('./downloads')
+const {downloadName, validFileSize} = require('../shared/downloads')
 
 const MEDIA_EXTENSIONS = [
   'mkv', 'mp4', 'm4v', 'mov', 'avi', 'webm', 'wmv', 'flv', 'ts', 'm2ts', 'mts',
@@ -18,6 +20,20 @@ const MEDIA_EXTENSIONS = [
   ...Object.keys(IMAGES.native), ...IMAGES.convert,
 ]
 const SUBTITLE_EXTENSIONS = ['srt', 'ass', 'ssa', 'vtt']
+const downloadStores = new Map()
+function downloadStore(contents) {
+  if (!downloadStores.has(contents.id)) {
+    const contentsId = contents.id
+    const store = new DownloadFiles()
+    downloadStores.set(contentsId, store)
+    store.onDestroyed = () => {
+      store.dispose().catch(() => {})
+      if (downloadStores.get(contentsId) === store) downloadStores.delete(contentsId)
+    }
+    contents.once('destroyed', store.onDestroyed)
+  }
+  return downloadStores.get(contents.id)
+}
 
 // Written at the top of every log file and repeated in an export, because the first question
 // about any of this is which build, on what, and whether it was a packaged app or a dev run.
@@ -73,6 +89,22 @@ function registerIpc() {
   ipcMain.handle('dialog:media', (event) => pickFile(event, 'Media', MEDIA_EXTENSIONS))
   ipcMain.handle('dialog:media-files', (event) => pickFiles(event, 'Media', MEDIA_EXTENSIONS, true))
   ipcMain.handle('dialog:subtitle', (event) => pickFile(event, 'Subtitles', SUBTITLE_EXTENSIONS))
+  ipcMain.handle('download:info', (event, filePath) => downloadStore(event.sender).info(filePath))
+  ipcMain.handle('download:open', (event, filePath, size) => downloadStore(event.sender).open(filePath, size))
+  ipcMain.handle('download:read', (event, id, offset) => downloadStore(event.sender).read(id, offset))
+  ipcMain.handle('download:save', async (event, info) => {
+    if (!info || typeof info.name !== 'string' || info.name.length > 200 || !validFileSize(info.size)) throw new Error('Invalid download')
+    const store = downloadStore(event.sender)
+    const result = await dialog.showSaveDialog(BrowserWindow.fromWebContents(event.sender), {
+      title: 'Download file',
+      defaultPath: path.join(app.getPath('downloads'), downloadName(info.name)),
+    })
+    if (result.canceled || !result.filePath || event.sender.isDestroyed()) return null
+    return store.save(result.filePath, info.size)
+  })
+  ipcMain.handle('download:write', (event, id, offset, bytes) => downloadStore(event.sender).write(id, offset, bytes))
+  ipcMain.handle('download:finish', async (event, id) => { await downloadStore(event.sender).finish(id); return true })
+  ipcMain.handle('download:cancel', (event, id) => downloadStores.get(event.sender.id)?.cancel(id))
   ipcMain.handle('media:probe', (_event, filePath) => media.probe(filePath))
   ipcMain.handle('media:available-files', async (_event, paths) => {
     if (!Array.isArray(paths) || paths.length > 500) return []
@@ -117,7 +149,15 @@ function registerIpc() {
     win.setAlwaysOnTop(Boolean(pinned), 'floating')
     return win.isAlwaysOnTop()
   })
-  ipcMain.on('app:in-room', (_event, inRoom) => updater.setInRoom(inRoom))
+  ipcMain.on('app:in-room', (event, inRoom) => {
+    updater.setInRoom(inRoom)
+    if (!inRoom) {
+      const store = downloadStores.get(event.sender.id)
+      downloadStores.delete(event.sender.id)
+      if (store) event.sender.removeListener('destroyed', store.onDestroyed)
+      store?.dispose().catch(() => {})
+    }
+  })
   ipcMain.handle('log:events', (_event, entries) => log.recordBatch(entries))
   ipcMain.handle('log:save', async (event, {note} = {}) => {
     const result = await dialog.showSaveDialog(BrowserWindow.fromWebContents(event.sender), {

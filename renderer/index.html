@@ -297,6 +297,12 @@
             <h2 class="playlist-title">Playlist</h2>
             <p id="playlist-empty" class="playlist-empty">Add videos, songs or pictures, or drop them here. Anyone in the room can add to the list and play from it.</p>
             <ol id="playlist-items" class="playlist-items"></ol>
+            <div id="playlist-item-menu" class="playlist-item-menu" popover="auto" role="menu" aria-label="Playlist item options">
+              <button id="playlist-download" role="menuitem">Download file</button>
+              <p id="playlist-download-note" class="playlist-download-note" hidden></p>
+              <div class="playlist-menu-separator" role="separator"></div>
+              <button id="playlist-menu-remove" role="menuitem">Remove for everyone</button>
+            </div>
             <div id="playlist-add-area" class="playlist-add-area">
               <div class="playlist-add-actions">
                 <button id="playlist-add" class="playlist-add" title="Add local files" aria-label="Add local files to the playlist">

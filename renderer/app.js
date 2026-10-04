@@ -1,6 +1,7 @@
 import {joinRoom, selfId} from 'trystero'
 import {PROTOCOL, MAX_PEERS, HOST_TIMEOUT_MS, isRevision, nextRevision, sameClaim, newerClaim, acceptsState, cleanState, cleanTelemetry, cleanCues, validCommand, SubtitleCatalog, messageLimiter, sessionHandler} from './protocol.mjs'
 import {createNetwork} from './network.mjs'
+import {RoomDownloads} from './downloads.mjs'
 import {authenticateRoomPeer} from './room-auth.mjs'
 import {estimatedMediaTime, updateClock, chooseSendQuality, aggregateLinks} from './sync.mjs'
 import {
@@ -313,6 +314,7 @@ const blankSession = () => ({
   images: new Map(), // peerId -> {id, url}: the last picture each host sent
   imageProgress: null, // viewer: {id, percent} while a picture is arriving
   playlistAction: null,
+  downloads: null,
   playlist: createPlaylist(),
   playing: null, // host: the playlist item being hosted {id, at}, so the next one can follow it
 })
@@ -509,6 +511,28 @@ async function openRoom(code, joining) {
     }
     return handler(data, context)
   }, options)
+  const infoAction = room.makeAction('file-info', {kind: 'request'})
+  const chunkAction = room.makeAction('file-chunk', {kind: 'request'})
+  const closeAction = room.makeAction('file-close')
+  current.downloads = new RoomDownloads({
+    api: window.api, infoAction, chunkAction, closeAction,
+    resolveFile: (id) => {
+      const item = current.playlist.items.get(id)
+      return item && !item.youtubeId && item.owner === identity.username && current.ownFiles.get(id)
+    },
+    isActive: () => session === current && !current.closed,
+    changed: () => { if (session === current && !current.closed) render() },
+    completed: (name) => { if (session === current && !current.closed) toast(`Saved ${name}`) },
+    failed: (message) => { if (session === current && !current.closed) toast(message, true) },
+  })
+  infoAction.onRequest = limited('file-info', (request, {peerId}) => current.downloads.info(request, peerId), {request: true})
+  // Chunk requests are serialized per transfer rather than subject to the control-message limit.
+  const chunkLimits = messageLimiter(1024)
+  chunkAction.onRequest = guard((request, {peerId}) => {
+    if (!chunkLimits(peerId)) throw new Error('Too many file requests')
+    return current.downloads.chunk(request, peerId)
+  }, {request: true})
+  closeAction.onMessage = limited('file-close', (request, {peerId}) => current.downloads.close(request, peerId))
   session.clockAction.onRequest = limited('clock', () => ({now: performance.now()}), {request: true})
   session.detailsAction.onMessage = (message, {peerId}) => {
     if (session.room !== room || !session.peers.has(peerId)) return
@@ -566,6 +590,7 @@ async function openRoom(code, joining) {
   room.onPeerLeave = (peerId) => {
     if (session.room !== room) return
     session.peers.delete(peerId)
+    current.downloads.peerLeft(peerId)
     session.peerFiles.delete(peerId)
     peerIdentities.delete(peerId)
     if (!session.peers.size) {
@@ -641,6 +666,8 @@ async function leaveRoom() {
   saveRoom()
   const finalSnapshot = current.playlistAction?.send({type: 'sync', ...playlistSnapshot(current.playlist)}).catch(() => {})
   current.closed = true
+  current.downloads?.dispose()
+  closePlaylistMenu()
   current.lifetime.abort()
   current.imageSend?.abort()
   current.captions.controller?.abort()
@@ -1953,6 +1980,7 @@ function addToPlaylist(filePaths, {notify = true} = {}) {
 }
 
 function removeFromPlaylist(id) {
+  session.downloads?.remove(id)
   removeItem(session.playlist, id)
   session.ownFiles.delete(id)
   session.availableFiles.delete(id)
@@ -2020,6 +2048,8 @@ function receivePlaylist(message, peerId) {
   }
   else if (message?.type === 'play') playItem(message.id, peerId, {autoplay: message.autoplay !== false})
   stopRemovedPlayback()
+  for (const id of session.downloads?.jobs.keys() || []) if (!session.playlist.items.has(id)) session.downloads.remove(id)
+  for (const source of session.downloads?.sources.values() || []) if (!session.playlist.items.has(source.id)) session.downloads.remove(source.id)
   saveRoom()
   render()
 }
@@ -2099,6 +2129,8 @@ function resumeItem() {
 // A row says where its playback stands: the live clock for what's playing, the saved checkpoint
 // otherwise. No "Playing" label — the row is highlighted and the time is moving.
 function playlistStatus({item, current, available, owner, progress}) {
+  const job = session.downloads?.jobs.get(item.id)
+  if (job) return job.phase === 'Downloading' ? `Downloading · ${Math.floor(job.size ? job.received / job.size * 100 : 0)}%` : `${job.phase}…`
   const live = current && session.role !== 'idle'
   const time = live ? currentTime() : progress?.time
   const duration = live ? currentDuration() : progress?.duration
@@ -2114,7 +2146,16 @@ function paintPlaylistStatus(rows) {
     const stats = row.querySelector('.person-stats')
     const status = statuses.get(row.dataset.id)
     if (stats && status != null && stats.textContent !== status) stats.textContent = status
+    const job = session.downloads?.jobs.get(row.dataset.id)
+    const progress = row.querySelector('.playlist-download-progress')
+    if (progress) {
+      progress.hidden = !job || job.phase !== 'Downloading'
+      const percent = job?.size ? Math.floor(job.received / job.size * 100) : 0
+      progress.setAttribute('aria-valuenow', String(percent))
+      progress.firstChild.style.width = `${percent}%`
+    }
   }
+  paintPlaylistMenu()
 }
 
 function renderPlaylist() {
@@ -2129,6 +2170,7 @@ function renderPlaylist() {
   // Don't rebuild the rows under someone dragging one; the list catches up when they let go.
   if (ui.playlistItems.dataset.signature === signature || itemDrag) return paintPlaylistStatus(rows)
   ui.playlistItems.dataset.signature = signature
+  closePlaylistMenu()
   ui.playlistItems.replaceChildren(
     ...rows.map(({item, current, available}, index) => {
       const row = element('li', 'playlist-item')
@@ -2145,18 +2187,109 @@ function renderPlaylist() {
       const main = element('div', 'person-main')
       main.append(element('div', 'person-name', item.title), element('div', 'person-stats', playlistStatus(rows[index])))
       main.firstChild.title = item.title
-      const remove = element('button', 'playlist-remove', '×')
-      remove.title = 'Remove for everyone'
-      remove.setAttribute('aria-label', `Remove ${item.title}`)
-      remove.addEventListener('click', () => removeFromPlaylist(item.id))
+      const progress = element('div', 'playlist-download-progress')
+      progress.hidden = true
+      progress.setAttribute('role', 'progressbar')
+      progress.setAttribute('aria-label', `Downloading ${item.title}`)
+      progress.setAttribute('aria-valuemin', '0')
+      progress.setAttribute('aria-valuemax', '100')
+      progress.append(element('div', 'playlist-download-fill'))
+      main.append(progress)
+      const options = element('button', 'playlist-options', '•••')
+      options.title = 'File options'
+      options.setAttribute('aria-label', `Options for ${item.title}`)
+      options.setAttribute('aria-haspopup', 'menu')
+      options.setAttribute('aria-expanded', 'false')
+      options.setAttribute('aria-controls', 'playlist-item-menu')
+      options.addEventListener('click', () => togglePlaylistMenu(item.id, options))
+      options.addEventListener('keydown', (event) => {
+        if (event.code === 'Space' || event.code === 'Enter') event.stopPropagation()
+        if (event.key === 'ArrowDown') {
+          event.preventDefault()
+          event.stopPropagation()
+          togglePlaylistMenu(item.id, options)
+        }
+      })
       row.addEventListener('dblclick', (event) => {
         if (available && !event.target.closest('button')) playItem(item.id)
       })
-      row.append(play, main, remove)
+      row.append(play, main, options)
       return row
     }),
   )
+  paintPlaylistStatus(rows)
 }
+
+let playlistMenu = null
+const playlistItemMenu = $('playlist-item-menu')
+const playlistDownload = $('playlist-download')
+const playlistDownloadNote = $('playlist-download-note')
+
+function closePlaylistMenu(restoreFocus = false) {
+  const button = playlistMenu?.button
+  playlistItemMenu.hidePopover()
+  button?.setAttribute('aria-expanded', 'false')
+  playlistMenu = null
+  if (restoreFocus && button?.isConnected) button.focus()
+}
+
+function paintPlaylistMenu() {
+  if (!playlistMenu) return
+  const item = session.playlist.items.get(playlistMenu.id)
+  if (!item || !playlistMenu.button.isConnected) return closePlaylistMenu()
+  const job = session.downloads?.jobs.get(item.id)
+  playlistDownload.textContent = job ? 'Cancel download' : 'Download file'
+  playlistDownload.disabled = Boolean(job ? ['Saving', 'Cancelling'].includes(job.phase) : item.youtubeId || !playable(item))
+  playlistDownloadNote.textContent = item.youtubeId ? 'Downloads are available for local files.' : !job && !playable(item)
+    ? (item.owner === identity.username ? 'File missing on this computer.' : 'The owner needs to be in the room with this file.') : ''
+  playlistDownloadNote.hidden = !playlistDownloadNote.textContent
+  const anchor = playlistMenu.button.getBoundingClientRect()
+  const box = playlistItemMenu.getBoundingClientRect()
+  playlistItemMenu.style.left = `${Math.max(8, Math.min(innerWidth - box.width - 8, anchor.right - box.width))}px`
+  playlistItemMenu.style.top = `${Math.max(8, Math.min(innerHeight - box.height - 8, anchor.bottom + 4))}px`
+}
+
+function togglePlaylistMenu(id, button) {
+  const same = playlistMenu?.id === id && playlistItemMenu.matches(':popover-open')
+  closePlaylistMenu()
+  if (same) return
+  playlistMenu = {id, button}
+  button.setAttribute('aria-expanded', 'true')
+  playlistItemMenu.showPopover({source: button})
+  paintPlaylistMenu()
+  playlistItemMenu.querySelector('button:not(:disabled)')?.focus()
+}
+
+playlistItemMenu.addEventListener('toggle', (event) => {
+  if (event.newState === 'closed' && !playlistItemMenu.matches(':popover-open')) closePlaylistMenu()
+})
+playlistDownload.addEventListener('click', () => {
+  const id = playlistMenu?.id
+  const item = session.playlist.items.get(id)
+  closePlaylistMenu(true)
+  if (!item) return
+  if (session.downloads.jobs.has(id)) return session.downloads.cancel(id)
+  if (item.youtubeId || !playable(item)) return
+  session.downloads.download(id, ownerPeer(item), item.owner === identity.username).catch((error) => toast(errorMessage(error), true))
+})
+$('playlist-menu-remove').addEventListener('click', () => {
+  const id = playlistMenu?.id
+  closePlaylistMenu()
+  if (id) removeFromPlaylist(id)
+})
+playlistItemMenu.addEventListener('keydown', (event) => {
+  event.stopPropagation() // Space activates the menu item instead of toggling playback.
+  if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closePlaylistMenu(true); return }
+  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+  event.preventDefault()
+  const buttons = [...playlistItemMenu.querySelectorAll('button:not(:disabled)')]
+  const index = buttons.indexOf(document.activeElement)
+  const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1
+    : (index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length
+  buttons[next]?.focus()
+})
+ui.playlistItems.addEventListener('scroll', () => closePlaylistMenu())
+window.addEventListener('resize', () => closePlaylistMenu())
 
 // The drawer: click the tab to open or close it, or drag the tab or the open panel's left edge to
 // pull it out to any width or push it closed.
@@ -2174,6 +2307,7 @@ function showPlaylistWidth(width) {
 }
 
 function setPlaylistOpen(open) {
+  if (!open) closePlaylistMenu()
   showPlaylistWidth(open ? fittedPlaylistWidth() : 0)
   try {
     localStorage.setItem('playlist', JSON.stringify({open, width: playlistWidth}))
@@ -3471,6 +3605,7 @@ ui.stage.addEventListener('drop', (event) => {
 window.addEventListener('beforeunload', () => {
   checkpointPlayback()
   saveRoom()
+  session.downloads?.dispose()
   session.room?.leave()
   friendNetwork.stop()
   roomPresence.stop()

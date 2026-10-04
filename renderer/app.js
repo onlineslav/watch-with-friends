@@ -435,11 +435,14 @@ function updateRoomPresence() {
 // ---------- Room ----------
 
 let enteringRoom = false
+let updatePhase = 'idle'
 let leavingRoom = null
 async function enterRoom(code, {joining = true} = {}) {
   if (leavingRoom) await leavingRoom
+  if (updatePhase === 'installing') return toast('The app is restarting to finish an update. Try again after it reopens.')
   if (enteringRoom || session.room) return
   enteringRoom = true
+  window.api.setInRoom(true) // joining also defers a restart while network setup is pending
   ui.create.disabled = ui.joinForm.querySelector('button').disabled = true
   try {
     await openRoom(code, joining)
@@ -449,6 +452,7 @@ async function enterRoom(code, {joining = true} = {}) {
     toast(`Could not open the room: ${errorMessage(error)}`, true)
   } finally {
     enteringRoom = false
+    window.api.setInRoom(Boolean(session.room))
     ui.create.disabled = ui.joinForm.querySelector('button').disabled = false
   }
 }
@@ -3014,6 +3018,7 @@ let updateLabel = null
 let updateRetry = null
 let updateRevision = 0
 function showUpdate(status) {
+  updatePhase = status?.phase || 'idle'
   const view = describeUpdate(status)
   if (!view) { updateCard?.remove(); updateCard = null; return }
   if (!updateCard) {

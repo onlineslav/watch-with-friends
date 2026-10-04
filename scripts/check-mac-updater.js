@@ -251,7 +251,12 @@ app.whenReady().then(async () => {
     }
     console.log(`PASS: ${cases} native updater scenarios on ${process.arch}`)
   } catch (error) {
-    for (const session of sessions) console.error(JSON.stringify(session.events), session.errors)
+    for (const session of sessions) {
+      console.error(JSON.stringify(session.events), session.errors)
+      if (!session.done) {
+        try { console.error(run('/usr/bin/sample', [String(session.processChild.pid), '1', '1'], {timeout: 10_000}).toString().slice(0, 18000)) } catch {}
+      }
+    }
     try { console.error(run('/usr/bin/log', ['show', '--last', '2m', '--style', 'compact', '--predicate', 'subsystem CONTAINS "sparkle"'], {timeout: 15_000}).toString().slice(-16000)) } catch {}
     throw error
   } finally {

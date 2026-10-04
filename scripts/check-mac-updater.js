@@ -22,7 +22,7 @@ async function until(condition, description, timeout = 60_000) {
   throw new Error(`Timed out: ${description}`)
 }
 function plist(file, values) {
-  fs.writeFileSync(file, `<?xml version="1.0"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict>${Object.entries(values).map(([key, value]) => `<key>${xml(key)}</key>${typeof value === 'boolean' ? `<${value}/>` : `<string>${xml(value)}</string>`}`).join('')}</dict></plist>`)
+  fs.writeFileSync(file, `<?xml version="1.0"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict>${Object.entries(values).map(([key, value]) => `<key>${xml(key)}</key>${typeof value === 'boolean' ? `<${value}/>` : typeof value === 'number' ? `<real>${value}</real>` : `<string>${xml(value)}</string>`}`).join('')}</dict></plist>`)
 }
 function keys() {
   const pair = generateKeyPairSync('ed25519')
@@ -92,6 +92,7 @@ async function main() {
       CFBundleIdentifier: `app.syncedvideoplayer.qa.${label.replace(/[^a-z0-9]/gi, '')}`,
       CFBundleName: 'QA Watch With Friends', CFBundleExecutable: 'Fixture', CFBundlePackageType: 'APPL', CFBundleVersion: version, CFBundleShortVersionString: version,
       SUFeedURL: `${base}/${encodeURIComponent(label)}.xml`, SUPublicEDKey: publicKey, SUVerifyUpdateBeforeExtraction: true, SURequireSignedFeed: true, SUEnableAutomaticChecks: false, SUAllowsAutomaticUpdates: false,
+      SUSignedFeedFailureExpirationInterval: 0,
       QAMarker: marker, LSUIElement: true,
     })
     run('/usr/bin/codesign', ['--force', '--sign', '-', app])

@@ -87,6 +87,7 @@
         "SUFeedURL": "https://github.com/onlineslav/watch-with-friends/releases/latest/download/appcast-${arch}.xml",
         "SUVerifyUpdateBeforeExtraction": true,
         "SURequireSignedFeed": true,
+        "SUSignedFeedFailureExpirationInterval": 0,
         "SUEnableAutomaticChecks": false,
         "SUAllowsAutomaticUpdates": false
       },

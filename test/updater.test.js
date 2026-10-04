@@ -5,6 +5,7 @@ const {EventEmitter} = require('node:events')
 const {PassThrough, Writable} = require('node:stream')
 const {UpdateController, CHECK_MS, RETRY_MS, INSTALL_DELAY_MS} = require('../main/update-controller')
 const {SparkleDriver, appBundle, parseStatus, MAX_LINE, STALL_MS} = require('../main/sparkle')
+const {windowsDriver} = require('../main/windows-updater')
 
 function clock() {
   const tasks = new Map()
@@ -186,4 +187,37 @@ test('unexpected native exit after ready discards the staged signal', (t) => {
   child.emit('close', 1, null)
   assert.equal(driver.ready, false)
   assert.equal(statuses.at(-1).phase, 'error')
+})
+test('a manual retry while a failed helper is closing cannot leave the controller checking forever', (t) => {
+  const {driver, child, statuses} = sparkle(t)
+  child.stdout.write('{"phase":"error","message":"offline"}\n')
+  driver.check()
+  assert.equal(statuses.at(-1).phase, 'error')
+  assert.match(statuses.at(-1).message, /finishing/)
+  assert.throws(() => driver.install())
+})
+test('Windows retains automatic download, installation on ordinary quit, silent install and relaunch', async () => {
+  const updater = new EventEmitter()
+  let checks = 0, installArguments
+  updater.checkForUpdates = async () => {checks++}
+  updater.quitAndInstall = (...args) => {installArguments = args}
+  const driver = windowsDriver(updater)
+  const statuses = []
+  driver.on('status', (value) => statuses.push(value))
+  assert.equal(updater.autoDownload, true)
+  assert.equal(updater.autoInstallOnAppQuit, true)
+  assert.equal(updater.allowDowngrade, false)
+  await driver.check()
+  assert.equal(checks, 1)
+  updater.emit('update-available', {version: '1.2.3'})
+  updater.emit('download-progress', {percent: 12.5})
+  updater.emit('update-downloaded', {version: '1.2.3'})
+  assert.deepEqual(statuses.map((s) => s.phase), ['downloading', 'downloading', 'ready'])
+  assert.equal(statuses[1].progress, 12)
+  driver.install()
+  assert.deepEqual(installArguments, [true, true])
+  updater.emit('error', new Error('offline'))
+  assert.equal(statuses.at(-1).phase, 'error')
+  updater.emit('update-not-available')
+  assert.equal(statuses.at(-1).phase, 'current')
 })

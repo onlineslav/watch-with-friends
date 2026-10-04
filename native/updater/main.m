@@ -4,6 +4,7 @@
 #import <Sparkle/Sparkle.h>
 #include <signal.h>
 #include <unistd.h>
+#include <errno.h>
 
 static void emit(NSString *phase, NSDictionary *fields) {
     NSMutableDictionary *event = [NSMutableDictionary dictionaryWithDictionary:fields ?: @{}];
@@ -129,16 +130,31 @@ int main(int argc, const char **argv) {
         if (![driver.updater startUpdater:&error]) { emit(@"error", @{@"message": error.localizedDescription}); return 1; }
         [driver.updater checkForUpdates];
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-            char buffer[128];
-            while (fgets(buffer, sizeof(buffer), stdin)) {
-                NSString *command = [[NSString stringWithUTF8String:buffer] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-                dispatch_async(dispatch_get_main_queue(), ^{ [driver command:command]; });
+            // Do not use fgets(stdin): Apple's XQuery parser calls fileno(stdin)
+            // while parsing the feed. A blocked fgets holds stdin's FILE lock
+            // and deadlocks the main thread. POSIX read owns no stdio lock.
+            char buffer[256], line[128];
+            size_t used = 0;
+            BOOL discard = NO;
+            for (;;) {
+                ssize_t count = read(STDIN_FILENO, buffer, sizeof(buffer));
+                if (count < 0 && errno == EINTR) continue;
+                if (count <= 0) break;
+                for (ssize_t index = 0; index < count; index++) {
+                    if (buffer[index] == '\n') {
+                        if (!discard) {
+                            line[used] = '\0';
+                            NSString *command = [NSString stringWithUTF8String:line];
+                            if (command) dispatch_async(dispatch_get_main_queue(), ^{ [driver command:command]; });
+                        }
+                        used = 0; discard = NO;
+                    } else if (used < sizeof(line) - 1) line[used++] = buffer[index];
+                    else discard = YES;
+                }
             }
             dispatch_async(dispatch_get_main_queue(), ^{ [driver parentClosed]; });
         });
-        // Finish AppKit launch as well as servicing the main dispatch queue.
-        // Merely running NSRunLoop after creating NSApplication can leave
-        // Foundation's download callbacks waiting for application launch.
+        // AppKit also services Sparkle's application lifecycle callbacks.
         [NSApp run];
     }
     return 0;

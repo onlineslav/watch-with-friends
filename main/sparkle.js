@@ -30,10 +30,15 @@ class SparkleDriver extends EventEmitter {
     Object.assign(this, {spawnHelper, schedule, cancel})
     this.child = this.timer = null
     this.ready = this.installing = false
+    this.finished = false
   }
   check() {
-    if (this.child) return
+    if (this.child) {
+      if (this.finished) this.emit('status', {phase: 'error', message: 'The previous update check is finishing. It will be retried.'})
+      return
+    }
     this.ready = this.installing = false
+    this.finished = false
     const child = this.spawnHelper(this.helper, [this.bundle], {stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true})
     this.child = child
     let buffered = ''
@@ -41,6 +46,7 @@ class SparkleDriver extends EventEmitter {
     const fail = (message) => {
       if (terminal || this.child !== child) return
       terminal = true
+      this.finished = true
       this.ready = false
       this.cancel(this.timer)
       this.timer = null
@@ -70,6 +76,7 @@ class SparkleDriver extends EventEmitter {
             this.timer = null // watching a long film is not a stalled updater
           } else if (['current', 'error', 'blocked', 'installed'].includes(status.phase)) {
             terminal = true
+            this.finished = true
             this.cancel(this.timer)
             this.timer = null
           } else watch()
@@ -80,6 +87,7 @@ class SparkleDriver extends EventEmitter {
       if (buffered.length > MAX_LINE) fail('Updater message is too large')
     })
     child.stderr.resume()
+    child.stdout.on('error', (error) => fail(error.message))
     child.on('error', (error) => fail(error.message))
     child.stdin.on('error', (error) => fail(error.message))
     child.on('close', (code, signal) => {

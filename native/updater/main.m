@@ -28,7 +28,7 @@ static void emit(NSString *phase, NSDictionary *fields) {
 - (NSString *)feedURLStringForUpdater:(SPUUpdater *)updater { return self.feed; }
 - (BOOL)updater:(SPUUpdater *)updater shouldDownloadReleaseNotesForUpdate:(SUAppcastItem *)item { return NO; }
 - (BOOL)updater:(SPUUpdater *)updater shouldProceedWithUpdate:(SUAppcastItem *)item updateCheck:(SPUUpdateCheck)check error:(NSError **)error {
-    if (item.informationOnlyUpdate || item.majorUpgrade || ![item.installationType isEqualToString:SPUInstallationTypeApplication]) {
+    if (item.informationOnlyUpdate || item.majorUpgrade || ![item.installationType isEqualToString:@"application"]) {
         if (error) *error = [NSError errorWithDomain:@"WatchWithFriendsUpdater" code:1 userInfo:@{NSLocalizedDescriptionKey: @"This release cannot be installed automatically."}];
         return NO;
     }

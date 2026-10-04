@@ -1,0 +1,66 @@
+// Real preload/IPC and Home-card checks with a disposable identity. Networking
+// stays pending, so this test sends no discovery traffic.
+const {app, BrowserWindow, ipcMain} = require('electron')
+const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const os = require('node:os')
+const path = require('node:path')
+const root = path.resolve(__dirname, '..')
+const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'wwf-updater-ui-'))
+app.setPath('userData', profile)
+let window
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+const run = (source) => window.webContents.executeJavaScript(source)
+async function until(source) {
+  for (let i = 0; i < 100; i++) { if (await run(source)) return; await pause(25) }
+  assert.fail(`Timed out: ${source}`)
+}
+app.whenReady().then(async () => {
+  let initialReply
+  let retries = 0
+  ipcMain.handle('app:version', () => app.getVersion())
+  ipcMain.handle('net:ice-servers', () => new Promise(() => {}))
+  ipcMain.handle('window:zoom', (event, factor) => {event.sender.setZoomFactor(factor); return factor})
+  ipcMain.handle('update:check', () => new Promise((resolve) => {initialReply = resolve}))
+  ipcMain.handle('update:retry', () => { retries++; window.webContents.send('update:status', {phase: 'checking'}); return {phase: 'checking'} })
+  ipcMain.handle('log:events', () => {})
+  window = new BrowserWindow({show: false, width: 1000, height: 780, webPreferences: {preload: path.join(root, 'main/preload.js'), offscreen: true, backgroundThrottling: false}})
+  await window.loadFile(path.join(root, 'renderer/index.html'))
+  await until('!document.getElementById("welcome").hidden')
+  await run(`document.getElementById('handle').value='updaterqa'; document.getElementById('welcome-name').value='Updater QA'; document.getElementById('welcome-form').dispatchEvent(new Event('submit',{cancelable:true}));`)
+  await until('!document.getElementById("home").hidden')
+  const send = async (status) => {window.webContents.send('update:status', status); await pause(75)}
+  const text = () => run('document.querySelector("[data-update]")?.textContent || ""')
+  await send({phase: 'downloading', version: '1.2.3', progress: 40})
+  assert.match(await text(), /40%/)
+  initialReply(null) // late initial snapshot must not erase a newer event
+  await pause(50)
+  assert.match(await text(), /40%/)
+  for (let i = 41; i < 50; i++) await send({phase: 'downloading', version: '1.2.3', progress: i})
+  assert.equal(await run('document.querySelectorAll("[data-update]").length'), 1)
+  assert.equal(await run('document.querySelector("[data-update] button").hidden'), true)
+  await send({phase: 'ready', version: '1.2.3', inRoom: true})
+  assert.match(await text(), /after you leave/)
+  await send({phase: 'error', message: '<script>private path</script>'})
+  assert.doesNotMatch(await text(), /private path/)
+  assert.equal(await run('document.querySelector("[data-update] button").hidden'), false)
+  window.webContents.invalidate()
+  await pause(100)
+  const capture = await window.webContents.capturePage()
+  const output = path.join(root, 'work/updater-home-error.png')
+  fs.mkdirSync(path.dirname(output), {recursive: true})
+  fs.writeFileSync(output, capture.toPNG())
+  await run('document.querySelector("[data-update] button").click()')
+  await until('!document.querySelector("[data-update]")')
+  assert.equal(retries, 1)
+  await send({phase: 'blocked'})
+  assert.match(await text(), /Applications/)
+  for (const zoom of [0.5, 1, 2]) {
+    window.webContents.setZoomFactor(zoom)
+    await pause(100)
+    assert.equal(await run(`(() => {const card=document.querySelector('[data-update]'); return card.scrollWidth <= card.clientWidth + 1})()`), true, `card fits at ${zoom * 100}% zoom`)
+  }
+  await send({phase: 'current'})
+  assert.equal(await run('document.querySelectorAll("[data-update]").length'), 0)
+  console.log('PASS: real updater IPC, late snapshot race, one progress card, room messaging, retry, error privacy and 50–200% zoom')
+}).then(() => {window?.destroy(); app.exit(0)}, (error) => {console.error(error); window?.destroy(); app.exit(1)})

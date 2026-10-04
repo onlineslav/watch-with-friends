@@ -50,3 +50,4 @@ jobs:
       - run: npm test
       - run: npm run test:startup
       - run: npm run test:logging
+      - run: npm run test:updater:ui

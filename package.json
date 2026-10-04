@@ -20,6 +20,7 @@
     "test:connections": "node scripts/patch-trystero.js && node scripts/electron.js scripts/check-connection-regression.js --relay-outage working",
     "test:updater": "node --test test/updater.test.js test/update-feed.test.js test/update-view.test.mjs",
     "test:updater:mac": "node scripts/check-mac-updater.js",
+    "test:updater:ui": "npm run bundle && node scripts/electron.js scripts/check-updater-ui.js",
     "dist:win": "npm run bundle && electron-builder --win",
     "dist:mac": "npm run bundle && electron-builder --mac"
   },

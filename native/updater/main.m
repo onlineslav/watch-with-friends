@@ -135,7 +135,10 @@ int main(int argc, const char **argv) {
             }
             dispatch_async(dispatch_get_main_queue(), ^{ [driver parentClosed]; });
         });
-        [[NSRunLoop currentRunLoop] run];
+        // Finish AppKit launch as well as servicing the main dispatch queue.
+        // Merely running NSRunLoop after creating NSApplication can leave
+        // Foundation's download callbacks waiting for application launch.
+        [NSApp run];
     }
     return 0;
 }

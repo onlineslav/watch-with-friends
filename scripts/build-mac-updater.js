@@ -35,6 +35,8 @@ async function build(arch = process.arch) {
   const contents = path.join(target, 'Contents')
   fs.mkdirSync(path.join(contents, 'MacOS'), {recursive: true})
   fs.mkdirSync(path.join(contents, 'Frameworks'), {recursive: true})
+  fs.mkdirSync(path.join(contents, 'Resources'), {recursive: true})
+  fs.copyFileSync(path.join(vendor, 'LICENSE'), path.join(contents, 'Resources', 'Sparkle-LICENSE'))
   run('/usr/bin/ditto', [path.join(vendor, 'Sparkle.framework'), path.join(contents, 'Frameworks', 'Sparkle.framework')])
   fs.copyFileSync(path.join(root, 'native/updater/Info.plist'), path.join(contents, 'Info.plist'))
   run('/usr/bin/clang', ['-arch', arch === 'x64' ? 'x86_64' : 'arm64', '-mmacosx-version-min=12.0', '-fobjc-arc', '-fblocks', '-Wall', '-Werror', '-Wno-unused-parameter',

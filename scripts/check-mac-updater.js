@@ -38,6 +38,7 @@ async function main() {
   const sessions = []
   const routes = new Map()
   const server = http.createServer((req, res) => {
+    console.log(`QA HTTP ${req.method} ${req.url}`)
     const result = routes.get(req.url)
     if (!result) { res.writeHead(404); res.end(); return }
     if (result.drop) { req.socket.destroy(); return }
@@ -53,6 +54,7 @@ async function main() {
   run('/usr/bin/clang', ['-fobjc-arc', '-framework', 'AppKit', path.join(root, 'native/updater/fixture.m'), '-o', fixtureBinary])
   function child(exe, args = []) {
     const env = {...process.env}; delete env.ELECTRON_RUN_AS_NODE
+    env.SUEnableLogging = '1'
     const processChild = spawn(exe, args, {env, stdio: ['pipe', 'pipe', 'pipe']})
     children.add(processChild)
     processChild.on('close', () => children.delete(processChild))
@@ -250,6 +252,7 @@ app.whenReady().then(async () => {
     console.log(`PASS: ${cases} native updater scenarios on ${process.arch}`)
   } catch (error) {
     for (const session of sessions) console.error(JSON.stringify(session.events), session.errors)
+    try { console.error(run('/usr/bin/log', ['show', '--last', '2m', '--style', 'compact', '--predicate', 'subsystem CONTAINS "sparkle"'], {timeout: 15_000}).toString().slice(-16000)) } catch {}
     throw error
   } finally {
     for (const processChild of children) processChild.kill()

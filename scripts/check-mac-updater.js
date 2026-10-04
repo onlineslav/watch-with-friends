@@ -89,7 +89,7 @@ async function main() {
     plist(path.join(app, 'Contents/Info.plist'), {
       CFBundleIdentifier: `app.syncedvideoplayer.qa.${label.replace(/[^a-z0-9]/gi, '')}`,
       CFBundleName: 'QA Watch With Friends', CFBundleExecutable: 'Fixture', CFBundlePackageType: 'APPL', CFBundleVersion: version, CFBundleShortVersionString: version,
-      SUFeedURL: `${base}/${label}.xml`, SUPublicEDKey: publicKey, SUVerifyUpdateBeforeExtraction: true, SURequireSignedFeed: true, SUEnableAutomaticChecks: false, SUAllowsAutomaticUpdates: false,
+      SUFeedURL: `${base}/${encodeURIComponent(label)}.xml`, SUPublicEDKey: publicKey, SUVerifyUpdateBeforeExtraction: true, SURequireSignedFeed: true, SUEnableAutomaticChecks: false, SUAllowsAutomaticUpdates: false,
       QAMarker: marker, LSUIElement: true,
     })
     run('/usr/bin/codesign', ['--force', '--sign', '-', app])
@@ -101,7 +101,7 @@ async function main() {
     return fs.readFileSync(file)
   }
   function feed(label, {version = '1.0.1', archiveBytes, signatureKey = caseKey, signFeed = true, tamper = false, packageUpdate = false, minimumOS = '12.0', drop = false, archiveStatus = 200}) {
-    const archiveUrl = `/${label}.zip`
+    const archiveUrl = `/${encodeURIComponent(label)}.zip`
     routes.set(archiveUrl, {bytes: archiveBytes, status: archiveStatus, drop})
     const sig = sign(null, archiveBytes, signatureKey.privateKey).toString('base64')
     const content = `<?xml version="1.0" encoding="utf-8"?><rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><title>QA</title><item>
@@ -112,8 +112,8 @@ async function main() {
     if (signFeed) run(path.join(vendor, 'bin/sign_update'), ['--ed-key-file', '-', file], {input: `${caseKey.secret}\n`})
     let text = fs.readFileSync(file, 'utf8')
     if (tamper) text = text.replace('<title>QA</title>', '<title>Changed</title>')
-    routes.set(`/${label}.xml`, {text, type: 'application/xml'})
-    return `${base}/${label}.xml`
+    routes.set(`/${encodeURIComponent(label)}.xml`, {text, type: 'application/xml'})
+    return `${base}/${encodeURIComponent(label)}.xml`
   }
   async function terminal(session, expected) {
     await until(() => session.events.some((e) => expected.includes(e.phase)) || session.done, `updater status ${expected}: ${session.errors}`)

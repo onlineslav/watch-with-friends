@@ -18,6 +18,8 @@
     "test:network": "node scripts/patch-trystero.js && node scripts/electron.js scripts/check-network.js",
     "test:discovery": "node scripts/patch-trystero.js && node scripts/electron.js scripts/check-network.js --public-discovery",
     "test:connections": "node scripts/patch-trystero.js && node scripts/electron.js scripts/check-connection-regression.js --relay-outage working",
+    "test:updater": "node --test test/updater.test.js test/update-feed.test.js test/update-view.test.mjs",
+    "test:updater:mac": "node scripts/check-mac-updater.js",
     "dist:win": "npm run bundle && electron-builder --win",
     "dist:mac": "npm run bundle && electron-builder --mac"
   },
@@ -33,7 +35,7 @@
     "trystero": "0.25.4"
   },
   "build": {
-    "beforePack": "./scripts/check-turn-config.js",
+    "beforePack": "./scripts/prepare-package.js",
     "appId": "app.syncedvideoplayer",
     "productName": "Watch With Friends",
     "publish": {
@@ -75,10 +77,21 @@
       "artifactName": "${name}-${version}-windows-setup.${ext}"
     },
     "mac": {
-      "target": "dmg",
+      "target": ["dmg", "zip"],
+      "artifactName": "${name}-${version}-mac-${arch}.${ext}",
       "category": "public.app-category.video",
       "identity": "-",
       "hardenedRuntime": false,
+      "extendInfo": {
+        "SUFeedURL": "https://github.com/onlineslav/watch-with-friends/releases/latest/download/appcast-${arch}.xml",
+        "SUVerifyUpdateBeforeExtraction": true,
+        "SURequireSignedFeed": true,
+        "SUEnableAutomaticChecks": false,
+        "SUAllowsAutomaticUpdates": false
+      },
+      "extraResources": [
+        {"from": "build/mac-updater/WatchWithFriendsUpdater.app", "to": "updater/WatchWithFriendsUpdater.app"}
+      ],
       "files": [
         "!node_modules/ffprobe-static/bin/win32/**"
       ]

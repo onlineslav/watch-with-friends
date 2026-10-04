@@ -54,16 +54,28 @@ npm run test:updater         # lifecycle, failures, protocol bounds, signing, UI
 npm run test:updater:mac     # native Sparkle, temporary AppKit bundles and local HTTP
 npm run dist:mac -- --dir --publish never
 npm run test:updater:mac -- --packaged # actual packaged helper + Electron/localStorage
+npm run test:updater:ui      # real preload/IPC, races, retry and zoom (Windows)
+npm run test:updater:win     # real NSIS install/update; disposable hosted Windows CI only
 ```
 
 `Updater QA` runs on Apple Silicon, Intel and Windows. Mac fixtures test invalid
 archive signatures, unsigned/tampered feeds, corruption, missing/interrupted
 downloads, package rejection, same/older versions, unsupported macOS versions,
-read-only installs, paths containing spaces, staging, replacement and relaunch.
+read-only installs, paths containing spaces, bounded/partial/invalid native
+commands, staging, replacement and relaunch. An ordinary quit finishes the
+staged update without reopening an app the user deliberately closed.
 The packaged test uses an isolated Electron fixture built from the actual app:
 it stages in a room, leaves the room, updates and verifies Chromium localStorage
-survives. Production bundles contain none of these fixture entry points.
-The release build repeats packaged QA before uploading assets.
+survives for identity, friends, room progress and settings. Production bundles
+contain none of these fixture entry points. The release build repeats packaged
+QA before uploading assets.
+
+Windows release QA creates two NSIS fixtures from the actual packaged app with
+a separate app ID and no shortcuts. It uses localhost feeds and an isolated
+profile, rejects a SHA-512 mismatch, retries, waits through room membership and
+rapid rejoining, installs silently and checks relaunch and saved data. It refuses
+to run on personal machines or self-hosted runners. Installers and temporary
+profiles are removed after testing.
 
 The native QA override for a localhost feed is accepted only by the helper's
 command-line entry point. Production Electron supplies only its own executable's

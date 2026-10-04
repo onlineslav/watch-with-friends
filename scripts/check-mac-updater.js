@@ -41,9 +41,15 @@ async function main() {
     console.log(`QA HTTP ${req.method} ${req.url}`)
     const result = routes.get(req.url)
     if (!result) { res.writeHead(404); res.end(); return }
-    if (result.drop) { req.socket.destroy(); return }
     const bytes = result.bytes || Buffer.from(result.text || '')
     res.writeHead(result.status || 200, {'Content-Type': result.type || 'application/octet-stream', 'Content-Length': bytes.length})
+    if (result.drop) {
+      // Deliver actual partial bytes before closing, rather than only failing
+      // connection setup. The signed complete archive must never be staged.
+      res.write(bytes.subarray(0, Math.max(1, Math.floor(bytes.length / 2))))
+      setTimeout(() => req.socket.destroy(), 50)
+      return
+    }
     res.end(bytes)
   })
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -203,6 +209,7 @@ async function main() {
     quitSession.processChild.stdin.end()
     run('/usr/bin/osascript', ['-e', 'tell application id "app.syncedvideoplayer.qa.ordinaryquit" to quit'])
     await until(() => run('/usr/libexec/PlistBuddy', ['-c', 'Print :CFBundleVersion', path.join(quitCurrent.app, 'Contents/Info.plist')]).toString().trim() === '1.0.1', 'installation on ordinary quit')
+    await wait(1000)
     assert.equal(fs.existsSync(`${quitCurrent.marker}-1.0.1`), false, 'a deliberate quit must not relaunch the app')
     console.log('PASS: ordinary quit finishes a staged update without relaunching a deliberately closed app')
     cases++

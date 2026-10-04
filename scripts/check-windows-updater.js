@@ -121,7 +121,7 @@ app.whenReady().then(async()=>{
     control(true, 0, true)
     await pause(1500)
     running?.kill()
-    const uninstaller = path.join(installed, 'Uninstall WWF Updater QA.exe')
+    const uninstaller = path.join(installed, 'Uninstall Watch With Friends.exe')
     if (fs.existsSync(uninstaller)) await run(uninstaller, ['/S'])
     server.closeAllConnections(); await new Promise((resolve) => server.close(resolve))
     // Every recursive cleanup target was allocated directly under this fixture.

@@ -14,6 +14,7 @@ on:
       - 'package-lock.json'
       - 'renderer/update.mjs'
       - 'scripts/check-updater-ui.js'
+      - 'scripts/check-windows-updater.js'
       - '.github/workflows/build.yml'
       - '.github/workflows/updater-qa.yml'
 jobs:

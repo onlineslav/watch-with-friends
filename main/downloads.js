@@ -72,6 +72,9 @@ class DownloadFiles {
         if (!result.bytesRead) throw new Error('File ended during download')
         read += result.bytesRead
       }
+      const after = await file.handle.stat()
+      if (file.cancelled) throw new Error('Download cancelled')
+      if (after.size !== file.size || after.mtimeMs !== file.mtime) throw new Error('File changed during download')
       file.offset += bytes.length
       return new Uint8Array(bytes)
     })

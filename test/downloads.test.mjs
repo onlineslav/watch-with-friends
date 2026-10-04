@@ -68,6 +68,33 @@ test('empty files finish without a chunk request', async (t) => {
   assert.equal(f.messages.length, 2)
 })
 
+test('a source changing during its final chunk cannot replace an existing destination', async (t) => {
+  const f = await fixture(t, 8)
+  await fs.writeFile(f.target, 'keep this')
+  const read = f.ownerApi.downloadRead
+  f.ownerApi.downloadRead = async (id, offset) => {
+    const handle = f.owner.files.get(id).handle
+    const originalRead = handle.read.bind(handle)
+    let changed = false
+    handle.read = async (buffer, start, length, position) => {
+      if (changed) return originalRead(buffer, start, length, position)
+      const result = await originalRead(buffer, start, Math.floor(length / 2), position)
+      changed = true
+      await fs.writeFile(f.source, Buffer.alloc(f.bytes.length, 255))
+      const later = new Date(Date.now() + 5000)
+      await fs.utimes(f.source, later, later)
+      return result
+    }
+    return read(id, offset)
+  }
+  await f.client.download('item-1', 'owner')
+  assert.equal(await fs.readFile(f.target, 'utf8'), 'keep this')
+  assert.deepEqual(f.completed, [])
+  assert.equal(f.failures.length, 1)
+  assert.equal(f.owner.files.size + f.viewer.files.size, 0)
+  assert.ok((await fs.readdir(f.directory)).every((name) => !name.endsWith('.part')))
+})
+
 test('cancellation cleans partial downloads and preserves a pre-existing destination', async (t) => {
   const f = await fixture(t)
   await fs.writeFile(f.target, 'keep this')

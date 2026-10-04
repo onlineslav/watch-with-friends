@@ -232,6 +232,27 @@ app.whenReady().then(async () => {
       await run(b, `document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape',code:'Escape',bubbles:true}))`)
       assert.equal(await run(b, 'document.getElementById("playlist-item-menu").matches(":popover-open")'), false)
       assert.equal(await run(b, 'document.activeElement.classList.contains("playlist-options")'), true)
+      const wasPaused = await run(a, '__test.getState().paused')
+      b.webContents.sendInputEvent({type: 'keyDown', keyCode: 'Space'})
+      b.webContents.sendInputEvent({type: 'keyUp', keyCode: 'Space'})
+      await until(b, 'document.getElementById("playlist-item-menu").matches(":popover-open")')
+      assert.equal(await run(a, '__test.getState().paused'), wasPaused)
+      b.webContents.sendInputEvent({type: 'keyDown', keyCode: 'Escape'})
+      b.webContents.sendInputEvent({type: 'keyUp', keyCode: 'Escape'})
+      await until(b, '!document.getElementById("playlist-item-menu").matches(":popover-open")')
+      for (const zoom of [0.5, 1, 2]) {
+        b.webContents.setZoomFactor(zoom)
+        await pause(100)
+        await showDownloadMenu(b)
+        assert.equal(await run(b, `(() => {
+          const box = document.getElementById('playlist-item-menu').getBoundingClientRect();
+          return box.width > 0 && box.left >= 0 && box.top >= 0 && box.right <= innerWidth && box.bottom <= innerHeight;
+        })()`), true, `Download menu stays in the viewport at ${zoom * 100}% zoom`)
+        await run(b, `document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape',bubbles:true}))`)
+      }
+      b.webContents.setZoomFactor(1)
+      await pause(100)
+      console.log('PASS: Native Space opens the menu without pausing playback; Escape closes it; menu fits at 50%, 100% and 200% zoom')
       await downloadFromMenu(b)
       await downloadsIdle(b)
       assert.deepEqual(fs.readFileSync(downloaded), fs.readFileSync(video))
@@ -258,6 +279,10 @@ app.whenReady().then(async () => {
       delayReads = true
       await downloadFromMenu(b)
       await until(b, `(__test.session.downloads.jobs.get(${JSON.stringify(downloadItem)})?.received || 0) > 0`)
+      const framesDuringDownload = await run(b, 'document.getElementById("remote-video").getVideoPlaybackQuality().totalVideoFrames')
+      await until(b, `document.getElementById('remote-video').getVideoPlaybackQuality().totalVideoFrames > ${framesDuringDownload + 3}`)
+      assert.equal(await run(b, `__test.session.downloads.jobs.has(${JSON.stringify(downloadItem)})`), true)
+      assert.ok(await run(b, '__test.audioLevel() > 0.01'))
       await showDownloadMenu(b)
       assert.equal(await run(b, 'document.getElementById("playlist-download").textContent'), 'Cancel download')
       assert.equal(await run(b, `document.querySelector('[data-id="${downloadItem}"] .playlist-download-progress').hidden`), false)

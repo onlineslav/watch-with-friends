@@ -63,10 +63,13 @@ app.whenReady().then(async () => {
 
     // A late result still initializes friends and enables their controls. Only
     // synthetic test identities enter discovery; no real profiles are loaded.
+    // Minimized/hidden Chromium windows may never deliver the requested paint.
+    await run(win, 'window.__originalRaf = requestAnimationFrame; window.requestAnimationFrame = () => 0; true')
     for (const resolve of pendingNetwork.splice(0)) resolve([])
     await until(win, '!document.querySelector("#add-friend button").disabled', 5000)
+    await run(win, 'window.requestAnimationFrame = window.__originalRaf; delete window.__originalRaf')
     assert.equal(await run(win, 'document.getElementById("friends-online").textContent'), '0 online')
-    console.log('PASS: Friends initialize when delayed network settings arrive')
+    console.log('PASS: Friends initialize when delayed network settings arrive even if the hidden window never paints')
   } finally {
     for (const win of windows) if (!win.isDestroyed()) win.destroy()
   }

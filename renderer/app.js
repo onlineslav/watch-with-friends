@@ -1501,7 +1501,13 @@ setInterval(() => {
 async function startFriends(next, mode) {
   try {
     const turnConfig = await networkReady
-    await new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)))
+    await new Promise((resolve) => {
+      let frame
+      const done = () => { clearTimeout(timer); cancelAnimationFrame(frame); resolve() }
+      // A minimized window can stop painting; friends must still come online.
+      const timer = setTimeout(done, 100)
+      frame = requestAnimationFrame(() => setTimeout(done, 0))
+    })
     if (identity !== next) return // the username changed while network setup was pending
     roomPresence.start(next)
     updateRoomPresence()

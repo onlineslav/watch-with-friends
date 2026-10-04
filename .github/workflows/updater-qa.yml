@@ -10,6 +10,11 @@ on:
       - 'scripts/prepare-package.js'
       - 'test/*update*'
       - 'config/update-key.json'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'renderer/update.mjs'
+      - 'scripts/check-updater-ui.js'
+      - '.github/workflows/build.yml'
       - '.github/workflows/updater-qa.yml'
 jobs:
   mac:

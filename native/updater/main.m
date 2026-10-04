@@ -143,8 +143,7 @@ int main(int argc, const char **argv) {
                 for (ssize_t index = 0; index < count; index++) {
                     if (buffer[index] == '\n') {
                         if (!discard) {
-                            line[used] = '\0';
-                            NSString *command = [NSString stringWithUTF8String:line];
+                            NSString *command = [[NSString alloc] initWithBytes:line length:used encoding:NSUTF8StringEncoding];
                             if (command) dispatch_async(dispatch_get_main_queue(), ^{ [driver command:command]; });
                         }
                         used = 0; discard = NO;

@@ -174,13 +174,37 @@ async function main() {
     await wait(1500)
     assert.equal(fs.existsSync(`${current.marker}-1.0.1`), false, 'staged update must not restart a watch')
     session.processChild.stdin.write('unknown\n')
+    session.processChild.stdin.write('x'.repeat(256) + 'install\n')
+    session.processChild.stdin.write('install\0\n')
     await wait(200)
     assert.equal(fs.existsSync(`${current.marker}-1.0.1`), false)
-    session.processChild.stdin.write('install\n')
+    session.processChild.stdin.write('inst')
+    await wait(200)
+    assert.equal(fs.existsSync(`${current.marker}-1.0.1`), false, 'partial commands cannot authorize a restart')
+    session.processChild.stdin.write('all\n')
     await until(() => fs.existsSync(`${current.marker}-1.0.1`), 'native replacement and relaunch', 90_000)
     run('/usr/bin/codesign', ['--verify', '--deep', '--strict', current.app])
     run('/usr/bin/osascript', ['-e', 'tell application id "app.syncedvideoplayer.qa.successwithspaces" to quit'])
     console.log('PASS: signed update stages, waits, replaces and relaunches with spaces in the path')
+    cases++
+
+    const quitCurrent = fixture('ordinary-quit')
+    const quitNext = fixture('ordinary-quit-next', '1.0.1')
+    const quitInfo = path.join(quitNext.app, 'Contents/Info.plist')
+    run('/usr/libexec/PlistBuddy', ['-c', 'Set :CFBundleIdentifier app.syncedvideoplayer.qa.ordinaryquit', quitInfo])
+    run('/usr/libexec/PlistBuddy', ['-c', `Set :QAMarker ${quitCurrent.marker}`, quitInfo])
+    run('/usr/bin/codesign', ['--force', '--sign', '-', quitNext.app])
+    const quitUrl = feed(quitCurrent.label, {archiveBytes: archive(quitNext.app, 'ordinary-quit.zip')})
+    run('/usr/bin/open', ['-n', '-g', quitCurrent.app])
+    await until(() => fs.existsSync(`${quitCurrent.marker}-1.0.0`), 'ordinary-quit fixture launch')
+    const quitSession = nativeSession(quitCurrent.app, quitUrl)
+    await terminal(quitSession, ['ready', 'error'])
+    assert.equal(quitSession.events.at(-1).phase, 'ready', quitSession.errors)
+    quitSession.processChild.stdin.end()
+    run('/usr/bin/osascript', ['-e', 'tell application id "app.syncedvideoplayer.qa.ordinaryquit" to quit'])
+    await until(() => run('/usr/libexec/PlistBuddy', ['-c', 'Print :CFBundleVersion', path.join(quitCurrent.app, 'Contents/Info.plist')]).toString().trim() === '1.0.1', 'installation on ordinary quit')
+    assert.equal(fs.existsSync(`${quitCurrent.marker}-1.0.1`), false, 'a deliberate quit must not relaunch the app')
+    console.log('PASS: ordinary quit finishes a staged update without relaunching a deliberately closed app')
     cases++
 
     if (process.argv.includes('--packaged')) {
@@ -262,7 +286,7 @@ app.whenReady().then(async () => {
     throw error
   } finally {
     for (const processChild of children) processChild.kill()
-    for (const bundle of ['app.syncedvideoplayer.qa.successwithspaces', 'app.syncedvideoplayer.qa.electron']) {
+    for (const bundle of ['app.syncedvideoplayer.qa.successwithspaces', 'app.syncedvideoplayer.qa.ordinaryquit', 'app.syncedvideoplayer.qa.electron']) {
       try { run('/usr/bin/osascript', ['-e', `tell application id "${bundle}" to quit`]) } catch {}
     }
     server.closeAllConnections()

@@ -1,14 +1,13 @@
-## What's new in 0.5.1
+## What's new in 0.5.2
 
-Fixes for the three things most likely to interrupt a watch, plus a way to send
-a log when something still goes wrong.
+Save a copy of a friend's local media directly from the room's playlist.
 
 Windows installs the update automatically; on a Mac, use the download button on the home screen.
 
-- **Pausing a friend's YouTube video now pauses it for them.** The embed reports its state on a timer, so a pause was announced as "still playing" and the viewer started itself again. Using YouTube's own controls as host now reaches everyone at once instead of on the next tick.
-- **"Connection unavailable, retrying" no longer appears while you are both online.** One old failed peer used to describe the whole friends list until it went away. A friend who is connected but still proving who they are now reads **Connecting...**.
-- **The room name stops saying "Joining room..."** once you have actually joined.
-- **Having problems?** Settings can now save a diagnostic log covering the last few hours: what the connection did, and why the picture quality changed. It saves to a file you choose and send yourself, with file paths and addresses stripped out. Nothing is uploaded.
+- **Download original files.** Open the playlist item's **three-dot menu → Download file** and choose where to save it. Video, audio and pictures transfer directly from the person who added them, even when someone else is hosting. Both people need this update, and the owner needs to stay in the room with the file available. YouTube links cannot be downloaded.
+- **See progress or cancel.** The playlist shows download progress; the same menu lets you cancel. Leaving the room or removing the item stops the transfer and removes its partial file. A cancelled or failed transfer preserves any existing file at the chosen destination.
+- **Safer transfers.** Changes to the original file during a transfer stop the download instead of saving mixed content. Downloads run alongside room playback without changing who is hosting.
+- **Friends still connect when the window is hidden.** Startup no longer waits indefinitely for a paint before bringing friends and saved-room presence online.
 
 ## Download
 

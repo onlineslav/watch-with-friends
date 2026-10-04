@@ -77,9 +77,33 @@ rapid rejoining, installs silently and checks relaunch and saved data. It refuse
 to run on personal machines or self-hosted runners. Installers and temporary
 profiles are removed after testing.
 
+The preservation fixtures seed identity, friends, room progress and settings
+only in the old version. The updated version reads the original storage without
+recreating missing values, so an empty or replaced profile fails the check.
+
 The native QA override for a localhost feed is accepted only by the helper's
 command-line entry point. Production Electron supplies only its own executable's
 bundle path; renderer IPC cannot select a feed, app path, archive or command.
+
+## Verified on 2026-10-04
+
+Implementation and native QA commit: `4761fc2` (application version `0.5.2`).
+The [Updater QA run](https://github.com/onlineslav/watch-with-friends/actions/runs/37230792324)
+passed on Windows, Apple Silicon and Intel. The
+[installer build](https://github.com/onlineslav/watch-with-friends/actions/runs/37230792398)
+contains the review installers and signed Mac update feeds/ZIPs.
+
+| Check | Result |
+| --- | --- |
+| Unit suite | 211 tests passed, including lifecycle races and separate Windows download rejection handling. |
+| Apple Silicon and Intel Mac | 14 native scenarios passed per architecture, including packaged replacement/relaunch and preservation without reseeding. |
+| Windows NSIS | Checksum rejection, full-download fallback, retry, room/rejoin deferral, silent replacement/relaunch and preserved original data passed. No unhandled download rejection; fixture uninstallation/cleanup completed. |
+| Actual renderer/preload IPC | Pending join/restart guard, late snapshot race, progress/retry, private error copy and card fit at 50%, 100% and 200% zoom passed. |
+| Room regressions | Local three-peer media/download/saved-room integration and friend-first/room-first rejoining during a discovery outage passed. |
+
+QA used disposable profiles and localhost feeds. The manual build did not
+publish a release or send updates to existing installs. Older Mac installations
+need one manual upgrade to the first public release containing this updater.
 
 References: [Sparkle setup](https://sparkle-project.org/documentation/),
 [custom drivers](https://sparkle-project.org/documentation/api-reference/Protocols/SPUUserDriver.html),

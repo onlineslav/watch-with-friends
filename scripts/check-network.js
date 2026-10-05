@@ -93,7 +93,7 @@ async function fixtures() {
         captured.addTrack(replacement);
         captured.dispatchEvent(new MediaStreamTrackEvent('addtrack', {track: replacement}));
       },
-      getState: hostState, youtube, selfId, errors: [],
+      getState: hostState, sampleConnection, youtube, selfId, errors: [],
     };
     window.addEventListener('error', (e) => __test.errors.push(e.message));
     window.addEventListener('unhandledrejection', (e) => __test.errors.push(String(e.reason)));
@@ -126,7 +126,7 @@ async function fixtures() {
   fs.writeFileSync(path.join(temporary, 'index.html'), html)
   if (publicDiscovery) return {}
   const video = path.join(temporary, 'sample.mp4')
-  execFileSync(require('ffmpeg-static'), ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=320x180:rate=24', '-f', 'lavfi', '-i', 'sine=frequency=440', '-f', 'lavfi', '-i', 'sine=frequency=880', '-map', '0:v', '-map', '1:a', '-map', '2:a', '-metadata:s:a:0', 'language=eng', '-metadata:s:a:1', 'language=jpn', '-t', '30', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', video], {windowsHide: true, timeout: 15000})
+  execFileSync(require('ffmpeg-static'), ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=1280x720:rate=24', '-f', 'lavfi', '-i', 'sine=frequency=440', '-f', 'lavfi', '-i', 'sine=frequency=880', '-map', '0:v', '-map', '1:a', '-map', '2:a', '-metadata:s:a:0', 'language=eng', '-metadata:s:a:1', 'language=jpn', '-t', '30', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', video], {windowsHide: true, timeout: 15000})
   fs.writeFileSync(path.join(temporary, 'sample.srt'), '1\n00:00:00,000 --> 00:00:20,000\nShared test caption\n')
   const sound = path.join(temporary, 'sound.m4a')
   execFileSync(require('ffmpeg-static'), ['-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440', '-t', '30', '-c:a', 'aac', sound], {windowsHide: true, timeout: 15000})
@@ -196,6 +196,59 @@ app.whenReady().then(async () => {
       return
     }
     await run(a, `__test.hostFile(${JSON.stringify(video)})`)
+    await until(b, '__test.session.link?.receiver?.height === 720')
+    const qualityPeer = await run(b, '__test.selfId')
+    await until(a, '!__test.session.sampling && !__test.session.tuning')
+    await run(a, `(() => {
+      const peer = ${JSON.stringify(qualityPeer)};
+      const pc = __test.session.room.getPeers()[peer];
+      const getStats = pc.getStats;
+      const probe = __test.qualityProbe = {pc, getStats, capacity: 350000, lossPct: 0, freezes: 0};
+      __test.session.people.get(peer).quality = {bitrate: 4000000};
+      pc.getStats = async () => {
+        const report = await getStats.call(pc);
+        const person = __test.session.people.get(peer);
+        person.receiver = {lossPct: probe.lossPct, freezes: probe.freezes, droppedFrames: 0, fps: 24, height: 720, bufferMs: 250, delayMs: 250};
+        person.receiverAt = performance.now();
+        return new Map([...report].map(([id, stats]) => [id, stats.type === 'candidate-pair' ? {...stats, availableOutgoingBitrate: probe.capacity} : stats]));
+      };
+    })()`)
+    const qualitySample = async () => {
+      await until(a, '!__test.session.sampling && !__test.session.tuning')
+      await run(a, '__test.sampleConnection()')
+      await until(a, '!__test.session.sampling && !__test.session.tuning')
+    }
+    const videoEncoding = () => run(a, `__test.qualityProbe.pc.getSenders().find(sender => sender.track?.kind === 'video').getParameters().encodings[0]`)
+    try {
+      await qualitySample()
+      assert.equal((await videoEncoding()).maxBitrate, 4000000)
+      assert.equal((await videoEncoding()).scaleResolutionDownBy, 1)
+      console.log('PASS: A clean HD stream keeps its picture and ceiling through a low bandwidth estimate')
+      await run(a, '__test.qualityProbe.lossPct = 5; __test.qualityProbe.freezes = 1; true')
+      await qualitySample()
+      assert.equal((await videoEncoding()).maxBitrate, 300000)
+      assert.equal((await videoEncoding()).scaleResolutionDownBy, 2)
+      await until(b, '__test.session.link?.receiver?.height === 360')
+      await run(a, '__test.qualityProbe.capacity = 1200000; __test.qualityProbe.lossPct = 0; __test.qualityProbe.freezes = 0; true')
+      // Advance 30 seconds of clean feedback without waiting for the periodic timer.
+      for (let i = 0; i < 15; i++) await qualitySample()
+      assert.ok((await videoEncoding()).maxBitrate >= 4000000)
+      assert.equal((await videoEncoding()).scaleResolutionDownBy, 1)
+      await until(b, '__test.session.link?.receiver?.height === 720')
+      console.log('PASS: Congestion reduces real WebRTC video to 360p; fresh clean feedback restores 720p despite a low estimate')
+      await run(a, '__test.control("pause")')
+      await until(a, 'document.getElementById("local-video").paused')
+      const pausedBitrate = (await videoEncoding()).maxBitrate
+      await run(a, '__test.qualityProbe.lossPct = 5; __test.qualityProbe.freezes = 1; true')
+      await qualitySample()
+      assert.equal((await videoEncoding()).maxBitrate, pausedBitrate)
+      console.log('PASS: Paused playback does not alter quality on stale trouble reports')
+      await run(a, '__test.qualityProbe.lossPct = 0; __test.qualityProbe.freezes = 0; __test.control("play")')
+      await until(b, '__test.session.remote?.playing && __test.audioLevel() > 0.01')
+    } finally {
+      await run(a, '__test.qualityProbe.pc.getStats = __test.qualityProbe.getStats; delete __test.qualityProbe; true')
+    }
+    await run(a, '__test.control("seek", 0)')
     await Promise.all([b, c].map((win) => until(win, '__test.session.role === "viewer" && document.getElementById("remote-video").getVideoPlaybackQuality().totalVideoFrames > 12')))
     await until(b, '__test.session.clock !== null')
     await Promise.all([b, c].map((win) => until(win, '__test.audioState().running && __test.audioState().connected')))

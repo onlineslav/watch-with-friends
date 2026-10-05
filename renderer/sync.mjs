@@ -19,19 +19,35 @@ export function estimatedMediaTime(state, now, clock) {
   return Math.max(0, Math.min(state.time + elapsed, state.duration || Infinity))
 }
 
-// WebRTC still handles congestion control. These ceilings keep repeated freezes from
-// being treated only by increasing latency, and protect a host with several viewers.
-export function chooseSendQuality(previous, {receiver, capacity, peerCount = 1, width = 1920, height = 1080}, intervalMs = 2000) {
+// WebRTC owns bandwidth estimation and congestion control. Do not turn each estimate
+// into another hard cap: that also reduces the picture and can prevent the transport
+// from probing for more bandwidth. Our ceilings respond to actual playback trouble,
+// then reopen promptly on fresh, clean feedback while preserving the group budget.
+export function chooseSendQuality(previous, {receiver, receiverAt = null, capacity, active = true, peerCount = 1, width = 1920, height = 1080}, intervalMs = 2000) {
   const ceiling = Math.min(10_000_000, 18_000_000 / Math.max(1, peerCount))
-  const troubled = receiver && (receiver.lossPct > 2 || receiver.freezes > 0)
   let bitrate = Math.min(previous?.bitrate ?? Math.min(4_000_000, ceiling), ceiling)
-  let calmMs = troubled ? 0 : (previous?.calmMs || 0) + intervalMs
-  if (troubled) bitrate *= 0.75
-  else if (calmMs >= 12_000) { bitrate *= 1.15; calmMs = 0 }
-  if (finite(capacity, 100_000, 1e10)) bitrate = Math.min(bitrate, capacity * 0.8)
+  let calmMs = previous?.calmMs || 0
+  const fresh = receiverAt == null || receiverAt !== previous?.receiverAt
+  if (!active || !receiver) calmMs = 0
+  else if (fresh) {
+    if (receiver.lossPct > 2 || receiver.freezes > 0) {
+      bitrate *= 0.75
+      if (finite(capacity, 100_000, 1e10)) bitrate = Math.min(bitrate, capacity * 0.8)
+      calmMs = 0
+    } else {
+      calmMs = Math.min(6000, calmMs + intervalMs)
+      if (calmMs >= 6000) {
+        const probe = bitrate + Math.max(300_000, bitrate * 0.25)
+        // Use observed headroom for a faster recovery, but never jump more than 2x.
+        // The probe must be able to exceed a stale estimate left by our old cap.
+        const headroom = finite(capacity, 100_000, 1e10) ? Math.min(capacity * 0.8, bitrate * 2) : 0
+        bitrate = Math.max(probe, headroom)
+      }
+    }
+  }
   bitrate = Math.round(Math.max(300_000, Math.min(ceiling, bitrate)))
   const maxHeight = bitrate < 900_000 ? 360 : bitrate < 2_000_000 ? 540 : bitrate < 3_500_000 ? 720 : 1080
-  return {bitrate, calmMs, scale: Math.max(1, width / 1920, height / maxHeight)}
+  return {bitrate, calmMs, scale: Math.max(1, width / 1920, height / maxHeight), receiverAt}
 }
 
 // Always aggregate complete per-peer records, never one peer's sender and another's receiver.

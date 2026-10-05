@@ -1076,7 +1076,14 @@ async function sampleConnection() {
         if (performance.now() - (p.receiverAt || 0) > HOST_TIMEOUT_MS) p.receiver = null
         const dimensions = current.stream?.getVideoTracks()[0]?.getSettings() || {}
         const before = p.quality
-        p.quality = chooseSendQuality(p.quality, {receiver: p.receiver, capacity: stats.capacity, peerCount: current.peers.size, ...dimensions})
+        p.quality = chooseSendQuality(p.quality, {
+          receiver: p.receiver,
+          receiverAt: p.receiverAt,
+          capacity: stats.capacity,
+          active: hostPlaying() && !current.openingMedia && ui.localVideo.readyState >= 3,
+          peerCount: current.peers.size,
+          ...dimensions,
+        })
         if (current.stream) logSendQuality(id, stats, before, p)
       }
     }

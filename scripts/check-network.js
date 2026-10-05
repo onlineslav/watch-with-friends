@@ -199,6 +199,7 @@ app.whenReady().then(async () => {
     }
     await run(a, `__test.hostFile(${JSON.stringify(video)})`)
     await until(b, '__test.session.link?.receiver?.height === 720')
+    await run(a, '__test.control("loop", true)')
     const qualityPeer = await run(b, '__test.selfId')
     await until(a, '!__test.session.sampling && !__test.session.tuning')
     await run(a, `(() => {
@@ -236,7 +237,9 @@ app.whenReady().then(async () => {
       for (let i = 0; i < 15; i++) await qualitySample()
       assert.ok((await videoEncoding()).maxBitrate >= 4000000)
       assert.equal((await videoEncoding()).scaleResolutionDownBy, 1)
-      await until(b, '__test.session.link?.receiver?.height === 720')
+      // Native congestion control can take longer than our accelerated policy
+      // samples to reopen its own resolution. Keep the clip playing through it.
+      await until(b, '__test.session.link?.receiver?.height === 720', 45000)
       console.log('PASS: Congestion reduces real WebRTC video to 360p; fresh clean feedback restores 720p despite a low estimate')
       await run(a, '__test.control("pause")')
       await until(a, 'document.getElementById("local-video").paused')
@@ -255,8 +258,8 @@ app.whenReady().then(async () => {
       const received = entries.find(e => e.ev === 'viewer-sample' && e.receivedBitrateBps > 0)
       assert.ok(sent && sent.sendIntervalMs > 0 && sent.source.height === 720, 'export includes measured send bitrate, interval and source size')
       assert.ok(received && received.receiveIntervalMs > 0 && typeof received.playback.playing === 'boolean', 'export includes measured receive bitrate and playback state')
-      const inactive = entries.find(e => e.ev === 'host-sample' && e.decision === 'inactive')
-      assert.ok(inactive && !inactive.playback.playing && inactive.feedbackAgeMs >= 0, 'export explains pauses and feedback age')
+      const inactive = entries.find(e => e.ev === 'host-sample' && e.decision === 'inactive' && !e.playback?.playing && Number.isFinite(e.feedbackAgeMs))
+      assert.ok(inactive && inactive.feedbackAgeMs >= 0, 'export explains the tested pause and feedback age, independently of startup samples')
       assert.ok(entries.some(e => e.ev === 'send-quality-change' && e.reason === 'freezes' && e.scaleTo === 2))
       assert.ok(entries.some(e => e.ev === 'send-parameters-applied' && e.kind === 'video' && e.scale === 2 && e.maxBitrate === 300000))
       assert.ok(!/[A-Za-z]:[\\/]Users[\\/]|\/(?:home|Users)\//.test(fs.readFileSync(exported, 'utf8')), 'diagnostic export remains redacted')
@@ -264,6 +267,7 @@ app.whenReady().then(async () => {
     } finally {
       await run(a, '__test.qualityProbe.pc.getStats = __test.qualityProbe.getStats; delete __test.qualityProbe; true')
     }
+    await run(a, '__test.control("loop", false)')
     await run(a, '__test.control("seek", 0)')
     await Promise.all([b, c].map((win) => until(win, '__test.session.role === "viewer" && document.getElementById("remote-video").getVideoPlaybackQuality().totalVideoFrames > 12')))
     await until(b, '__test.session.clock !== null')

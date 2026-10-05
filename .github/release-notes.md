@@ -1,4 +1,4 @@
-## What's new in 0.5.4
+## What's new in 0.5.5
 
 Faster recovery from blurry streaming, with better diagnostics for connection problems.
 

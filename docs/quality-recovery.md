@@ -45,12 +45,16 @@ and loss/freezes. The check observes the receiving picture fall to 360p and retu
 to 720p after clean feedback, checks the applied sender parameters, and verifies
 that pausing does not change the ceiling. Recovery samples are advanced directly
 to keep the check short. Production bundles contain no test hooks or overrides.
+The clip loops during this check and allows native WebRTC congestion control up
+to 45 seconds to restore its own 720p picture after the application ceiling has
+reopened. This separates policy recovery from transport recovery and avoids the
+synthetic clip ending mid-check.
 
 `npm run bundle` and `npm run test:logging` verify bundling and the diagnostic IPC
 and export path. A real cross-platform internet session remains necessary to
 confirm the improvement on the original connection.
 
-## Diagnostics in 0.5.4
+## Diagnostics in 0.5.5
 
 Host samples retain the requested `bitrate` and `scale` and now include measured
 `sentBitrateBps` and `sendIntervalMs`. Viewer samples include measured

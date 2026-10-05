@@ -1,13 +1,14 @@
-## What's new in 0.5.2
+## What's new in 0.5.3
 
-Save a copy of a friend's local media directly from the room's playlist.
+Automatic updates inside the app on Windows and Mac.
 
-Windows installs the update automatically; on a Mac, use the download button on the home screen.
+**Mac users on an older version:** install this release once using the DMG below. Future versions download and install inside the app, without repeating the DMG process. Windows users receive this release through the existing automatic updater.
 
-- **Download original files.** Open the playlist item's **three-dot menu → Download file** and choose where to save it. Video, audio and pictures transfer directly from the person who added them, even when someone else is hosting. Both people need this update, and the owner needs to stay in the room with the file available. YouTube links cannot be downloaded.
-- **See progress or cancel.** The playlist shows download progress; the same menu lets you cancel. Leaving the room or removing the item stops the transfer and removes its partial file. A cancelled or failed transfer preserves any existing file at the chosen destination.
-- **Safer transfers.** Changes to the original file during a transfer stop the download instead of saving mixed content. Downloads run alongside room playback without changing who is hosting.
-- **Friends still connect when the window is hidden.** Startup no longer waits indefinitely for a paint before bringing friends and saved-room presence online.
+- **Updates happen inside the app.** New versions download automatically at launch, while the app stays open, and after waking from sleep. Both Intel and Apple Silicon Macs are supported.
+- **Keep watching.** A downloaded update waits until you leave your room before installing and reopening the app. Rejoining cancels a pending restart.
+- **Keep your saved data.** Your identity, friends, saved rooms and settings stay in your existing profile.
+- **Recover from failed downloads.** Updates retry automatically; Home shows progress and offers **Retry update**. Mac update archives and feeds are checked with our own Ed25519 signatures before installation.
+- **Tested real upgrades.** Windows and both Mac architectures passed installer, replacement, relaunch and saved-data checks, alongside tests for tampering, interrupted downloads and room transitions.
 
 ## Download
 

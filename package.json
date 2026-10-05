@@ -1,7 +1,7 @@
 {
   "name": "watch-with-friends",
   "productName": "Watch With Friends",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "Watch With Friends - Synced Media Player. One host streams, everyone stays in sync.",
   "main": "main/index.js",
   "private": true,
@@ -79,7 +79,10 @@
       "artifactName": "${name}-${version}-windows-setup.${ext}"
     },
     "mac": {
-      "target": ["dmg", "zip"],
+      "target": [
+        "dmg",
+        "zip"
+      ],
       "artifactName": "${name}-${version}-mac-${arch}.${ext}",
       "category": "public.app-category.video",
       "identity": "-",
@@ -93,7 +96,10 @@
         "SUAllowsAutomaticUpdates": false
       },
       "extraResources": [
-        {"from": "build/mac-updater/WatchWithFriendsUpdater.app", "to": "updater/WatchWithFriendsUpdater.app"}
+        {
+          "from": "build/mac-updater/WatchWithFriendsUpdater.app",
+          "to": "updater/WatchWithFriendsUpdater.app"
+        }
       ],
       "files": [
         "!node_modules/ffprobe-static/bin/win32/**"

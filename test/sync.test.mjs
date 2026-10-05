@@ -68,6 +68,8 @@ test('a receiver report is consumed once even when host sampling runs ahead of t
   const repeated = chooseSendQuality(reduced, input)
   assert.equal(repeated.bitrate, reduced.bitrate)
   assert.equal(repeated.calmMs, 0)
+  assert.equal(reduced.decision, 'freezes')
+  assert.equal(repeated.decision, 'duplicate-feedback')
   const next = chooseSendQuality(repeated, {...input, receiverAt: 3000})
   assert.ok(next.bitrate < repeated.bitrate)
 })
@@ -78,6 +80,7 @@ test('reusing a clean report cannot accumulate the recovery window', () => {
   for (let i = 0; i < 20; i++) quality = chooseSendQuality(quality, input)
   assert.equal(quality.bitrate, 300000)
   assert.equal(quality.calmMs, 2000)
+  assert.equal(quality.decision, 'duplicate-feedback')
 })
 
 test('paused playback and missing feedback cannot manufacture a recovery', () => {
@@ -86,7 +89,19 @@ test('paused playback and missing feedback cannot manufacture a recovery', () =>
     for (let i = 0; i < 40; i++) quality = chooseSendQuality(quality, input)
     assert.equal(quality.bitrate, 600000)
     assert.equal(quality.calmMs, 0)
+    assert.equal(quality.decision, input.active === false ? 'inactive' : 'no-feedback')
   }
+})
+
+test('quality diagnostics identify recovery, settling, the ceiling and group budget changes', () => {
+  const clean = {receiver: {lossPct: 0, freezes: 0}}
+  assert.equal(chooseSendQuality({bitrate: 300000}, clean).decision, 'settling')
+  assert.equal(chooseSendQuality({bitrate: 300000, calmMs: 4000}, clean).decision, 'recovery')
+  assert.equal(chooseSendQuality({bitrate: 10e6, calmMs: 6000}, clean).decision, 'ceiling')
+  const group = chooseSendQuality({bitrate: 10e6}, {...clean, peerCount: 7})
+  assert.equal(group.decision, 'group-budget')
+  assert.equal(group.ceiling, 18e6 / 7)
+  assert.equal(chooseSendQuality(group, {...clean, peerCount: 7}).decision, 'settling', 'rounding cannot manufacture another group reduction')
 })
 
 test('group health uses one complete peer record', () => {

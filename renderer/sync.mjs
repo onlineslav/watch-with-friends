@@ -27,14 +27,19 @@ export function chooseSendQuality(previous, {receiver, receiverAt = null, capaci
   const ceiling = Math.min(10_000_000, 18_000_000 / Math.max(1, peerCount))
   let bitrate = Math.min(previous?.bitrate ?? Math.min(4_000_000, ceiling), ceiling)
   let calmMs = previous?.calmMs || 0
+  let decision = 'duplicate-feedback'
   const fresh = receiverAt == null || receiverAt !== previous?.receiverAt
-  if (!active || !receiver) calmMs = 0
-  else if (fresh) {
+  if (!active || !receiver) {
+    calmMs = 0
+    decision = active ? 'no-feedback' : 'inactive'
+  } else if (fresh) {
     if (receiver.lossPct > 2 || receiver.freezes > 0) {
+      decision = receiver.freezes > 0 ? 'freezes' : 'loss'
       bitrate *= 0.75
       if (finite(capacity, 100_000, 1e10)) bitrate = Math.min(bitrate, capacity * 0.8)
       calmMs = 0
     } else {
+      decision = 'settling'
       calmMs = Math.min(6000, calmMs + intervalMs)
       if (calmMs >= 6000) {
         const probe = bitrate + Math.max(300_000, bitrate * 0.25)
@@ -42,12 +47,14 @@ export function chooseSendQuality(previous, {receiver, receiverAt = null, capaci
         // The probe must be able to exceed a stale estimate left by our old cap.
         const headroom = finite(capacity, 100_000, 1e10) ? Math.min(capacity * 0.8, bitrate * 2) : 0
         bitrate = Math.max(probe, headroom)
+        decision = bitrate >= ceiling && previous?.bitrate >= ceiling ? 'ceiling' : 'recovery'
       }
     }
   }
   bitrate = Math.round(Math.max(300_000, Math.min(ceiling, bitrate)))
+  if (previous?.bitrate > Math.round(ceiling) && bitrate === Math.round(ceiling)) decision = 'group-budget'
   const maxHeight = bitrate < 900_000 ? 360 : bitrate < 2_000_000 ? 540 : bitrate < 3_500_000 ? 720 : 1080
-  return {bitrate, calmMs, scale: Math.max(1, width / 1920, height / maxHeight), receiverAt}
+  return {bitrate, calmMs, scale: Math.max(1, width / 1920, height / maxHeight), receiverAt, decision, ceiling}
 }
 
 // Always aggregate complete per-peer records, never one peer's sender and another's receiver.

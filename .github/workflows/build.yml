@@ -37,6 +37,8 @@ jobs:
       - run: npm test
       - name: Check room joining during a discovery outage
         run: npm run test:connections
+      - name: Check streaming recovery and exported diagnostics
+        run: npm run test:network
       - name: Add TURN relay config
         if: env.TURN_CONFIG != ''
         shell: bash

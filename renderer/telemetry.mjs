@@ -10,6 +10,18 @@ const SHRINK_STEP_MS = 250
 // The busiest stream wins: stale entries from a replaced stream stop reporting framesPerSecond.
 const busiest = (a, b) => ((b.framesPerSecond || 0) > (a?.framesPerSecond || 0) ? b : a || b)
 
+// Keep byte counters local to diagnostics; they are not part of room telemetry.
+const rtpSample = (stats, key) => stats && Number.isFinite(stats.timestamp) && Number.isFinite(stats[key])
+  ? {id: stats.id, ssrc: stats.ssrc, timestamp: stats.timestamp, bytes: stats[key]} : null
+
+export function bitrateDelta(previous, next) {
+  if (!previous || !next || previous.id !== next.id || previous.ssrc !== next.ssrc) return null
+  const intervalMs = next.timestamp - previous.timestamp
+  const bytes = next.bytes - previous.bytes
+  if (!Number.isFinite(intervalMs) || intervalMs <= 0 || !Number.isFinite(bytes) || bytes < 0) return null
+  return {bitrateBps: Math.round(bytes * 8000 / intervalMs), intervalMs: Math.round(intervalMs)}
+}
+
 export function readStats(report, {audioOnly = false} = {}) {
   const byId = new Map()
   report.forEach((s) => byId.set(s.id, s))
@@ -26,6 +38,8 @@ export function readStats(report, {audioOnly = false} = {}) {
     ...(pair?.availableOutgoingBitrate != null && {capacity: pair.availableOutgoingBitrate}),
     rttMs: pair?.currentRoundTripTime != null ? Math.round(pair.currentRoundTripTime * 1000) : null,
     relayed: candidateTypes.includes('relay'),
+    inboundRtp: rtpSample(inbound, 'bytesReceived'),
+    outboundRtp: rtpSample(outbound, 'bytesSent'),
     inbound: inbound && {
       ssrc: inbound.ssrc,
       packetsReceived: inbound.packetsReceived || 0,

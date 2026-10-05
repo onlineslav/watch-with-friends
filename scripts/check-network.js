@@ -9,6 +9,7 @@ const path = require('node:path')
 const {pathToFileURL} = require('node:url')
 const {execFileSync} = require('node:child_process')
 const esbuild = require('esbuild')
+const diagnostics = require('../main/log')
 const {prepareYouTube, registerYouTube} = require('../main/youtube')
 prepareYouTube()
 const checkYouTube = process.argv.includes('--youtube')
@@ -93,7 +94,7 @@ async function fixtures() {
         captured.addTrack(replacement);
         captured.dispatchEvent(new MediaStreamTrackEvent('addtrack', {track: replacement}));
       },
-      getState: hostState, sampleConnection, youtube, selfId, errors: [],
+      getState: hostState, sampleConnection, flushLog, youtube, selfId, errors: [],
     };
     window.addEventListener('error', (e) => __test.errors.push(e.message));
     window.addEventListener('unhandledrejection', (e) => __test.errors.push(String(e.reason)));
@@ -140,6 +141,7 @@ app.whenReady().then(async () => {
   const watchdog = setTimeout(() => { console.error('Network integration check timed out'); app.exit(1) }, publicDiscovery || checkYouTube ? 240000 : 120000)
   try {
     const {video, picture, sound} = await fixtures()
+    diagnostics.start({dir: path.join(temporary, 'logs'), info: {version: app.getVersion()}})
     require('../main/main').registerIpc()
     ipcMain.removeHandler('net:ice-servers')
     ipcMain.handle('net:ice-servers', () => [])
@@ -245,6 +247,20 @@ app.whenReady().then(async () => {
       console.log('PASS: Paused playback does not alter quality on stale trouble reports')
       await run(a, '__test.qualityProbe.lossPct = 0; __test.qualityProbe.freezes = 0; __test.control("play")')
       await until(b, '__test.session.remote?.playing && __test.audioLevel() > 0.01')
+      await Promise.all(windows.map(win => run(win, '__test.flushLog()')))
+      const exported = path.join(temporary, 'quality-diagnostics.log')
+      diagnostics.exportTo(exported)
+      const entries = fs.readFileSync(exported, 'utf8').split('\n').filter(line => line.startsWith('{')).map(line => JSON.parse(line))
+      const sent = entries.find(e => e.ev === 'host-sample' && e.sentBitrateBps > 0)
+      const received = entries.find(e => e.ev === 'viewer-sample' && e.receivedBitrateBps > 0)
+      assert.ok(sent && sent.sendIntervalMs > 0 && sent.source.height === 720, 'export includes measured send bitrate, interval and source size')
+      assert.ok(received && received.receiveIntervalMs > 0 && typeof received.playback.playing === 'boolean', 'export includes measured receive bitrate and playback state')
+      const inactive = entries.find(e => e.ev === 'host-sample' && e.decision === 'inactive')
+      assert.ok(inactive && !inactive.playback.playing && inactive.feedbackAgeMs >= 0, 'export explains pauses and feedback age')
+      assert.ok(entries.some(e => e.ev === 'send-quality-change' && e.reason === 'freezes' && e.scaleTo === 2))
+      assert.ok(entries.some(e => e.ev === 'send-parameters-applied' && e.kind === 'video' && e.scale === 2 && e.maxBitrate === 300000))
+      assert.ok(!/[A-Za-z]:[\\/]Users[\\/]|\/(?:home|Users)\//.test(fs.readFileSync(exported, 'utf8')), 'diagnostic export remains redacted')
+      console.log('PASS: Exported diagnostics retain actual send/receive bitrate, playback state, fresh feedback decisions and applied sender parameters')
     } finally {
       await run(a, '__test.qualityProbe.pc.getStats = __test.qualityProbe.getStats; delete __test.qualityProbe; true')
     }
@@ -703,5 +719,6 @@ app.whenReady().then(async () => {
     clearTimeout(watchdog)
     for (const win of windows) if (!win.isDestroyed()) win.destroy()
     require('../main/media').stopAll()
+    diagnostics.stop()
   }
 }).then(() => app.exit(0), (error) => { console.error(error); app.exit(1) })

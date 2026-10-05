@@ -1,14 +1,13 @@
-## What's new in 0.5.3
+## What's new in 0.5.4
 
-Automatic updates inside the app on Windows and Mac.
+Faster recovery from blurry streaming, with better diagnostics for connection problems.
 
-**Mac users on an older version:** install this release once using the DMG below. Future versions download and install inside the app, without repeating the DMG process. Windows users receive this release through the existing automatic updater.
+Windows users and Mac users on 0.5.3 receive this release through the in-app updater. Mac users on 0.5.2 or earlier should install the DMG below once to enable future in-app updates.
 
-- **Updates happen inside the app.** New versions download automatically at launch, while the app stays open, and after waking from sleep. Both Intel and Apple Silicon Macs are supported.
-- **Keep watching.** A downloaded update waits until you leave your room before installing and reopening the app. Rejoining cancels a pending restart.
-- **Keep your saved data.** Your identity, friends, saved rooms and settings stay in your existing profile.
-- **Recover from failed downloads.** Updates retry automatically; Home shows progress and offers **Retry update**. Mac update archives and feeds are checked with our own Ed25519 signatures before installation.
-- **Tested real upgrades.** Windows and both Mac architectures passed installer, replacement, relaunch and saved-data checks, alongside tests for tampering, interrupted downloads and room transitions.
+- **Recover picture quality sooner.** After connection trouble, clean playback reports restore the host's quality ceiling in seconds instead of minutes. Low bandwidth estimates alone no longer force the app to keep a smaller picture; WebRTC continues to adapt to actual congestion.
+- **Avoid repeated downgrades.** Each viewer report counts once. Pauses, buffering and missing reports cannot cause false recovery or repeated reductions.
+- **Better problem reports.** Diagnostic exports show measured sent and received media bitrate, playback state, feedback age, each quality decision, and whether requested sender settings were applied or failed. Paths and addresses remain redacted.
+- **Keep watching through updates.** Downloads wait until you leave your room before installing. Your identity, friends, rooms and settings stay in your existing profile.
 
 ## Download
 

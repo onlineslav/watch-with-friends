@@ -49,3 +49,25 @@ to keep the check short. Production bundles contain no test hooks or overrides.
 `npm run bundle` and `npm run test:logging` verify bundling and the diagnostic IPC
 and export path. A real cross-platform internet session remains necessary to
 confirm the improvement on the original connection.
+
+## Diagnostics in 0.5.4
+
+Host samples retain the requested `bitrate` and `scale` and now include measured
+`sentBitrateBps` and `sendIntervalMs`. Viewer samples include measured
+`receivedBitrateBps` and `receiveIntervalMs`. These rates use RTP media byte-counter
+deltas and the actual stats timestamps, not a presumed two-second interval. A first
+sample, missing counter, changed stream or reset counter produces `null`; a valid
+sample without new bytes produces zero. `mediaKind` distinguishes video from an
+audio-only session. Counters stay local and do not extend the room protocol.
+
+Host samples also include source dimensions, playback state/time/epoch, feedback
+arrival time and age, freshness, the group ceiling, and the controller's actual
+decision: `inactive`, `no-feedback`, `duplicate-feedback`, `settling`, `loss`,
+`freezes`, `recovery`, `ceiling`, or `group-budget`. Quality-change events use that
+decision instead of inferring the reason from whether bitrate went up or down.
+`send-parameters-applied` and `send-parameters-failed` distinguish requested
+ceilings from accepted sender settings; actual transmitted resolution remains in
+the sender/receiver samples.
+
+The network integration check verifies these fields in a real redacted diagnostic
+export alongside the real 720p/360p/720p receiving picture.

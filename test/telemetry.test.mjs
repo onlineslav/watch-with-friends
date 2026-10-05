@@ -4,6 +4,7 @@ import {
   MAX_BUFFER_MS,
   MIN_BUFFER_MS,
   adaptBuffer,
+  bitrateDelta,
   describeLink,
   describePeer,
   inboundDelta,
@@ -50,6 +51,30 @@ test('audio-only telemetry uses audio packets even after a video stream was repl
   assert.equal(stats.inbound.jitterMs, 20)
   assert.equal(stats.inbound.height, 0)
   assert.equal(stats.outbound, null)
+})
+
+test('readStats retains separate local byte samples without adding counters to room telemetry', () => {
+  const stats = readStats(report.map(s => s.id === 'in' ? {...s, timestamp: 1000, bytesReceived: 250000} : s.id === 'out' ? {...s, ssrc: 3, timestamp: 1000, bytesSent: 500000} : s))
+  assert.deepEqual(stats.inboundRtp, {id: 'in', ssrc: 2, timestamp: 1000, bytes: 250000})
+  assert.deepEqual(stats.outboundRtp, {id: 'out', ssrc: 3, timestamp: 1000, bytes: 500000})
+  assert.deepEqual(stats.outbound, {fps: 24, height: 1080, limit: 'cpu'})
+  assert.equal(readStats(report).inboundRtp, null, 'missing counters are not zero throughput')
+})
+
+test('bitrateDelta measures the actual sample interval and reports idle traffic as zero', () => {
+  const first = {id: 'video', ssrc: 2, timestamp: 1000, bytes: 100000}
+  assert.deepEqual(bitrateDelta(first, {...first, timestamp: 3000, bytes: 600000}), {bitrateBps: 2000000, intervalMs: 2000})
+  assert.deepEqual(bitrateDelta(first, {...first, timestamp: 5000, bytes: 600000}), {bitrateBps: 1000000, intervalMs: 4000})
+  assert.deepEqual(bitrateDelta(first, {...first, timestamp: 3000}), {bitrateBps: 0, intervalMs: 2000})
+})
+
+test('bitrateDelta cannot bridge new streams, reset counters or invalid clock samples', () => {
+  const first = {id: 'video', ssrc: 2, timestamp: 1000, bytes: 100000}
+  assert.equal(bitrateDelta(null, first), null)
+  assert.equal(bitrateDelta(first, null), null)
+  for (const change of [{id: 'new'}, {ssrc: 3}, {bytes: 0}, {timestamp: 1000}, {timestamp: 999}, {timestamp: NaN}, {bytes: Infinity}]) {
+    assert.equal(bitrateDelta(first, {...first, timestamp: 3000, bytes: 200000, ...change}), null)
+  }
 })
 
 test('inboundDelta measures loss and ignores replaced streams', () => {

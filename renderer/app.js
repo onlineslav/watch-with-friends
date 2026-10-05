@@ -73,6 +73,7 @@ import {
 import {
   MIN_BUFFER_MS,
   adaptBuffer,
+  bitrateDelta,
   describeLink,
   describePeer,
   inboundDelta,
@@ -303,6 +304,7 @@ const blankSession = () => ({
   telemetryAction: null,
   link: null, // {rttMs, relayed, sender, receiver} for the connection badge
   lastInbound: null,
+  lastInboundRtp: null,
   buffer: {bufferMs: MIN_BUFFER_MS, calmMs: 0},
   epoch: 0, // host: bumps whenever ffmpeg restarts, so viewers can tell a restart from a freeze
   steady: {since: null, epoch: 0}, // viewer: when the host's playback last became uninterrupted
@@ -967,7 +969,11 @@ async function tuneSenders() {
           encoding.scaleResolutionDownBy = scale
           params.degradationPreference = 'maintain-framerate'
         }
-        await sender.setParameters(params).catch(() => {})
+        await sender.setParameters(params).then(() => {
+          logEvent('telemetry', 'send-parameters-applied', {peer: peerId, kind: track.kind, maxBitrate, scale: track.kind === 'video' ? scale : null})
+        }, (error) => {
+          logWarn('telemetry', 'send-parameters-failed', {peer: peerId, kind: track.kind, maxBitrate, scale: track.kind === 'video' ? scale : null, message: error.message})
+        })
       }
     }
   } finally { current.tuning = false }
@@ -1024,7 +1030,7 @@ function applyViewerBuffer(pc) {
 // measurements that caused it were recorded at the cadence the decision was made on. The host
 // also records what it decided, because the ladder in chooseSendQuality is invisible from the
 // outside — a viewer sees the picture change with no way to tell loss from a bandwidth estimate.
-function logSendQuality(peerId, stats, before, after) {
+function logSendQuality(peerId, stats, before, after, context) {
   logEvent('telemetry', 'host-sample', {
     peer: peerId,
     rttMs: stats.rttMs,
@@ -1035,6 +1041,9 @@ function logSendQuality(peerId, stats, before, after) {
     bitrate: after.quality?.bitrate ?? null,
     scale: after.quality?.scale ?? null,
     calmMs: after.quality?.calmMs ?? null,
+    decision: after.quality?.decision ?? null,
+    ceiling: after.quality?.ceiling ?? null,
+    ...context,
   })
   const was = before?.bitrate
   const now = after.quality?.bitrate
@@ -1045,10 +1054,13 @@ function logSendQuality(peerId, stats, before, after) {
       from: was,
       to: now,
       change: `${now > was ? '+' : ''}${Math.round((100 * (now - was)) / was)}%`,
-      reason: now < was ? (after.receiver?.freezes > 0 ? 'freezes' : after.receiver?.lossPct > 2 ? 'loss' : 'capacity') : 'recovery',
+      reason: after.quality.decision,
       lossPct: after.receiver?.lossPct ?? null,
       freezes: after.receiver?.freezes ?? null,
       capacity: stats.capacity ?? null,
+      scaleFrom: before?.scale ?? null,
+      scaleTo: after.quality.scale,
+      feedbackAgeMs: context.feedbackAgeMs,
     })
   }
 }
@@ -1075,16 +1087,35 @@ async function sampleConnection() {
         p.sender = stats.outbound
         if (performance.now() - (p.receiverAt || 0) > HOST_TIMEOUT_MS) p.receiver = null
         const dimensions = current.stream?.getVideoTracks()[0]?.getSettings() || {}
+        const playback = {
+          playing: hostPlaying(),
+          loading: Boolean(current.openingMedia),
+          buffering: hostPlaying() && ui.localVideo.readyState < 3,
+          time: currentTime(),
+          epoch: current.epoch,
+          readyState: ui.localVideo.readyState,
+        }
+        const sent = bitrateDelta(p.lastOutboundRtp, stats.outboundRtp)
+        p.lastOutboundRtp = stats.outboundRtp
         const before = p.quality
         p.quality = chooseSendQuality(p.quality, {
           receiver: p.receiver,
           receiverAt: p.receiverAt,
           capacity: stats.capacity,
-          active: hostPlaying() && !current.openingMedia && ui.localVideo.readyState >= 3,
+          active: playback.playing && !playback.loading && !playback.buffering,
           peerCount: current.peers.size,
           ...dimensions,
         })
-        if (current.stream) logSendQuality(id, stats, before, p)
+        if (current.stream) logSendQuality(id, stats, before, p, {
+          mediaKind: audioOnly ? 'audio' : 'video',
+          sentBitrateBps: sent?.bitrateBps ?? null,
+          sendIntervalMs: sent?.intervalMs ?? null,
+          feedbackAtMs: p.receiverAt ?? null,
+          feedbackAgeMs: p.receiverAt != null ? Math.round(Math.max(0, performance.now() - p.receiverAt)) : null,
+          feedbackFresh: Boolean(p.receiver && p.receiverAt !== before?.receiverAt),
+          playback,
+          source: {width: dimensions.width ?? null, height: dimensions.height ?? null},
+        })
       }
     }
   }
@@ -1105,6 +1136,8 @@ async function sampleConnection() {
     // Packet loss is always the network; freezes and jitter only count during steady playback.
     const steady = isSteady(session.steady, performance.now())
     const measured = inboundDelta(session.lastInbound, stats.inbound)
+    const received = bitrateDelta(session.lastInboundRtp, stats.inboundRtp)
+    session.lastInboundRtp = stats.inboundRtp
     const delta = measured && !steady ? {...measured, freezes: 0, droppedFrames: 0} : measured
     session.lastInbound = stats.inbound
     if (measured?.delayMs != null) session.playoutDelayMs = measured.delayMs
@@ -1129,6 +1162,16 @@ async function sampleConnection() {
       ...receiver,
       sender: session.remote?.senders?.[selfId] || null,
       epoch: session.remote?.epoch ?? null,
+      mediaKind: audioOnly ? 'audio' : 'video',
+      receivedBitrateBps: received?.bitrateBps ?? null,
+      receiveIntervalMs: received?.intervalMs ?? null,
+      playback: {
+        playing: Boolean(session.remote?.playing),
+        loading: Boolean(session.remote?.loading),
+        buffering: Boolean(session.remote?.buffering),
+        time: session.remote?.time ?? null,
+        readyState: ui.remoteVideo.readyState,
+      },
     })
     session.telemetryAction.send({receiver, hostId: session.hostId, claimedAt: session.remote.claimedAt}, {target: session.hostId, signal: session.lifetime.signal}).catch(() => {})
   } else {
@@ -1250,6 +1293,7 @@ function receiveState(value, peerId) {
     detachRemoteStream()
     session.clock = null
     session.lastInbound = null
+    session.lastInboundRtp = null
     session.playoutDelayMs = null
     session.buffer = {bufferMs: MIN_BUFFER_MS, calmMs: 0}
     session.catalog = new SubtitleCatalog()

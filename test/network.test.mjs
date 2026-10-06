@@ -57,3 +57,33 @@ test('reconnect restarts interrupted peers and stop discards late relay response
   assert.deepEqual(pending.config().turnConfig, [])
   await assert.rejects(deadline(new Promise(() => {}), 5), /did not respond/)
 })
+
+test('connection diagnostics distinguish negotiation from ICE failures without copying credentials or SDP', async () => {
+  const events = []
+  const network = createNetwork({getIceServers: () => ice('private-credential'), PeerConnection: Peer,
+    record: (event, data) => events.push({event, ...data})})
+  try {
+    await network.ready
+    const pc = new network.PeerConnection()
+    assert.equal(events[0].remoteDescription, false)
+    assert.equal(events[0].hasTurn, true)
+    pc.remoteDescription = {type: 'answer', sdp: 'private SDP 192.168.1.14'}
+    pc.iceConnectionState = 'checking'
+    pc.connectionState = 'connecting'
+    pc.dispatchEvent(new Event('signalingstatechange'))
+    assert.equal(events.at(-1).remoteDescription, true)
+    assert.equal(events.at(-1).iceState, 'checking')
+    const count = events.length
+    pc.dispatchEvent(new Event('iceconnectionstatechange'))
+    assert.equal(events.length, count, 'duplicate state events do not fill the log')
+    pc.iceConnectionState = pc.connectionState = 'failed'
+    pc.dispatchEvent(new Event('connectionstatechange'))
+    assert.equal(events.at(-1).connectionState, 'failed')
+    const error = new Event('icecandidateerror')
+    Object.assign(error, {errorCode: 701, errorText: 'STUN request timed out'})
+    pc.dispatchEvent(error)
+    assert.deepEqual(events.at(-1), {event: 'ice-error', connection: events[0].connection, code: 701, message: 'STUN request timed out'})
+    assert.ok(!/private|192\.168/.test(JSON.stringify(events)), 'only state and candidate errors are recorded')
+    pc.close()
+  } finally { network.stop() }
+})

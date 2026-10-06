@@ -8,7 +8,7 @@ const os = require('node:os')
 const path = require('node:path')
 const {parseLine} = require('../shared/log')
 const log = require('../main/log')
-const {registerIpc} = require('../main/main')
+const {registerIpc, watchTransportWarnings} = require('../main/main')
 
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'wwf-logging-test-'))
 app.setPath('userData', profile)
@@ -37,6 +37,7 @@ app.whenReady().then(async () => {
       show: false,
       webPreferences: {backgroundThrottling: false, preload: path.join(root, 'main/preload.js')},
     })
+    watchTransportWarnings(win.webContents)
     await win.loadFile(path.join(root, 'renderer/index.html'))
 
     // The renderer logs one line per launch, which is what proves the IPC path works at all.
@@ -52,6 +53,12 @@ app.whenReady().then(async () => {
     assert.equal(uncaught.lv, 'error')
     assert.match(uncaught.message, /boom from …\/clip\.mkv/, 'redacted on the way through')
 
+    await win.webContents.executeJavaScript('console.warn("Trystero: discovery relay disconnected - 192.168.1.14; retrying")')
+    await until(() => entries().some((e) => e.ev === 'transport-warning'), 'a discovery warning')
+    const warning = entries().find((e) => e.ev === 'transport-warning')
+    assert.equal(warning.lv, 'warn')
+    assert.match(warning.message, /discovery relay disconnected - \[ip\]/)
+
     // ffmpeg failures are recorded by main, on the other side of the same file. Electron prints
     // its own line about this rejection; that line is the check working, not the check failing.
     await win.webContents.executeJavaScript('window.api.startSession({filePath: "C:/nope/missing.mkv"}).catch(() => {})')
@@ -62,6 +69,7 @@ app.whenReady().then(async () => {
     const exported = fs.readFileSync(target, 'utf8')
     assert.match(exported, /# note: went blurry about 40 minutes in/)
     assert.match(exported, /"ev":"renderer-ready"/, 'the export carries both processes')
+    assert.match(exported, /"ev":"transport-warning"/, 'discovery failures survive an export')
     assert.match(exported, /"ev":"start-failed"|"sc":"ffmpeg"/)
     assert.ok(!/[A-Za-z]:\\Users\\/.test(exported), 'no Windows user paths survive an export')
     assert.ok(!/\/(?:home|Users)\//.test(exported), 'and no POSIX home paths either')

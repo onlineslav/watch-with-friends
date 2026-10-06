@@ -7,9 +7,10 @@ export function deadline(promise, ms = NETWORK_TIMEOUT_MS) {
   })]).finally(() => clearTimeout(timer))
 }
 
-export function createNetwork({getIceServers, PeerConnection, now = Date.now}) {
+export function createNetwork({getIceServers, PeerConnection, now = Date.now, record = () => {}}) {
   const peers = new Set()
   let servers = [], expiresAt = 0, pending = null, timer = null, disposed = false
+  let nextConnectionId = 0
   const network = new EventTarget()
   network.error = null
   const iceFor = (pcConfig = {}) => [...(pcConfig.iceServers || []).filter((s) => [].concat(s.urls).every((url) => /^stuns?:/i.test(url))), ...servers]
@@ -26,6 +27,21 @@ export function createNetwork({getIceServers, PeerConnection, now = Date.now}) {
       if (peers.size >= 256) throw new Error('Too many simultaneous connections')
       super({...config, iceServers: iceFor(config)})
       peers.add(this)
+      const connection = ++nextConnectionId
+      let previous = ''
+      const trace = () => {
+        const state = {connection, connectionState: this.connectionState, iceState: this.iceConnectionState,
+          gatheringState: this.iceGatheringState, signalingState: this.signalingState,
+          remoteDescription: Boolean(this.remoteDescription),
+          hasTurn: iceFor(this.getConfiguration()).some(({urls}) => [].concat(urls).some((url) => /^turns?:/i.test(url)))}
+        const signature = JSON.stringify(state)
+        if (signature === previous) return
+        previous = signature
+        record('peer-state', state)
+      }
+      for (const event of ['connectionstatechange', 'iceconnectionstatechange', 'icegatheringstatechange', 'signalingstatechange']) this.addEventListener(event, trace)
+      this.addEventListener('icecandidateerror', (event) => record('ice-error', {connection, code: event.errorCode, message: event.errorText}))
+      trace()
       this.addEventListener('connectionstatechange', () => {
         if (this.connectionState === 'closed') peers.delete(this)
       })

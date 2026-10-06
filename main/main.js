@@ -67,9 +67,20 @@ function createWindow() {
       autoplayPolicy: 'no-user-gesture-required',
     },
   })
+  watchTransportWarnings(win.webContents)
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'))
   watchZoom(win.webContents)
   return win
+}
+
+// Trystero reports discovery failures through console warnings, rather than
+// rejected promises. Preserve them in exports even when no peer was found.
+function watchTransportWarnings(contents) {
+  contents.on('console-message', ({message, level}) => {
+    if ((level === 'warning' || level === 'error') && /^Trystero:/.test(message)) {
+      log.record('network', 'transport-warning', {message}, level === 'error' ? 'error' : 'warn')
+    }
+  })
 }
 
 async function pickFiles(event, name, extensions, multiple = false) {
@@ -208,4 +219,4 @@ function start() {
   })
 }
 
-module.exports = {createWindow, registerIpc, start}
+module.exports = {createWindow, registerIpc, start, watchTransportWarnings}

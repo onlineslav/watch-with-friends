@@ -148,6 +148,7 @@ app.whenReady().then(async () => {
     for (const name of ['alpha', 'bravo', 'charlie']) {
       const win = new BrowserWindow({show: false, webPreferences: {partition: `network-${name}`, backgroundThrottling: false, autoplayPolicy: 'no-user-gesture-required', preload: path.join(temporary, 'preload.js')}})
       windows.push(win)
+      require('../main/main').watchTransportWarnings(win.webContents)
       if (checkYouTube) registerYouTube(win.webContents.session)
       win.webContents.on('console-message', (details) => {
         if (details.level === 'error' || publicDiscovery && details.level === 'warning') console.error(`${name}: ${details.message}`)
@@ -254,6 +255,7 @@ app.whenReady().then(async () => {
       const exported = path.join(temporary, 'quality-diagnostics.log')
       diagnostics.exportTo(exported)
       const entries = fs.readFileSync(exported, 'utf8').split('\n').filter(line => line.startsWith('{')).map(line => JSON.parse(line))
+      assert.ok(entries.some(e => e.sc === 'network' && e.ev === 'peer-state' && e.remoteDescription && e.connectionState === 'connected'), 'export records successful remote negotiation and connection state')
       const sent = entries.find(e => e.ev === 'host-sample' && e.sentBitrateBps > 0)
       const received = entries.find(e => e.ev === 'viewer-sample' && e.receivedBitrateBps > 0)
       assert.ok(sent && sent.sendIntervalMs > 0 && sent.source.height === 720, 'export includes measured send bitrate, interval and source size')

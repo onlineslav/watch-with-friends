@@ -60,3 +60,25 @@ patch('shared-peer.mjs', [
       if (shared.pendingDataByToken.size >= 16 || bytes + decoded.payload.byteLength > 65536) return;
       const pending`],
 ])
+
+// The upstream socket disables itself after six consecutive failures. A laptop
+// waking up or a temporary discovery outage then requires a full app restart.
+// Keep the existing capped backoff, but never turn a transient close into a
+// permanent shutdown. Explicit close (including a rejected Nostr relay) remains
+// final. This separate marker also updates already-hardened installations.
+const utilsPath = path.join(core, 'dist/utils.mjs')
+const retryMarker = '// watch-with-friends discovery retry v1\n'
+let utils = fs.readFileSync(utilsPath, 'utf8')
+if (!utils.startsWith(retryMarker)) {
+  const before = `			if (period >= maxRetryMs) {
+				client.isClosed = true;
+				return;
+			}
+			retryTimer = setTimeout(init, Math.random() * period);`
+  const after = `			const retryMs = Math.max(1000, Math.random() * period);
+			console.warn(libName + ": discovery relay disconnected - " + url + "; retrying in " + Math.round(retryMs) + "ms (code " + (event?.code ?? "unknown") + ")");
+			retryTimer = setTimeout(init, retryMs);`
+  if (!utils.includes(before) || !utils.includes('socket.onclose = () => {')) throw new Error('Trystero discovery retry patch context changed')
+  utils = utils.replace('socket.onclose = () => {', 'socket.onclose = (event) => {').replace(before, after)
+  fs.writeFileSync(utilsPath, retryMarker + utils)
+}

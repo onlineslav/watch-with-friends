@@ -1,13 +1,11 @@
-## What's new in 0.5.5
+## What's new in 0.5.6
 
-Faster recovery from blurry streaming, with better diagnostics for connection problems.
+Better recovery from discovery outages, with diagnostics for failed room connections.
 
 Windows users and Mac users on 0.5.3 receive this release through the in-app updater. Mac users on 0.5.2 or earlier should install the DMG below once to enable future in-app updates.
 
-- **Recover picture quality sooner.** After connection trouble, clean playback reports restore the host's quality ceiling in seconds instead of minutes. Low bandwidth estimates alone no longer force the app to keep a smaller picture; WebRTC continues to adapt to actual congestion.
-- **Avoid repeated downgrades.** Each viewer report counts once. Pauses, buffering and missing reports cannot cause false recovery or repeated reductions.
-- **Better problem reports.** Diagnostic exports show measured sent and received media bitrate, playback state, feedback age, each quality decision, and whether requested sender settings were applied or failed. Paths and addresses remain redacted.
-- **Keep watching through updates.** Downloads wait until you leave your room before installing. Your identity, friends, rooms and settings stay in your existing profile.
+- **Keep retrying after discovery outages.** A discovery relay that fails to connect no longer becomes permanently disabled after six attempts. Retries continue with a delay capped at 60 seconds, so a recovered relay can reconnect without restarting the app.
+- **Explain failed connections.** Diagnostic exports now include discovery warnings, join failures for rooms and friends, and WebRTC negotiation and connection states. SDP and relay credentials are not logged; paths and addresses remain redacted.
 
 ## Download
 

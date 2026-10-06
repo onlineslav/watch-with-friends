@@ -473,7 +473,7 @@ async function openRoom(code, joining) {
   }
   // Keep one transport appId so friends, presence and media reuse an established
   // connection. The room ID isolates the persistent protocol from older rooms.
-  const room = joinRoom({appId: APP_ID, password: code, ...network.config()}, `persistent:${code}`, {
+  const room = joinNetworkRoom({appId: APP_ID, password: code}, `persistent:${code}`, {
     onPeerHandshake: async (peerId, send, receive) => {
       if (verifying.size + peerIdentities.size >= MAX_PEERS) throw new Error('Room is full (8 people)')
       verifying.add(peerId)
@@ -1535,9 +1535,16 @@ const localStore = {
   },
 }
 
-const network = createNetwork({getIceServers: () => window.api.iceServers(), PeerConnection: RTCPeerConnection})
-const friendNetwork = new FriendNetwork({joinRoom: (config, ...rest) => joinRoom({...config, ...network.config()}, ...rest), selfId, appId: APP_ID, storage: localStore})
-const roomPresence = new RoomPresence({joinRoom: (config, ...rest) => joinRoom({...config, ...network.config()}, ...rest), selfId, appId: APP_ID})
+const network = createNetwork({getIceServers: () => window.api.iceServers(), PeerConnection: RTCPeerConnection,
+  record: (event, data) => logEvent('network', event, data, event === 'ice-error' ? 'warn' : 'info')})
+function joinNetworkRoom(config, channel, callbacks = {}) {
+  return joinRoom({...config, ...network.config()}, channel, {...callbacks, onJoinError: (failure) => {
+    logWarn('network', 'join-failed', {channel, peer: failure.peerId || null, message: failure.error})
+    callbacks.onJoinError?.(failure)
+  }})
+}
+const friendNetwork = new FriendNetwork({joinRoom: joinNetworkRoom, selfId, appId: APP_ID, storage: localStore})
+const roomPresence = new RoomPresence({joinRoom: joinNetworkRoom, selfId, appId: APP_ID})
 roomPresence.addEventListener('change', renderRoomMembers)
 const networkReady = network.ready.then(() => network.config().turnConfig)
 network.addEventListener('change', () => {

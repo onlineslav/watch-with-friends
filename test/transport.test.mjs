@@ -97,3 +97,35 @@ test('handshake queues reject excessive messages before room admission', () => {
   assert.equal(failures, 1)
   assert.equal(manager.canReceiveFromPeer('p', true), false)
 })
+
+function reconnectPeer() {
+  return {
+    created: 0, isDead: false, connection: {connectionState: 'connected'}, channel: {readyState: 'open'},
+    setHandlers(handlers) { this.handlers = handlers }, sendData() {},
+    destroy() { this.isDead = true; this.connection.connectionState = 'closed'; this.handlers?.close?.() },
+  }
+}
+
+test('replacing the last shared connection keeps its replacement discoverable by other rooms', () => {
+  const manager = new SharedPeerManager()
+  const oldPeer = reconnectPeer()
+  manager.register('app', 'friend', oldPeer, 100)
+  const replacement = manager.register('app', 'friend', reconnectPeer(), 100)
+  assert.equal(oldPeer.isDead, true, 'replaced connection must still be destroyed')
+  assert.equal(manager.get('app', 'friend'), replacement, 'replacement must remain in the shared peer registry')
+  manager.clear('app', 'friend', {destroyPeer: true})
+  assert.equal(manager.get('app', 'friend'), undefined)
+  assert.deepEqual(Object.keys(manager.getMap('app')), [])
+})
+
+test('rooms retain a live registry after the last peer leaves and a new connection arrives', () => {
+  const manager = new SharedPeerManager()
+  const roomRegistry = manager.getMap('app')
+  manager.register('app', 'old-friend', reconnectPeer(), 100)
+  manager.clear('app', 'old-friend', {destroyPeer: true})
+  const reconnected = manager.register('app', 'new-friend', reconnectPeer(), 100)
+  assert.equal(manager.getMap('app'), roomRegistry, 'existing room contexts must keep the same registry')
+  assert.equal(roomRegistry['new-friend'], reconnected)
+  manager.clear('app', 'new-friend', {destroyPeer: true})
+  assert.deepEqual(Object.keys(roomRegistry), [], 'preserving the registry must not retain departed peers')
+})

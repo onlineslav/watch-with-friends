@@ -61,6 +61,21 @@ patch('shared-peer.mjs', [
       const pending`],
 ])
 
+// Room contexts capture getMap(appId) for their entire lifetime. Deleting an
+// empty map strands those contexts, and register() can write a replacement
+// peer into the deleted map when replacing the last connection. Keep the map
+// identity stable while still clearing every peer, binding and timer. Append
+// an independent marker so already-hardened installs receive this fix too.
+const sharedPath = path.join(core, 'dist/shared-peer.mjs')
+const registryMarker = '// watch-with-friends stable shared registry v1'
+let shared = fs.readFileSync(sharedPath, 'utf8')
+if (!shared.includes(registryMarker)) {
+  const before = 'if (keys(map).length === 0) delete this.byApp[appId];'
+  if (!shared.includes(before)) throw new Error('Trystero shared registry patch context changed')
+  shared = shared.replace(before, registryMarker + '\n\t\t// Existing room contexts retain this map; only peer entries are removed.')
+  fs.writeFileSync(sharedPath, shared)
+}
+
 // The upstream socket disables itself after six consecutive failures. A laptop
 // waking up or a temporary discovery outage then requires a full app restart.
 // Keep the existing capped backoff, but never turn a transient close into a

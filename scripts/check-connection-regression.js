@@ -132,7 +132,7 @@ app.whenReady().then(async () => {
   ipcMain.removeHandler('net:ice-servers')
   ipcMain.handle('net:ice-servers', () => [])
   const results = []
-  const cases = refs.flatMap(ref => (relayOutage ? ['friends-first', 'room-first'] : ['normal']).map(flow => ({ref, flow})))
+  const cases = refs.flatMap(ref => (relayOutage ? ['friends-first', 'room-first', 'peer-restart'] : ['normal']).map(flow => ({ref, flow})))
   for (const [index, {ref, flow}] of cases.entries()) {
     const windows = []
     const watchdog = setTimeout(() => { console.error(`Comparison timed out: ${ref}/${flow}`); app.exit(1) }, 180000)
@@ -168,11 +168,41 @@ app.whenReady().then(async () => {
         await until(windows, '__probe.session.peers.size === 1', `${ref} room${relayOutage ? ' during discovery outage' : ''}`, relayOutage ? 5000 : 70000)
       }
       if (relayOutage) {
+        if (flow === 'peer-restart') {
+          // Keep alpha's room contexts alive while its last physical peer is
+          // lost. Reload only bravo, retaining its saved identity but creating
+          // a new transport ID. Alpha must recover without restarting.
+          blockDiscovery = false
+          await run(windows[1], '__probe.connections.forEach(pc => pc.close())')
+          await until([windows[0]], '__probe.friendNetwork.online.size === 0 && __probe.session.peers.size === 0', `${ref} last peer disconnected`, 15000)
+          await windows[1].loadFile(html)
+          await until([windows[1]], '__probe.identity && __probe.friendNetwork.identity', `${ref} restarted friend profile`, 10000)
+          await until(windows, '__probe.friendNetwork.online.size === 1', `${ref} friend reconnect without restarting other client`)
+          blockDiscovery = true
+          await run(windows[1], `__probe.enterRoom(${JSON.stringify(code)}, {joining:true})`)
+          await until(windows, '__probe.session.peers.size === 1', `${ref} room reconnect during discovery outage`, 5000)
+        }
         for (const win of windows) assert.equal(await run(win, `(() => {
           const friend = [...__probe.friendNetwork.online.values()][0];
           return friend.link.room.getPeers()[friend.peerId] === __probe.session.room.getPeers()[friend.peerId];
         })()`), true, 'Room and friend presence must use the same established connection')
+        if (flow === 'peer-restart') {
+          await Promise.all(windows.map(win => run(win, `(() => {
+            const friend = [...__probe.friendNetwork.online.values()][0];
+            __probe.reconnectedPeer = friend.link.room.getPeers()[friend.peerId];
+          })()`)))
+        }
         await Promise.all(windows.map(win => run(win, '__probe.leaveRoom()')))
+        if (flow === 'peer-restart') {
+          // Allow asynchronous channel-close callbacks to run. An immediate
+          // rejoin can otherwise hide destruction of the recovered connection.
+          await pause(1000)
+          for (const win of windows) assert.equal(await run(win, `(() => {
+            const friend = [...__probe.friendNetwork.online.values()][0];
+            return !!friend && friend.link.room.getPeers()[friend.peerId] === __probe.reconnectedPeer
+              && __probe.reconnectedPeer.connectionState === 'connected';
+          })()`), true, 'Leaving an old room must preserve the recovered friend connection')
+        }
         await enter()
         await until(windows, '__probe.session.peers.size === 1 && __probe.friendNetwork.online.size === 1', `${ref} rejoin during discovery outage`, 5000)
         for (const win of windows) assert.deepEqual(await run(win, '__probe.errors'), [])

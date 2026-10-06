@@ -1,11 +1,11 @@
-## What's new in 0.5.7
+## What's new in 0.5.8
 
-Better recovery from discovery outages, with diagnostics for failed room connections.
+Fix shared connection recovery after a peer disconnects.
 
 Windows users and Mac users on 0.5.3 receive this release through the in-app updater. Mac users on 0.5.2 or earlier should install the DMG below once to enable future in-app updates.
 
-- **Keep retrying after discovery outages.** A discovery relay that fails to connect no longer becomes permanently disabled after six attempts. Retries continue with a delay capped at 60 seconds, so a recovered relay can reconnect without restarting the app.
-- **Explain failed connections.** Diagnostic exports now include discovery warnings, join failures for rooms and friends, and WebRTC negotiation and connection states. SDP and relay credentials are not logged; paths and addresses remain redacted.
+- **Keep recovered connections visible to rooms.** The transport could lose track of a replacement connection when its last peer disconnected. Existing rooms now retain the shared connection registry through disconnects and replacements.
+- **Check recovery before release.** Tests reproduce both registry failures. Real-client checks also cover one friend restarting while the other stays open, room connection with discovery unavailable, and leaving and rejoining without destroying the recovered friend connection.
 
 ## Download
 

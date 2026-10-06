@@ -46,3 +46,12 @@ Run `npm test`, `npm run test:logging`, `npm run test:connections`,
 real Nostr relays but local media connections; it is not a cross-network NAT
 traversal check. A connected stream does not establish that every configured
 discovery relay is healthy.
+
+The first release run exposed asynchronous integration-fixture races: early
+Windows RTP stats did not always include a nominated candidate pair for the
+injected capacity, and playlist updates could close the download menu between
+the test's separate open and click calls. The fixture now supplies an explicit
+selected pair and isolates controlled receiver feedback, clicks the menu in
+one renderer turn, verifies that a job actually started, and waits for remote
+source cleanup. The real 360p-to-720p and byte-for-byte download assertions are
+retained. The unpublished 0.5.6 tag is preserved; 0.5.7 carries these checks.

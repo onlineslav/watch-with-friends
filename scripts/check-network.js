@@ -207,14 +207,25 @@ app.whenReady().then(async () => {
       const peer = ${JSON.stringify(qualityPeer)};
       const pc = __test.session.room.getPeers()[peer];
       const getStats = pc.getStats;
-      const probe = __test.qualityProbe = {pc, getStats, capacity: 350000, lossPct: 0, freezes: 0};
+      const receiveTelemetry = __test.session.telemetryAction.onMessage;
+      const probe = __test.qualityProbe = {pc, getStats, receiveTelemetry, capacity: 350000, lossPct: 0, freezes: 0};
+      // Real reports from this viewer must not overwrite the controlled feedback
+      // while another peer's asynchronous getStats() is still pending.
+      __test.session.telemetryAction.onMessage = (message, context) => {
+        if (context.peerId !== peer) return receiveTelemetry(message, context);
+      };
       __test.session.people.get(peer).quality = {bitrate: 4000000};
       pc.getStats = async () => {
         const report = await getStats.call(pc);
         const person = __test.session.people.get(peer);
         person.receiver = {lossPct: probe.lossPct, freezes: probe.freezes, droppedFrames: 0, fps: 24, height: 720, bufferMs: 250, delayMs: 250};
         person.receiverAt = performance.now();
-        return new Map([...report].map(([id, stats]) => [id, stats.type === 'candidate-pair' ? {...stats, availableOutgoingBitrate: probe.capacity} : stats]));
+        const controlled = new Map(report);
+        const pair = [...report.values()].find(stats => stats.type === 'candidate-pair' && stats.nominated && stats.state === 'succeeded');
+        // Some platforms omit nominated pairs in their first RTP readings. Give
+        // readStats an explicit selected pair for the injected bandwidth value.
+        controlled.set('quality-test-pair', {...pair, id: 'quality-test-pair', type: 'candidate-pair', nominated: true, state: 'succeeded', availableOutgoingBitrate: probe.capacity});
+        return controlled;
       };
     })()`)
     const qualitySample = async () => {
@@ -267,7 +278,7 @@ app.whenReady().then(async () => {
       assert.ok(!/[A-Za-z]:[\\/]Users[\\/]|\/(?:home|Users)\//.test(fs.readFileSync(exported, 'utf8')), 'diagnostic export remains redacted')
       console.log('PASS: Exported diagnostics retain actual send/receive bitrate, playback state, fresh feedback decisions and applied sender parameters')
     } finally {
-      await run(a, '__test.qualityProbe.pc.getStats = __test.qualityProbe.getStats; delete __test.qualityProbe; true')
+      await run(a, '__test.qualityProbe.pc.getStats = __test.qualityProbe.getStats; __test.session.telemetryAction.onMessage = __test.qualityProbe.receiveTelemetry; delete __test.qualityProbe; true')
     }
     await run(a, '__test.control("loop", false)')
     await run(a, '__test.control("seek", 0)')
@@ -295,8 +306,16 @@ app.whenReady().then(async () => {
     })()`)
     const downloadFromMenu = async (win) => {
       await showDownloadMenu(win)
-      assert.equal(await run(win, 'document.getElementById("playlist-download").disabled'), false)
-      await run(win, 'document.getElementById("playlist-download").click()')
+      // Open, check and click in one renderer turn: playlist updates can close
+      // the popover between separate executeJavaScript calls.
+      await run(win, `(() => {
+        const options = document.querySelector('[data-id="${downloadItem}"] .playlist-options');
+        if (options.getAttribute('aria-expanded') !== 'true') options.click();
+        const download = document.getElementById('playlist-download');
+        if (download.disabled || !document.getElementById('playlist-item-menu').matches(':popover-open')) throw new Error('Download menu is not ready');
+        download.click();
+        if (!__test.session.downloads.jobs.has('${downloadItem}')) throw new Error('Download click did not start a job');
+      })()`)
     }
     const downloadsIdle = (win) => until(win, '__test.session.downloads.jobs.size === 0')
     try {
@@ -330,11 +349,12 @@ app.whenReady().then(async () => {
       console.log('PASS: Native Space opens the menu without pausing playback; Escape closes it; menu fits at 50%, 100% and 200% zoom')
       await downloadFromMenu(b)
       await downloadsIdle(b)
+      assert.ok(fs.existsSync(downloaded), `Download failed: ${await run(b, 'document.getElementById("toast").textContent')}`)
       assert.deepEqual(fs.readFileSync(downloaded), fs.readFileSync(video))
       assert.equal(await run(b, '__test.session.role'), 'viewer')
       assert.equal(await run(a, '__test.session.role'), 'host')
       assert.equal(await run(b, `__test.session.ownFiles.has(${JSON.stringify(downloadItem)})`), false)
-      assert.equal(await run(c, '__test.session.downloads.sources.size'), 0)
+      await until(c, '__test.session.downloads.sources.size === 0')
       console.log('PASS: Playlist menu downloads the original file from a non-host owner over WebRTC while playback continues')
 
       saveResult = {canceled: false, filePath: path.join(temporary, 'local-copy.mp4')}

@@ -1,4 +1,4 @@
-## What's new in 0.5.6
+## What's new in 0.5.7
 
 Better recovery from discovery outages, with diagnostics for failed room connections.
 

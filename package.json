@@ -7,7 +7,7 @@
   "private": true,
   "scripts": {
     "postinstall": "node scripts/patch-trystero.js",
-    "prebundle": "node scripts/patch-trystero.js && node scripts/build-mac-app-audio.js --if-needed",
+    "prebundle": "node scripts/patch-trystero.js && node scripts/build-mac-app-audio.js --if-needed && node scripts/build-win-app-audio.js --if-needed",
     "pretest": "node scripts/patch-trystero.js",
     "bundle": "esbuild renderer/app.js --bundle --format=iife --target=chrome130 --outfile=renderer/bundle.js",
     "start": "npm run bundle && node scripts/electron.js .",
@@ -69,6 +69,12 @@
     ],
     "win": {
       "target": "nsis",
+      "extraResources": [
+        {
+          "from": "native/win-app-audio/win-app-audio.exe",
+          "to": "win-app-audio.exe"
+        }
+      ],
       "files": [
         "!node_modules/ffprobe-static/bin/darwin/**",
         "!node_modules/ffprobe-static/bin/win32/ia32/**"

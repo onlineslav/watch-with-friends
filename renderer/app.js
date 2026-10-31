@@ -934,16 +934,12 @@ function clearShare() {
 
 // Acquires the chosen audio as its own track, separate from the display capture, and how to
 // clean it up again. 'system' is handled by main's display-media handler instead; this covers
-// the other two: 'app' (one specific app's sound via native/mac-app-audio, macOS only, needs a
-// window source) and a specific input device (a mic, or a virtual device like BlackHole, for
-// routing just one app's sound on any platform). Returns null for 'system' or 'none'.
+// the other two: 'app' (the shared window's app's sound alone, via native/mac-app-audio or
+// native/win-app-audio; startShare only passes it with a window source) and a specific input
+// device (a mic, or a virtual device like BlackHole). Returns null for 'system' or 'none'.
 async function captureShareAudio(audioDeviceId, windowId) {
   if (!audioDeviceId || audioDeviceId === 'system') return null
   if (audioDeviceId === 'app') {
-    if (windowId == null) {
-      toast('App audio needs sharing a specific window, not a whole screen — sharing without it this time.', true)
-      return null
-    }
     let id
     try {
       ;({id} = await window.api.startAppAudio(windowId))
@@ -1009,12 +1005,16 @@ async function startShare(source) {
   // A host's share is part of its state; one alongside it only has its own announcement.
   const publish = () => (alongside ? announceShare() : broadcastState())
   try {
-    const systemAudio = shareSettings.audioDeviceId === 'system'
+    // Sharing a whole screen means sharing everything on it, sound included, so the shared
+    // window's app falls back to system audio there.
+    const windowId = windowIdFromSource(source.id)
+    const audioSource = shareSettings.audioDeviceId === 'app' && windowId == null ? 'system' : shareSettings.audioDeviceId
+    const systemAudio = audioSource === 'system'
     const selected = await window.api.selectScreenShareSource(source.id, {systemAudio})
     if (!selected) throw new Error('That source is no longer available. Try again.')
     const video = shareVideoConstraints(shareSettings.resolution, shareSettings.frameRate)
     const stream = await navigator.mediaDevices.getDisplayMedia({video, audio: systemAudio ? SHARE_AUDIO_CONSTRAINTS : false})
-    const audio = await captureShareAudio(shareSettings.audioDeviceId, windowIdFromSource(source.id))
+    const audio = await captureShareAudio(audioSource, windowId)
     if (!owns()) {
       stream.getTracks().forEach((track) => track.stop())
       audio?.cleanup()
@@ -1027,7 +1027,7 @@ async function startShare(source) {
       audio.track.addEventListener('ended', () => {
         audio.cleanup()
         if (session !== current || session.stream !== stream || !stream.getTracks().includes(audio.track)) return
-        logEvent('screenshare', 'audio-dropped', {audioDeviceId: shareSettings.audioDeviceId})
+        logEvent('screenshare', 'audio-dropped', {audioSource})
         session.room.removeTrack(audio.track)
         stream.removeTrack(audio.track)
         session.screen = session.screen && {...session.screen, audio: stream.getAudioTracks().length > 0}
@@ -1037,7 +1037,7 @@ async function startShare(source) {
     session.sharePending = null
     session.screen = {id: String(claimedAt), name: source.name, source, audio: stream.getAudioTracks().length > 0, alongside}
     session.screenAudioCleanup = audio?.cleanup ?? null
-    logEvent('screenshare', 'started', {audioDeviceId: shareSettings.audioDeviceId, audio: session.screen.audio, resolution: shareSettings.resolution, frameRate: shareSettings.frameRate, alongside})
+    logEvent('screenshare', 'started', {audioDeviceId: shareSettings.audioDeviceId, audioSource, audio: session.screen.audio, resolution: shareSettings.resolution, frameRate: shareSettings.frameRate, alongside})
     // The track also ends on its own when the OS source closes or the browser's own share bar is used.
     stream.getVideoTracks()[0].addEventListener('ended', () => {
       if (session === current && !current.closed && session.stream === stream) stopShare()
@@ -1049,7 +1049,7 @@ async function startShare(source) {
     const outgoingAudioTrack = stream.getAudioTracks()[0]
     if (outgoingAudioTrack) {
       sampleTrackAudioLevel(outgoingAudioTrack).then((rms) => {
-        if (session === current && !current.closed) logEvent('screenshare', 'audio-level', {audioDeviceId: shareSettings.audioDeviceId, rms})
+        if (session === current && !current.closed) logEvent('screenshare', 'audio-level', {audioSource, rms})
       })
     }
   } catch (error) {
@@ -3649,11 +3649,20 @@ applyZoom(zoom)
 
 // ---------- Screen sharing settings ----------
 // Persisted like uiScale; shareVideoConstraints tolerates a stale or invalid saved value.
-const DEFAULT_SHARE_SETTINGS = {resolution: DEFAULT_RESOLUTION, frameRate: DEFAULT_FRAME_RATE, audioDeviceId: 'system', audioBitrate: DEFAULT_AUDIO_BITRATE}
+// On Windows a window share sends only that window's app by default: whole-system audio there
+// also carries Discord and everything else playing, so people heard themselves back.
+const DEFAULT_SHARE_AUDIO = window.api.platform === 'win32' ? 'app' : 'system'
+const DEFAULT_SHARE_SETTINGS = {resolution: DEFAULT_RESOLUTION, frameRate: DEFAULT_FRAME_RATE, audioDeviceId: DEFAULT_SHARE_AUDIO, audioBitrate: DEFAULT_AUDIO_BITRATE}
 let shareSettings = {...DEFAULT_SHARE_SETTINGS}
 try {
   const saved = JSON.parse(localStorage.getItem('shareSettings') || 'null')
   if (saved && typeof saved === 'object') shareSettings = {...DEFAULT_SHARE_SETTINGS, ...saved}
+  // Settings saved on Windows before 'app' existed there hold 'system' only because it was the
+  // default (any other setting change saved it too), so they move to the new default once.
+  if (window.api.platform === 'win32' && !shareSettings.winAppAudio) {
+    if (shareSettings.audioDeviceId === 'system') shareSettings.audioDeviceId = 'app'
+    shareSettings.winAppAudio = true
+  }
 } catch {}
 
 function saveShareSettings() {
@@ -3684,9 +3693,9 @@ async function populateAudioDevices({probe = false} = {}) {
   const options = [
     {value: '', label: 'None'},
     {value: 'system', label: 'System audio'},
-    // Native per-app capture (ScreenCaptureKit); only built for macOS, and only usable when the
-    // thing being shared is a specific window, not a whole screen (enforced in captureShareAudio).
-    ...(window.api.platform === 'darwin' ? [{value: 'app', label: "This app's audio (when sharing a window)"}] : []),
+    // Native per-app capture (mac-app-audio / win-app-audio); a whole-screen share has no single
+    // app to scope to, so it gets system audio instead (startShare).
+    ...(['darwin', 'win32'].includes(window.api.platform) ? [{value: 'app', label: "Shared window's app only (screens: system audio)"}] : []),
     ...audioInputs(devices).map((d) => ({value: d.deviceId, label: d.label})),
   ]
   fillSelect(ui.shareAudioDevice, options, shareSettings.audioDeviceId)

@@ -1,8 +1,7 @@
-// Wraps the appaudio:pull IPC loop (see main/app-audio.js, native/mac-app-audio) in a
-// MediaStreamTrackGenerator, the way frames.mjs wraps requestVideoFrameCallback for video.
-// macOS only: this is the per-application audio path (one specific app's sound, via
-// ScreenCaptureKit), distinct from the cross-platform whole-system loopback and device paths in
-// app.js. Untested here for the same reason frames.mjs is: MediaStreamTrackGenerator, AudioData
+// Wraps the appaudio:pull IPC loop (see main/app-audio.js, native/mac-app-audio and
+// native/win-app-audio) in a MediaStreamTrackGenerator, the way frames.mjs wraps
+// requestVideoFrameCallback for video. This is the per-application audio path (one specific
+// app's sound), distinct from the whole-system loopback and device paths in app.js. Untested here for the same reason frames.mjs is: MediaStreamTrackGenerator, AudioData
 // and the native capture process are unavailable outside a real renderer/OS.
 export const SAMPLE_RATE = 48000
 export const CHANNELS = 2

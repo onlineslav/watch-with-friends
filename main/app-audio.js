@@ -1,21 +1,30 @@
-// Spawns native/mac-app-audio, which captures one running application's audio via
-// ScreenCaptureKit (a content filter scoped to that app) and writes raw interleaved Float32 PCM
-// to stdout. Session/pull/stop mirror media.js's ffmpeg sessions on purpose: pulling is what
-// applies backpressure, same reason.
+// Spawns the per-app audio helper, which captures one running application's audio and writes
+// raw interleaved Float32 PCM to stdout: native/mac-app-audio on macOS (ScreenCaptureKit, a
+// content filter scoped to that app), native/win-app-audio on Windows (WASAPI process loopback
+// of that app's process tree). Session/pull/stop mirror media.js's ffmpeg sessions on purpose:
+// pulling is what applies backpressure, same reason.
+const fs = require('node:fs')
 const path = require('node:path')
 const {spawn} = require('node:child_process')
 const {app} = require('electron')
 
-const binaryPath = () =>
-  app.isPackaged ? path.join(process.resourcesPath, 'mac-app-audio') : path.join(__dirname, '..', 'native', 'mac-app-audio', 'mac-app-audio')
+const HELPER = process.platform === 'win32' ? 'win-app-audio' : 'mac-app-audio'
+const binaryPath = () => {
+  const file = process.platform === 'win32' ? `${HELPER}.exe` : HELPER
+  return app.isPackaged ? path.join(process.resourcesPath, file) : path.join(__dirname, '..', 'native', HELPER, file)
+}
 
 const HIGH_WATER_BYTES = 4 * 1024 * 1024
 const MAX_PULL_BYTES = 1024 * 1024
 // ScreenCaptureKit can report a stream started successfully and then silently deliver nothing —
 // the known failure mode when this binary hasn't been separately granted Screen & System Audio
 // Recording permission (it's a distinct executable from the main app, with its own TCC entry).
-// Treat that as a real failure instead of a share that's just quiet.
+// Treat that as a real failure instead of a share that's just quiet. (win-app-audio fills quiet
+// stretches with silence itself, so there this only fires if it's genuinely stuck.)
 const SILENCE_TIMEOUT_MS = 5000
+const SILENCE_ERROR = process.platform === 'darwin'
+  ? 'No audio arrived within 5s of starting — check that the shared app is actually making sound, and that mac-app-audio has Screen & System Audio Recording permission in System Settings > Privacy & Security.'
+  : 'No audio arrived within 5s of starting.'
 
 const sessions = new Map()
 let nextSessionId = 1
@@ -24,9 +33,10 @@ let nextSessionId = 1
 // rejects with its error line (e.g. the window closed, or Screen Recording permission is
 // missing). Only a resolved session is worth pulling from.
 function startSession(windowId) {
-  if (process.platform !== 'darwin') return Promise.reject(new Error('App audio capture is only available on macOS'))
+  if (!['darwin', 'win32'].includes(process.platform)) return Promise.reject(new Error('App audio capture is only available on macOS and Windows'))
+  if (!fs.existsSync(binaryPath())) return Promise.reject(new Error(`This build is missing ${HELPER}, the helper that captures one app's audio`))
   return new Promise((resolve, reject) => {
-    const proc = spawn(binaryPath(), [String(windowId)], {stdio: ['ignore', 'pipe', 'pipe']})
+    const proc = spawn(binaryPath(), [String(windowId)], {stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true})
     const session = {proc, chunks: [], size: 0, done: false, killed: false, error: null, waiter: null, bytesReceived: 0}
     const wake = () => {
       const waiter = session.waiter
@@ -36,29 +46,37 @@ function startSession(windowId) {
     session.wake = wake
 
     let settled = false
-    let stderrFirstLine = ''
+    let stderrText = ''
     proc.stderr.on('data', (buf) => {
-      if (settled) return
-      if (!stderrFirstLine.includes('\n')) stderrFirstLine += buf.toString('utf8')
-      const newlineAt = stderrFirstLine.indexOf('\n')
-      if (newlineAt === -1) return
-      const line = stderrFirstLine.slice(0, newlineAt).trim()
-      settled = true
+      stderrText += buf.toString('utf8')
+      for (let newlineAt; (newlineAt = stderrText.indexOf('\n')) !== -1;) {
+        const line = stderrText.slice(0, newlineAt).trim()
+        stderrText = stderrText.slice(newlineAt + 1)
+        if (settled) {
+          // A failure after starting (the shared app quit, say) is the reason the process stops.
+          if (line.startsWith('error:')) session.lateError = line.replace(/^error:\s*/, '')
+        } else {
+          settled = true
+          started(line)
+        }
+      }
+    })
+    const started = (line) => {
       if (line === 'ready') {
         const id = nextSessionId++
         sessions.set(id, session)
         session.silenceTimer = setTimeout(() => {
           if (session.receivedAnyData || session.done) return
-          session.error = 'No audio arrived within 5s of starting — check that the shared app is actually making sound, and that mac-app-audio has Screen & System Audio Recording permission in System Settings > Privacy & Security.'
+          session.error = SILENCE_ERROR
           session.done = true
           wake()
         }, SILENCE_TIMEOUT_MS)
         resolve({id})
       } else {
         proc.kill()
-        reject(new Error(line.replace(/^error:\s*/, '') || 'mac-app-audio failed to start'))
+        reject(new Error(line.replace(/^error:\s*/, '') || `${HELPER} failed to start`))
       }
-    })
+    }
     proc.stdout.on('data', (buf) => {
       if (!session.receivedAnyData) {
         session.receivedAnyData = true
@@ -87,14 +105,14 @@ function startSession(windowId) {
       if (code !== 0 && !session.killed && !session.error) {
         // code is null when a signal killed the process (a crash, not a normal exit): macOS
         // writes a full stack trace for that to DiagnosticReports, which this can only point at.
-        session.error = signal
-          ? `mac-app-audio was killed by ${signal} (likely a crash) — check ~/Library/Logs/DiagnosticReports/mac-app-audio-*.ips for the stack trace.`
-          : `mac-app-audio exited with code ${code}`
+        session.error = session.lateError || (signal
+          ? `${HELPER} was killed by ${signal} (likely a crash) — check ~/Library/Logs/DiagnosticReports/${HELPER}-*.ips for the stack trace.`
+          : `${HELPER} exited with code ${code}`)
       }
       wake()
       if (!settled) {
         settled = true
-        reject(new Error(session.error || 'mac-app-audio exited before starting'))
+        reject(new Error(session.error || `${HELPER} exited before starting`))
       }
     })
   })

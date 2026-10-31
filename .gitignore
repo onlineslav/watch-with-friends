@@ -6,6 +6,7 @@ config/turn.json
 build/mac-updater/
 native/mac-app-audio/mac-app-audio
 native/win-app-audio/win-app-audio.exe
+native/win-app-windows/win-app-windows.exe
 
 # local diagnostics and scratch output
 logs/

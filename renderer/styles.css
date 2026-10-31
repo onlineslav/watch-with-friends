@@ -2456,6 +2456,14 @@ button:disabled {
   width: min(640px, 100%);
 }
 
+#share-whole-app {
+  margin-top: 12px;
+}
+
+#share-whole-app[hidden] {
+  display: none;
+}
+
 .share-picker-list {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));

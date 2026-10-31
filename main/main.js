@@ -1,10 +1,11 @@
 const path = require('node:path')
 const fs = require('node:fs')
 const os = require('node:os')
-const {app, BrowserWindow, dialog, ipcMain, session, shell, desktopCapturer} = require('electron')
+const {app, BrowserWindow, dialog, ipcMain, screen, session, shell, desktopCapturer} = require('electron')
 const log = require('./log')
 const media = require('./media')
 const appAudio = require('./app-audio')
+const appWindows = require('./app-windows')
 const {loadIceServers} = require('./turn')
 const updater = require('./updater')
 const {focusWindow} = require('./startup')
@@ -158,6 +159,42 @@ function registerIpc() {
     pendingShareSystemAudio = Boolean(options?.systemAudio)
     return Boolean(pendingShareSourceId)
   })
+  // A whole-app share: the helper finds the window's app and which monitor it's on, and the share
+  // captures that monitor instead (the renderer masks it down to the app's windows). Like
+  // screenshare:select, only a source the last listing returned is accepted, and the screen it
+  // grants is one that listing returned too.
+  ipcMain.handle('appwindows:start', async (_event, sourceId, options) => {
+    const windowId = typeof sourceId === 'string' && shareSourcesById.has(sourceId) && /^window:(\d+):\d+$/.exec(sourceId)?.[1]
+    if (!windowId) throw new Error('That window is no longer available. Try again.')
+    let started
+    try {
+      started = await appWindows.startSession(Number(windowId))
+    } catch (error) {
+      log.record('appwindows', 'start-failed', {message: error?.message}, 'error')
+      throw error
+    }
+    const [x, y, width, height] = started.layout.monitor
+    const display = screen.getDisplayNearestPoint(screen.screenToDipPoint({x: x + width / 2, y: y + height / 2}))
+    const screens = [...shareSourcesById.values()].filter((source) => source.id.startsWith('screen:'))
+    const source = screens.find((candidate) => candidate.display_id === String(display.id)) || (screens.length === 1 && screens[0])
+    if (!source) {
+      appWindows.stopSession(started.id)
+      throw new Error('Could not find the screen that window is on.')
+    }
+    pendingShareSourceId = source.id
+    pendingShareSystemAudio = Boolean(options?.systemAudio)
+    log.record('appwindows', 'start', {id: started.id, monitor: started.layout.monitor, windows: started.layout.windows.length, displayId: display.id})
+    return started
+  })
+  ipcMain.handle('appwindows:pull', async (_event, id) => {
+    const result = await appWindows.pull(id)
+    if (result?.error) log.record('appwindows', 'failed', {id, message: result.error}, 'error')
+    return result
+  })
+  ipcMain.handle('appwindows:stop', (_event, id) => {
+    log.record('appwindows', 'stop', {id})
+    return appWindows.stopSession(id)
+  })
   ipcMain.handle('appaudio:start', async (_event, windowId) => {
     if (!Number.isInteger(windowId) || windowId < 0) throw new Error('Invalid window id')
     try {
@@ -270,6 +307,7 @@ function start() {
     updater.dispose()
     media.stopAll()
     appAudio.stopAll()
+    appWindows.stopAll()
     log.record('app', 'quit')
     log.stop()
   })

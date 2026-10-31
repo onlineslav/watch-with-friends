@@ -35,6 +35,8 @@ import {clampZoom, stepZoom, parseZoom, formatZoom, zoomPercent, MIN_ZOOM, MAX_Z
 import {captionHtml} from './subtitles.mjs'
 import {shareSources, hidesTimeline, RESOLUTIONS, FRAME_RATES, DEFAULT_RESOLUTION, DEFAULT_FRAME_RATE, shareVideoConstraints, audioInputs, windowIdFromSource, AUDIO_BITRATES, DEFAULT_AUDIO_BITRATE, shareAudioBitrate, SHARE_PRIORITIES, DEFAULT_SHARE_PRIORITY, sharePriority, cleanPeerShare, shareTiles, shareView, gridColumns} from './screenshare.mjs'
 import {createAppAudioTrack} from './app-audio.mjs'
+import {cleanLayout, sameMonitor} from './app-share.mjs'
+import {appShareTrack} from './app-share-track.mjs'
 import {
   DRAWER,
   MAX_ITEMS,
@@ -236,6 +238,7 @@ const ui = {
   sharePickerBack: $('share-picker-back'),
   sharePickerStatus: $('share-picker-status'),
   sharePickerList: $('share-picker-list'),
+  shareWholeApp: $('share-whole-app'),
   screenSharing: $('screen-sharing'),
   shareGrid: $('share-grid'),
   shareTabs: $('share-tabs'),
@@ -364,7 +367,7 @@ const blankSession = () => ({
   playlist: createPlaylist(),
   playing: null, // host: the playlist item being hosted {id, at}, so the next one can follow it
   screen: null, // your own share {id, name, audio, source, alongside}; alongside = sharing beside someone else's, not hosting
-  screenAudioCleanup: null, // stops your share's non-system audio source (device/app-audio)
+  screenCleanup: null, // stops your share's non-system audio source (device/app-audio) and a whole-app share's window tracking
   shareAction: null,
   shares: new Map(), // peerId -> {id, name, audio}: what each other sharer announced
   shareView: 'all', // 'all', or the key of the one share tile shown full size
@@ -949,8 +952,55 @@ function clearShare() {
   // doesn't reliably fire 'ended' when stopped, so relying on that alone leaked the native
   // capture process — it kept running, never told to stop, every time a share ended cleanly
   // instead of crashing (only a crash happened to end the pull loop and trigger cleanup).
-  session.screenAudioCleanup?.()
-  session.screenAudioCleanup = null
+  session.screenCleanup?.()
+  session.screenCleanup = null
+}
+
+// A whole-app share follows where the shared window's app has its windows (main/app-windows.js)
+// and keeps the latest layout for appShareTrack. Starting it is also what picks the monitor to
+// capture: main grants that screen to the getDisplayMedia call that follows. `onEnded(error)`
+// fires once if tracking stops on its own (the app closed); `onMonitor` when the app's main
+// window moves to another monitor, which needs a new capture.
+async function followAppWindows(sourceId, systemAudio) {
+  const {id, layout} = await window.api.startAppWindows(sourceId, {systemAudio})
+  const first = cleanLayout(layout)
+  if (!first) {
+    window.api.stopAppWindows(id)
+    throw new Error('Could not tell where that app\'s windows are.')
+  }
+  const follower = {
+    layout: first,
+    stopped: false,
+    onEnded: null,
+    onMonitor: null,
+    stop() {
+      if (follower.stopped) return
+      follower.stopped = true
+      window.api.stopAppWindows(id)
+    },
+  }
+  ;(async () => {
+    while (!follower.stopped) {
+      const result = await window.api.pullAppWindows(id).catch((error) => ({done: true, error: errorMessage(error)}))
+      if (follower.stopped) return
+      if (result?.done) {
+        follower.stopped = true
+        follower.onEnded?.(result.error || null)
+        return
+      }
+      const next = cleanLayout(result?.layout)
+      if (!next) continue
+      if (!sameMonitor(next.monitor, follower.layout.monitor)) {
+        // Until the new capture starts, show nothing: the old capture is the other monitor.
+        follower.layout = {monitor: follower.layout.monitor, windows: []}
+        if (!follower.moved) follower.onMonitor?.()
+        follower.moved = true
+        continue
+      }
+      follower.layout = next
+    }
+  })()
+  return follower
 }
 
 // Acquires the chosen audio as its own track, separate from the display capture, and how to
@@ -1025,19 +1075,35 @@ async function startShare(source) {
   const owns = () => session === current && !current.closed && (alongside ? current.sharePending === claimedAt && !isHost() : current.claimedAt === claimedAt && isHost())
   // A host's share is part of its state; one alongside it only has its own announcement.
   const publish = () => (alongside ? announceShare() : broadcastState())
+  let windows = null
+  let masked = null
   try {
     // Sharing a whole screen means sharing everything on it, sound included, so the shared
     // window's app falls back to system audio there.
     const windowId = windowIdFromSource(source.id)
     const audioSource = shareSettings.audioDeviceId === 'app' && windowId == null ? 'system' : shareSettings.audioDeviceId
     const systemAudio = audioSource === 'system'
-    const selected = await window.api.selectScreenShareSource(source.id, {systemAudio})
-    if (!selected) throw new Error('That source is no longer available. Try again.')
+    // A whole-app share captures the monitor the window is on, masked down to the app's windows.
+    const wholeApp = WHOLE_APP_SHARE && shareSettings.wholeApp && windowId != null
+    windows = wholeApp ? await followAppWindows(source.id, systemAudio) : null
+    if (!wholeApp && !await window.api.selectScreenShareSource(source.id, {systemAudio})) throw new Error('That source is no longer available. Try again.')
     const video = shareVideoConstraints(shareSettings.resolution, shareSettings.frameRate)
-    const stream = await navigator.mediaDevices.getDisplayMedia({video, audio: systemAudio ? SHARE_AUDIO_CONSTRAINTS : false})
+    let stream = await navigator.mediaDevices.getDisplayMedia({video, audio: systemAudio ? SHARE_AUDIO_CONSTRAINTS : false})
+    const capture = stream.getVideoTracks()[0]
+    if (windows) {
+      masked = appShareTrack(capture, () => windows.layout)
+      if (!masked) {
+        stream.getTracks().forEach((track) => track.stop())
+        throw new Error('This version can\'t share a whole app. Turn off "Include the app\'s other windows" in the share picker.')
+      }
+      stream = new MediaStream([masked.track, ...stream.getAudioTracks()])
+    }
     const audio = await captureShareAudio(audioSource, windowId)
     if (!owns()) {
       stream.getTracks().forEach((track) => track.stop())
+      capture.stop()
+      masked?.stop()
+      windows?.stop()
       audio?.cleanup()
       audio?.track.stop()
       return
@@ -1056,13 +1122,32 @@ async function startShare(source) {
       }, {once: true})
     }
     session.sharePending = null
-    session.screen = {id: String(claimedAt), name: source.name, source, audio: stream.getAudioTracks().length > 0, alongside}
-    session.screenAudioCleanup = audio?.cleanup ?? null
-    logEvent('screenshare', 'started', {audioDeviceId: shareSettings.audioDeviceId, audioSource, audio: session.screen.audio, resolution: shareSettings.resolution, frameRate: shareSettings.frameRate, alongside})
-    // The track also ends on its own when the OS source closes or the browser's own share bar is used.
-    stream.getVideoTracks()[0].addEventListener('ended', () => {
-      if (session === current && !current.closed && session.stream === stream) stopShare()
+    session.screen = {id: String(claimedAt), name: source.name, source, audio: stream.getAudioTracks().length > 0, alongside, capture}
+    session.screenCleanup = () => {
+      audio?.cleanup()
+      masked?.stop()
+      windows?.stop()
+    }
+    logEvent('screenshare', 'started', {audioDeviceId: shareSettings.audioDeviceId, audioSource, audio: session.screen.audio, resolution: shareSettings.resolution, frameRate: shareSettings.frameRate, alongside, wholeApp: Boolean(windows)})
+    const sharing = () => session === current && !current.closed && session.stream === stream
+    // The track also ends on its own when the OS source closes or the browser's own share bar is
+    // used. For a whole-app share that's the monitor capture: the masked track never ends itself.
+    capture.addEventListener('ended', () => {
+      if (sharing()) stopShare()
     }, {once: true})
+    if (windows) {
+      windows.onEnded = (error) => {
+        if (!sharing()) return
+        logEvent('screenshare', 'app-windows-ended', {message: error})
+        if (error) toast(`Stopped sharing: ${error}`, true)
+        stopShare()
+      }
+      windows.onMonitor = () => {
+        if (!sharing()) return
+        logEvent('screenshare', 'app-windows-moved')
+        restartShare()
+      }
+    }
     publishShareStream(stream, claimedAt)
     if (!alongside) broadcastState()
     announceShare()
@@ -1074,6 +1159,8 @@ async function startShare(source) {
       })
     }
   } catch (error) {
+    masked?.stop()
+    windows?.stop()
     if (!owns()) return
     if (!alongside) return failHosting(error)
     session.sharePending = null
@@ -1107,7 +1194,8 @@ function restartShare() {
 }
 
 async function applyShareVideoConstraints() {
-  const track = session.stream?.getVideoTracks()[0]
+  // A whole-app share's own track is generated; the capture underneath is what takes constraints.
+  const track = session.screen?.capture || session.stream?.getVideoTracks()[0]
   if (!session.screen || !track) return
   try {
     await track.applyConstraints(shareVideoConstraints(shareSettings.resolution, shareSettings.frameRate))
@@ -3751,7 +3839,10 @@ applyZoom(zoom)
 // On Windows a window share sends only that window's app by default: whole-system audio there
 // also carries Discord and everything else playing, so people heard themselves back.
 const DEFAULT_SHARE_AUDIO = window.api.platform === 'win32' ? 'app' : 'system'
-const DEFAULT_SHARE_SETTINGS = {resolution: DEFAULT_RESOLUTION, frameRate: DEFAULT_FRAME_RATE, audioDeviceId: DEFAULT_SHARE_AUDIO, audioBitrate: DEFAULT_AUDIO_BITRATE, priority: DEFAULT_SHARE_PRIORITY, audioFirst: true}
+// Sharing a window shows its app's other windows too (a DAW's plugin windows, say): the share
+// picker's checkbox, Windows only, since that's where native/win-app-windows exists.
+const WHOLE_APP_SHARE = window.api.platform === 'win32'
+const DEFAULT_SHARE_SETTINGS = {resolution: DEFAULT_RESOLUTION, frameRate: DEFAULT_FRAME_RATE, audioDeviceId: DEFAULT_SHARE_AUDIO, audioBitrate: DEFAULT_AUDIO_BITRATE, priority: DEFAULT_SHARE_PRIORITY, audioFirst: true, wholeApp: true}
 let shareSettings = {...DEFAULT_SHARE_SETTINGS}
 try {
   const saved = JSON.parse(localStorage.getItem('shareSettings') || 'null')
@@ -3969,6 +4060,13 @@ function closeSharePicker() {
   sharePickerTimer = null
 }
 
+// Saved straight away, like the picker's own choice, not through Settings' Save/Discard.
+ui.shareWholeApp.hidden = !WHOLE_APP_SHARE
+ui.shareWholeApp.querySelector('input').checked = shareSettings.wholeApp !== false
+ui.shareWholeApp.querySelector('input').addEventListener('change', (event) => {
+  shareSettings = {...shareSettings, wholeApp: event.target.checked}
+  saveShareSettings()
+})
 ui.shareScreen.addEventListener('click', () => openSharePicker())
 ui.sharePickerBack.addEventListener('click', () => closeSharePicker())
 let sharePickerBackdropPress = false

@@ -73,6 +73,10 @@
         {
           "from": "native/win-app-audio/win-app-audio.exe",
           "to": "win-app-audio.exe"
+        },
+        {
+          "from": "native/win-app-windows/win-app-windows.exe",
+          "to": "win-app-windows.exe"
         }
       ],
       "files": [

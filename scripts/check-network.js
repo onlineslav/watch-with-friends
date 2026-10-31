@@ -766,6 +766,7 @@ app.whenReady().then(async () => {
         return stream;
       };
       __test.shareSettings.audioDeviceId = 'system';
+      __test.shareSettings.wholeApp = false; // a synthetic window has no real app to follow
       true`)
     const [idA, idB, idC] = await Promise.all(windows.map((win) => run(win, '__test.selfId')))
     const tileKeys = (win) => run(win, '[...document.querySelectorAll("#share-tiles .share-tile")].map(tile => tile.dataset.key)')

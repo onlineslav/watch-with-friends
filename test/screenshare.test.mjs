@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {MAX_SOURCES, MAX_SOURCE_NAME, cleanShare, hidesTimeline, shareSources, RESOLUTIONS, FRAME_RATES, DEFAULT_RESOLUTION, DEFAULT_FRAME_RATE, shareVideoConstraints, audioInputs, windowIdFromSource, AUDIO_BITRATES, DEFAULT_AUDIO_BITRATE, shareAudioBitrate, cleanPeerShare, shareTiles, shareView, gridColumns} from '../renderer/screenshare.mjs'
+import {MAX_SOURCES, MAX_SOURCE_NAME, cleanShare, hidesTimeline, shareSources, RESOLUTIONS, FRAME_RATES, DEFAULT_RESOLUTION, DEFAULT_FRAME_RATE, shareVideoConstraints, audioInputs, windowIdFromSource, AUDIO_BITRATES, DEFAULT_AUDIO_BITRATE, shareAudioBitrate, SHARE_PRIORITIES, DEFAULT_SHARE_PRIORITY, sharePriority, cleanPeerShare, shareTiles, shareView, gridColumns} from '../renderer/screenshare.mjs'
 
 test('shareSources shapes raw desktopCapturer output for the picker and drops junk entries', () => {
   const raw = [
@@ -145,4 +145,13 @@ test('shareView keeps a focus only while that tile exists and there is more than
 
 test('gridColumns lays out equal tiles', () => {
   assert.deepEqual([0, 1, 2, 3, 4, 5, 8].map(gridColumns), [1, 1, 2, 2, 2, 3, 3])
+})
+
+test('sharePriority maps each choice to a content hint and degradation preference, falling back to balanced', () => {
+  assert.equal(DEFAULT_SHARE_PRIORITY, 'balanced')
+  assert.deepEqual(SHARE_PRIORITIES.map((p) => p.value), ['balanced', 'text', 'motion'])
+  assert.deepEqual(sharePriority('balanced'), {value: 'balanced', contentHint: 'detail', degradation: 'balanced'})
+  assert.deepEqual(sharePriority('text'), {value: 'text', contentHint: 'text', degradation: 'maintain-resolution'})
+  assert.deepEqual(sharePriority('motion'), {value: 'motion', contentHint: 'motion', degradation: 'maintain-framerate'})
+  for (const junk of [undefined, null, 5, '', 'TEXT', '__proto__', 'toString']) assert.equal(sharePriority(junk).value, 'balanced')
 })

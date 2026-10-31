@@ -90,6 +90,26 @@ export const DEFAULT_AUDIO_BITRATE = 256_000
 // hand-edited localStorage value), the same way shareVideoConstraints does for resolution/fps.
 export const shareAudioBitrate = (bitrate) => (AUDIO_BITRATES.includes(bitrate) ? bitrate : DEFAULT_AUDIO_BITRATE)
 
+// What a share gives up when the connection can't carry everything: Balanced lets the browser
+// decide, Sharp text keeps resolution (frames drop), Smooth motion keeps frame rate (picture softens).
+export const SHARE_PRIORITIES = [
+  {value: 'balanced', label: 'Balanced (browser decides when the connection struggles)'},
+  {value: 'text', label: 'Sharp text (stays crisp, may get choppy)'},
+  {value: 'motion', label: 'Smooth motion (stays smooth, may get blurry)'},
+]
+export const DEFAULT_SHARE_PRIORITY = 'balanced'
+const PRIORITY_SETTINGS = {
+  balanced: {contentHint: 'detail', degradation: 'balanced'},
+  text: {contentHint: 'text', degradation: 'maintain-resolution'},
+  motion: {contentHint: 'motion', degradation: 'maintain-framerate'},
+}
+// Validates a saved priority; returns the value with the track contentHint and the sender
+// degradationPreference it stands for. Junk falls back to balanced.
+export function sharePriority(value) {
+  const key = typeof value === 'string' && Object.hasOwn(PRIORITY_SETTINGS, value) ? value : DEFAULT_SHARE_PRIORITY
+  return {value: key, ...PRIORITY_SETTINGS[key]}
+}
+
 // Shapes a resolution/frame rate preference into getDisplayMedia's video constraints, or
 // MediaStreamTrack.applyConstraints() for a live change. Falls back silently on nonsense input
 // (a stale localStorage value, say) rather than throwing.

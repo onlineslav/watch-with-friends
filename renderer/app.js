@@ -33,7 +33,7 @@ import {drawConfetti, launchConfetti, stepConfetti} from './confetti.mjs'
 import {REACTIONS, createRateLimiter, playReactionSound} from './reactions.mjs'
 import {clampZoom, stepZoom, parseZoom, formatZoom, zoomPercent, MIN_ZOOM, MAX_ZOOM, DEFAULT_ZOOM} from './zoom.mjs'
 import {captionHtml} from './subtitles.mjs'
-import {shareSources, hidesTimeline, RESOLUTIONS, FRAME_RATES, DEFAULT_RESOLUTION, DEFAULT_FRAME_RATE, shareVideoConstraints, audioInputs, windowIdFromSource, AUDIO_BITRATES, DEFAULT_AUDIO_BITRATE, shareAudioBitrate, cleanPeerShare, shareTiles, shareView, gridColumns} from './screenshare.mjs'
+import {shareSources, hidesTimeline, RESOLUTIONS, FRAME_RATES, DEFAULT_RESOLUTION, DEFAULT_FRAME_RATE, shareVideoConstraints, audioInputs, windowIdFromSource, AUDIO_BITRATES, DEFAULT_AUDIO_BITRATE, shareAudioBitrate, SHARE_PRIORITIES, DEFAULT_SHARE_PRIORITY, sharePriority, cleanPeerShare, shareTiles, shareView, gridColumns} from './screenshare.mjs'
 import {createAppAudioTrack} from './app-audio.mjs'
 import {
   DRAWER,
@@ -245,6 +245,7 @@ const ui = {
   shareFramerate: $('share-framerate'),
   shareAudioDevice: $('share-audio-device'),
   shareAudioBitrate: $('share-audio-bitrate'),
+  sharePriority: $('share-priority'),
   leave: $('leave'),
   stage: $('stage'),
   localVideo: $('local-video'),
@@ -1183,7 +1184,7 @@ function unpublishStream() {
 // swapped mid-session, so this skips publishStream's addtrack/removetrack bookkeeping.
 function publishShareStream(stream, claimedAt) {
   unpublishStream()
-  stream.getVideoTracks().forEach((track) => (track.contentHint = 'detail')) // text stays sharp
+  stream.getVideoTracks().forEach((track) => (track.contentHint = sharePriority(shareSettings.priority).contentHint))
   session.stream = stream
   session.captured = null
   const removeTrack = (track) => {
@@ -1216,12 +1217,15 @@ async function tuneSenders() {
         const audioBitrate = current.screen ? shareAudioBitrate(shareSettings.audioBitrate) : AUDIO_MAX_BITRATE
         const maxBitrate = track.kind === 'video' ? quality?.bitrate || 4_000_000 : audioBitrate
         const settings = track.getSettings()
-        const scale = quality?.scale || Math.max(1, (settings.width || 0) / MAX_STREAM_WIDTH, (settings.height || 0) / 1080)
-        if (encoding.maxBitrate === maxBitrate && (track.kind !== 'video' || encoding.scaleResolutionDownBy === scale)) continue
+        // Sharp text never downscales (bitrate still adapts); other modes and files keep the cap.
+        const keepSharp = Boolean(current.screen) && sharePriority(shareSettings.priority).value === 'text'
+        const scale = keepSharp ? 1 : quality?.scale || Math.max(1, (settings.width || 0) / MAX_STREAM_WIDTH, (settings.height || 0) / 1080)
+        const degradation = current.screen ? sharePriority(shareSettings.priority).degradation : 'maintain-framerate'
+        if (encoding.maxBitrate === maxBitrate && (track.kind !== 'video' || (encoding.scaleResolutionDownBy === scale && params.degradationPreference === degradation))) continue
         encoding.maxBitrate = maxBitrate
         if (track.kind === 'video') {
           encoding.scaleResolutionDownBy = scale
-          params.degradationPreference = 'maintain-framerate'
+          params.degradationPreference = degradation
         }
         await sender.setParameters(params).then(() => {
           logEvent('telemetry', 'send-parameters-applied', {peer: peerId, kind: track.kind, maxBitrate, scale: track.kind === 'video' ? scale : null})
@@ -3652,7 +3656,7 @@ applyZoom(zoom)
 // On Windows a window share sends only that window's app by default: whole-system audio there
 // also carries Discord and everything else playing, so people heard themselves back.
 const DEFAULT_SHARE_AUDIO = window.api.platform === 'win32' ? 'app' : 'system'
-const DEFAULT_SHARE_SETTINGS = {resolution: DEFAULT_RESOLUTION, frameRate: DEFAULT_FRAME_RATE, audioDeviceId: DEFAULT_SHARE_AUDIO, audioBitrate: DEFAULT_AUDIO_BITRATE}
+const DEFAULT_SHARE_SETTINGS = {resolution: DEFAULT_RESOLUTION, frameRate: DEFAULT_FRAME_RATE, audioDeviceId: DEFAULT_SHARE_AUDIO, audioBitrate: DEFAULT_AUDIO_BITRATE, priority: DEFAULT_SHARE_PRIORITY}
 let shareSettings = {...DEFAULT_SHARE_SETTINGS}
 try {
   const saved = JSON.parse(localStorage.getItem('shareSettings') || 'null')
@@ -3674,6 +3678,7 @@ function saveShareSettings() {
 fillSelect(ui.shareResolution, RESOLUTIONS, shareSettings.resolution)
 fillSelect(ui.shareFramerate, FRAME_RATES.map((fps) => ({value: String(fps), label: `${fps} fps`})), String(shareSettings.frameRate))
 fillSelect(ui.shareAudioBitrate, AUDIO_BITRATES.map((bitrate) => ({value: String(bitrate), label: `${bitrate / 1000} kbps${bitrate === AUDIO_BITRATES.at(-1) ? ' (maximum)' : ''}`})), String(shareAudioBitrate(shareSettings.audioBitrate)))
+fillSelect(ui.sharePriority, SHARE_PRIORITIES, sharePriority(shareSettings.priority).value)
 
 // Device ids and labels are hidden until the mic permission prompt has been answered once, so the
 // list would otherwise be unusably empty on first use. Only ask for it (`probe: true`) when the
@@ -3717,6 +3722,13 @@ ui.shareAudioBitrate.addEventListener('change', () => {
   shareSettings.audioBitrate = Number(ui.shareAudioBitrate.value)
   saveShareSettings()
   tuneSenders() // picks it up immediately; it would anyway within a second via the state interval
+})
+ui.sharePriority.addEventListener('change', () => {
+  shareSettings.priority = sharePriority(ui.sharePriority.value).value
+  saveShareSettings()
+  // The content hint applies to the live capture track; the sender preference follows via tuneSenders.
+  session.stream?.getVideoTracks().forEach((track) => (track.contentHint = sharePriority(shareSettings.priority).contentHint))
+  tuneSenders()
 })
 ui.shareAudioDevice.addEventListener('change', () => {
   shareSettings.audioDeviceId = ui.shareAudioDevice.value

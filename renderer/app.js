@@ -3137,6 +3137,8 @@ function createTileView(tile) {
       event.preventDefault()
       openShareMenu(event.clientX, event.clientY)
     })
+    // Stop sharing sits in your own tile's bottom-right corner, where others' tiles have mute.
+    root.append(ui.stopShare)
   }
   root.addEventListener('click', () => {
     session.shareView = session.shareView === tile.key ? 'all' : tile.key
@@ -4147,7 +4149,10 @@ ui.sharePicker.addEventListener('pointerdown', (event) => (sharePickerBackdropPr
 ui.sharePicker.addEventListener('click', (event) => {
   if (sharePickerBackdropPress && event.target === ui.sharePicker) closeSharePicker()
 })
-ui.stopShare.addEventListener('click', () => stopShare())
+ui.stopShare.addEventListener('click', (event) => {
+  event.stopPropagation() // not also a click on the tile, which would switch the view
+  stopShare()
+})
 
 // One friends list: it slides in from the left on home, and floats over the video on the left in a
 // room. enterRoom and leaveRoom move it between the two.

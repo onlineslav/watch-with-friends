@@ -2431,30 +2431,26 @@ button:disabled {
   color: #fff;
 }
 
-/* Your own share's status: a small, half-faded icon in the stage's bottom-right corner that comes
-   up to full strength, and spells out "Stop sharing", only when pointed at. It sits just above the
-   player controls while they show and drops into the corner when they fade. The shared window's
-   name and any audio warning are in its tooltip; the warning is also an amber dot on the icon. */
+/* Stop sharing: a small, part-faded icon in your own share tile's bottom-right corner (where
+   others' tiles have their mute button, and styled like it) that comes up to full strength, and
+   spells out "Stop sharing", only when pointed at. The share grid already keeps tiles clear of the
+   player controls, so it never moves. The shared window's name and any audio warning are in its
+   tooltip; the warning is also an amber dot on the icon. */
 .stop-share {
   position: absolute;
-  bottom: 72px;
-  right: 16px;
-  z-index: 2;
+  right: 8px;
+  bottom: 8px;
   display: flex;
   align-items: center;
   gap: 0;
-  height: 36px;
-  padding: 0 8px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: rgba(11, 11, 15, 0.7);
+  height: 30px;
+  padding: 0 5px;
+  border: 0;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.6);
   color: #fff;
-  opacity: 0.45;
-  transition: opacity 0.15s, background 0.15s, gap 0.15s, bottom 0.2s;
-}
-
-.room.idle .stop-share {
-  bottom: 16px;
+  opacity: 0.6;
+  transition: opacity 0.15s, background 0.15s, gap 0.15s;
 }
 
 .stop-share[hidden] {
@@ -2494,8 +2490,8 @@ button:disabled {
 
 .stop-share-warning {
   position: absolute;
-  top: 5px;
-  left: 22px;
+  top: 3px;
+  left: 19px;
   width: 7px;
   height: 7px;
   border-radius: 50%;

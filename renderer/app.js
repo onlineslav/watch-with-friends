@@ -1236,11 +1236,17 @@ async function tuneSenders() {
         const keepSharp = Boolean(current.screen) && sharePriority(shareSettings.priority).value === 'text'
         const scale = keepSharp ? 1 : quality?.scale || Math.max(1, (settings.width || 0) / MAX_STREAM_WIDTH, (settings.height || 0) / 1080)
         const degradation = current.screen ? sharePriority(shareSettings.priority).degradation : 'maintain-framerate'
-        if (encoding.maxBitrate === maxBitrate && (track.kind !== 'video' || (encoding.scaleResolutionDownBy === scale && params.degradationPreference === degradation))) continue
+        // Audio comes first when the connection struggles: it wins the bandwidth split against
+        // video and is marked for priority on the network, so the picture gives way, not the sound.
+        const audioFirst = track.kind !== 'audio' || (encoding.priority === 'high' && encoding.networkPriority === 'high')
+        if (encoding.maxBitrate === maxBitrate && audioFirst && (track.kind !== 'video' || (encoding.scaleResolutionDownBy === scale && params.degradationPreference === degradation))) continue
         encoding.maxBitrate = maxBitrate
         if (track.kind === 'video') {
           encoding.scaleResolutionDownBy = scale
           params.degradationPreference = degradation
+        } else {
+          encoding.priority = 'high'
+          encoding.networkPriority = 'high'
         }
         await sender.setParameters(params).then(() => {
           logEvent('telemetry', 'send-parameters-applied', {peer: peerId, kind: track.kind, maxBitrate, scale: track.kind === 'video' ? scale : null})

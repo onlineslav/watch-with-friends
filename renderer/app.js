@@ -259,7 +259,8 @@ const ui = {
   shareMenuPriority: $('share-menu-priority'),
   shareMenuAudioDevice: $('share-menu-audio-device'),
   shareMenuAudioBitrate: $('share-menu-audio-bitrate'),
-  shareMenuSettings: $('share-menu-settings'),
+  shareMenuChange: $('share-menu-change'),
+  sharePickerTitle: $('share-picker-title'),
   shareMenuStop: $('share-menu-stop'),
   audioFirst: $('audio-first'),
   settingsUnsaved: $('settings-unsaved'),
@@ -4039,9 +4040,11 @@ function openShareMenu(x, y) {
   ui.shareMenu.querySelector('select')?.focus()
 }
 ui.shareMenu.addEventListener('keydown', (event) => event.stopPropagation()) // keys belong to the menu, not playback
-ui.shareMenuSettings.addEventListener('click', () => {
+// Switching what's shared without stopping first: picking another source restarts the share on
+// it, the same way changing the audio source does (startShare drops the old capture).
+ui.shareMenuChange.addEventListener('click', () => {
   ui.shareMenu.hidePopover()
-  showSettings(true)
+  openSharePicker()
 })
 ui.shareMenuStop.addEventListener('click', () => {
   ui.shareMenu.hidePopover()
@@ -4061,6 +4064,7 @@ async function openSharePicker() {
   const current = session
   ui.room.append(ui.sharePicker)
   ui.sharePicker.hidden = false
+  ui.sharePickerTitle.textContent = session.screen ? 'Change what you\'re sharing' : 'Share your screen'
   ui.sharePickerStatus.textContent = 'Loading…'
   ui.sharePickerList.replaceChildren()
   sharePickerButtons.clear()
@@ -4098,6 +4102,7 @@ async function refreshSharePicker(current) {
     button.title = source.minimized ? `${source.name} (minimized: it shows once it's restored)` : source.name
     button.querySelector('.share-source-name').textContent = source.name
     button.classList.toggle('minimized', source.minimized)
+    button.classList.toggle('current', source.id === session.screen?.source?.id) // what you're sharing now
     if (source.thumbnail) {
       let thumbnail = button.querySelector('img')
       if (!thumbnail) {

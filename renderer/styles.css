@@ -2555,6 +2555,10 @@ button:disabled {
   border-radius: 6px;
 }
 
+.share-source.current {
+  border-color: var(--accent);
+}
+
 /* A minimized window's tile shows its app's icon; this says why. */
 .share-source.minimized::after {
   content: 'Minimized';

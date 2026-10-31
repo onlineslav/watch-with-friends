@@ -2491,12 +2491,18 @@ button:disabled {
   border-color: var(--accent);
 }
 
-.share-source img {
+.share-source img,
+.share-source:not(:has(img))::before {
   width: 100%;
   aspect-ratio: 16 / 9;
   object-fit: contain;
   background: #000;
   border-radius: 6px;
+}
+
+/* A window that couldn't be pictured (a frozen app) keeps the same size of tile. */
+.share-source:not(:has(img))::before {
+  content: '';
 }
 
 .share-source-name {

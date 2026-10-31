@@ -14,9 +14,10 @@
 // `screen:<n>:0` with n the EnumDisplayDevices index of an active display (Chromium's own screen
 // list numbers screens that way), `window:<hwnd>:0`. The windows are the ones desktopCapturer
 // lists: visible top-level windows with a title, not owned (unless they ask for a taskbar
-// button), not cloaked; minimized ones too, without a thumbnail. Left out: this app's own windows
-// (its parent process), and tool windows and click-through overlays (a GPU overlay, say), which
-// desktopCapturer lists but nobody means to share. Titles come from InternalGetWindowText, which never waits on the
+// button), not cloaked, not minimized (desktopCapturer leaves those out too: there's nothing to
+// show until they're restored, and the next refresh lists them then). Left out as well: this
+// app's own windows (its parent process), and tool windows and click-through overlays (a GPU
+// overlay, say), which desktopCapturer lists but nobody means to share. Titles come from InternalGetWindowText, which never waits on the
 // window's thread, and a hung window gets no thumbnail, so one frozen app can't stall the list.
 #include <windows.h>
 #include <dwmapi.h>
@@ -214,7 +215,7 @@ struct Lister {
 static BOOL CALLBACK listWindow(HWND window, LPARAM param) {
   Lister* list = reinterpret_cast<Lister*>(param);
   if (list->entries.size() >= MAX_SOURCES) return FALSE;
-  if (!IsWindowVisible(window) || GetAncestor(window, GA_ROOT) != window) return TRUE;
+  if (!IsWindowVisible(window) || IsIconic(window) || GetAncestor(window, GA_ROOT) != window) return TRUE;
   LONG_PTR ex = GetWindowLongPtrW(window, GWL_EXSTYLE);
   if ((ex & WS_EX_TOOLWINDOW) || (ex & WS_EX_TRANSPARENT)) return TRUE;
   if (GetWindow(window, GW_OWNER) && !(ex & WS_EX_APPWINDOW)) return TRUE;

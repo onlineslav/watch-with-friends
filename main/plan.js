@@ -7,12 +7,13 @@ const IMAGE_SUBTITLE_CODECS = new Set(['hdmv_pgs_subtitle', 'dvd_subtitle', 'dvb
 const SUBTITLE_EXTENSIONS = ['.srt', '.ass', '.ssa', '.vtt']
 const HDR_TRANSFERS = new Set(['smpte2084', 'arib-std-b67'])
 
+// Near-transparent first encode: this output only crosses a local pipe to the host's own MediaSource, then WebRTC re-encodes it, so bandwidth is free.
 const ENCODER_ARGS = {
-  libx264: ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20'],
-  h264_nvenc: ['-c:v', 'h264_nvenc', '-preset', 'p4', '-rc', 'vbr', '-cq', '21', '-b:v', '0'],
-  h264_qsv: ['-c:v', 'h264_qsv', '-preset', 'veryfast', '-global_quality', '22'],
-  h264_amf: ['-c:v', 'h264_amf', '-quality', 'speed', '-rc', 'cqp', '-qp_i', '20', '-qp_p', '22'],
-  h264_videotoolbox: ['-c:v', 'h264_videotoolbox', '-b:v', '12M', '-realtime', '1'],
+  libx264: ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '17'],
+  h264_nvenc: ['-c:v', 'h264_nvenc', '-preset', 'p4', '-rc', 'vbr', '-cq', '18', '-b:v', '0'],
+  h264_qsv: ['-c:v', 'h264_qsv', '-preset', 'veryfast', '-global_quality', '19'],
+  h264_amf: ['-c:v', 'h264_amf', '-quality', 'speed', '-rc', 'cqp', '-qp_i', '17', '-qp_p', '19'],
+  h264_videotoolbox: ['-c:v', 'h264_videotoolbox', '-b:v', '20M', '-realtime', '1'],
 }
 
 const baseName = (p) => p.split(/[\\/]/).pop()

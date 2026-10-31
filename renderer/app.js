@@ -3123,8 +3123,8 @@ function render() {
   if (ready) subtitles.push({value: LOAD_SUBTITLE, label: 'Load subtitle file…'})
   fillSelect(ui.subtitles, subtitles, session.captions.id ?? state?.subtitleSelected ?? '')
 
-  if (!isPlaying()) ui.room.classList.remove('idle')
-  else if (!chromeTimer && !ui.room.classList.contains('idle')) wakeChrome()
+  if (!stageShowing() || (!chromeIdles() && pointerInside)) ui.room.classList.remove('idle')
+  else if (chromeIdles() && !chromeTimer && !ui.room.classList.contains('idle')) wakeChrome()
 }
 
 let toastTimer = null
@@ -4199,8 +4199,17 @@ document.addEventListener('keydown', (event) => {
   }
 })
 
-// While a video plays, the top bar, sidebar and controls get out of the way until the mouse moves.
+// While a video plays, or a share or picture fills the stage, the top bar, sidebar and controls
+// get out of the way until the mouse moves. With anything on the stage, even a paused video, they
+// also go as soon as the mouse leaves the window.
 let chromeTimer = null
+let pointerInside = true
+function stageShowing() {
+  return session.role !== 'idle' || ui.stage.classList.contains('showing-shares')
+}
+function chromeIdles() {
+  return isPlaying() || ui.stage.classList.contains('showing-shares') || Boolean(shownImage())
+}
 const chromeInUse = () =>
   Boolean(
     drawing ||
@@ -4216,14 +4225,18 @@ function wakeChrome() {
   clearTimeout(chromeTimer)
   chromeTimer = setTimeout(() => {
     chromeTimer = null
-    if (!isPlaying()) return
+    if (!chromeIdles()) return
     if (chromeInUse()) wakeChrome()
     else ui.room.classList.add('idle')
   }, CHROME_IDLE_MS)
 }
-ui.room.addEventListener('mousemove', wakeChrome)
+ui.room.addEventListener('mousemove', () => {
+  pointerInside = true
+  wakeChrome()
+})
 document.documentElement.addEventListener('mouseleave', () => {
-  if (isPlaying() && !chromeInUse()) ui.room.classList.add('idle')
+  pointerInside = false
+  if (stageShowing() && !chromeInUse()) ui.room.classList.add('idle')
 })
 
 // Keep Electron from navigating to files dropped outside the stage.

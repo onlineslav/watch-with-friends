@@ -1660,6 +1660,13 @@ button:disabled {
   pointer-events: auto;
 }
 
+/* With nothing open the stage doubles as a plain whiteboard: the "Open media" prompt sits above
+   the canvas, so while a drawing tool is in hand it fades and lets the pen through. */
+.room.pen .empty {
+  opacity: 0.25;
+  pointer-events: none;
+}
+
 .board-tools {
   position: absolute;
   left: 12px;
@@ -2080,8 +2087,8 @@ button:disabled {
   display: none;
 }
 
-/* Every share as an equal tile; with one focused, only that one, full size. Shares have no
-   timeline, so the top bar and controls never hide: the tiles sit between them. */
+/* Every share as an equal tile; with one focused, only that one, full size. The tiles sit
+   between the top bar and controls, and keep that room while the chrome is hidden. */
 .share-grid {
   position: absolute;
   inset: 0;

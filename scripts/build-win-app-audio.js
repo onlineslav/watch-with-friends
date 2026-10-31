@@ -1,6 +1,7 @@
 // Compiles the Windows native helpers: native/win-app-audio/main.cpp, the per-app audio capture
-// helper (WASAPI process loopback), and native/win-app-windows/main.cpp, which reports where one
-// app's windows are for a whole-app share. Built from source like mac-app-audio, with the Visual
+// helper (WASAPI process loopback); native/win-app-windows/main.cpp, which reports where one
+// app's windows are for a whole-app share; and native/win-share-sources/main.cpp, which lists
+// the share picker's screens and windows off the app's main process. Built from source like mac-app-audio, with the Visual
 // C++ build tools that vswhere finds (any Visual Studio 2017+ or Build Tools install with the C++
 // workload, which the GitHub Windows runners have). The C runtime is linked statically, so the
 // helpers run on machines without the Visual C++ redistributable.
@@ -13,6 +14,7 @@ const root = path.resolve(__dirname, '..')
 const HELPERS = {
   'win-app-audio': ['ole32.lib', 'user32.lib', 'mmdevapi.lib'],
   'win-app-windows': ['user32.lib', 'dwmapi.lib'],
+  'win-share-sources': ['user32.lib', 'gdi32.lib', 'dwmapi.lib', 'ole32.lib', 'windowscodecs.lib'],
 }
 const sourceOf = (name) => path.join(root, `native/${name}/main.cpp`)
 const targetOf = (name) => path.join(root, `native/${name}/${name}.exe`)

@@ -14,6 +14,8 @@ import {captureChanges} from './app-share.mjs'
 
 // A window that couldn't be captured isn't tried again for this long.
 const RETRY_MS = 5000
+// A window whose capture ended on its own (it closed, almost always) gets this long first.
+const ENDED_RETRY_MS = 1000
 // How often captures of windows gone for good are let go, between layout changes.
 const SWEEP_MS = 1000
 
@@ -31,7 +33,9 @@ export function appShareTrack({getLayout, subscribe, captureWindow, initial, lim
     if (data.type === 'ended') {
       captures.get(data.hwnd)?.track.stop()
       captures.delete(data.hwnd)
-      reconcile(getLayout())
+      // A capture usually ends because its window closed, a moment before the layout says so:
+      // wait for the layout to catch up rather than recapture a window that's gone.
+      failed.set(data.hwnd, performance.now() - RETRY_MS + ENDED_RETRY_MS)
     } else if (data.type === 'size') {
       // getSettings() on a generated track has no size; tuneSenders reads this instead.
       generator.frameSize = {width: data.width, height: data.height}

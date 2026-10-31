@@ -6,6 +6,7 @@ const log = require('./log')
 const media = require('./media')
 const appAudio = require('./app-audio')
 const appWindows = require('./app-windows')
+const shareSources = require('./share-sources')
 const {loadIceServers} = require('./turn')
 const updater = require('./updater')
 const {focusWindow} = require('./startup')
@@ -150,6 +151,13 @@ function registerIpc() {
   })
   ipcMain.handle('media:image', (_event, filePath) => media.readImage(filePath))
   ipcMain.handle('screenshare:sources', async () => {
+    // On Windows a helper process lists them: desktopCapturer froze this process for half a
+    // second per call (see main/share-sources.js). Its ids are Chromium's own, granted as they are.
+    if (shareSources.available()) {
+      const sources = await shareSources.list()
+      shareSourcesById = new Map(sources.map((source) => [source.id, {id: source.id, name: source.name}]))
+      return sources
+    }
     const sources = await desktopCapturer.getSources({types: ['screen', 'window'], thumbnailSize: {width: 150, height: 150}})
     shareSourcesById = new Map(sources.map((source) => [source.id, source]))
     return sources.map((source) => ({id: source.id, name: source.name, thumbnail: source.thumbnail.isEmpty() ? null : source.thumbnail.toDataURL()}))
@@ -274,6 +282,24 @@ function registerIpc() {
   ipcMain.handle('update:retry', () => updater.retry())
 }
 
+// This process also moves and repaints the window, so any stretch it spends blocked shows up as
+// the window hanging or stuttering. Logged (at most once a second) so a report of stutter comes
+// with when and how long, instead of a guess.
+const STALL_CHECK_MS = 100
+const STALL_LOG_MS = 150
+function watchStalls() {
+  let expected = performance.now() + STALL_CHECK_MS
+  let loggedAt = 0
+  setInterval(() => {
+    const now = performance.now()
+    const late = now - expected
+    expected = now + STALL_CHECK_MS
+    if (late < STALL_LOG_MS || now - loggedAt < 1000) return
+    loggedAt = now
+    log.record('app', 'main-stall', {ms: Math.round(late)}, 'warn')
+  }, STALL_CHECK_MS).unref()
+}
+
 function start() {
   // Main-process faults otherwise leave nothing behind but a closed window. Registered before
   // anything else runs; log.record buffers until whenReady opens the file.
@@ -285,6 +311,7 @@ function start() {
   app.whenReady().then(() => {
     // app.getPath('logs') is only meaningful once the app name is settled, so the file opens here.
     log.start({dir: app.getPath('logs'), info: systemInfo()})
+    watchStalls()
     registerYouTube()
     registerIpc()
     createWindow()
@@ -304,6 +331,7 @@ function start() {
     media.stopAll()
     appAudio.stopAll()
     appWindows.stopAll()
+    shareSources.stop()
     log.record('app', 'quit')
     log.stop()
   })

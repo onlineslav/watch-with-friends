@@ -8,6 +8,7 @@ build/mac-updater/
 native/mac-app-audio/mac-app-audio
 native/win-app-audio/win-app-audio.exe
 native/win-app-windows/win-app-windows.exe
+native/win-share-sources/win-share-sources.exe
 
 # local diagnostics and scratch output
 logs/

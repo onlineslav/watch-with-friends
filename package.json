@@ -78,6 +78,10 @@
         {
           "from": "native/win-app-windows/win-app-windows.exe",
           "to": "win-app-windows.exe"
+        },
+        {
+          "from": "native/win-share-sources/win-share-sources.exe",
+          "to": "win-share-sources.exe"
         }
       ],
       "files": [

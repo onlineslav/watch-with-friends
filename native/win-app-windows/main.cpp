@@ -7,11 +7,11 @@
 // any window owned by one of those (a plugin bridge can live in an unrelated process).
 //
 // Writes one JSON line to stdout whenever the layout changes, in physical pixels:
-//   {"monitor":[x,y,w,h],"windows":[[x,y,w,h,own],...]}
-// `monitor` is the monitor the given window is on; `windows` are the visible top-level windows
-// on it, topmost first, clipped to it, with own = 1 for the app's windows and 0 for anything that
-// covers them (windows below all of the app's windows are left out: they can't cover anything).
-// The renderer captures that monitor and shows only the parts of it the app's windows cover.
+//   {"desktop":[x,y,w,h],"windows":[[x,y,w,h,hwnd],...]}
+// `desktop` is the virtual screen (every monitor); `windows` are the app's visible top-level
+// windows, topmost first, with their visible frame (what a window capture of that HWND shows).
+// The renderer captures each of those windows on its own and lays them out the same way, so a
+// window from another app on top of them never hides or leaks into the share.
 // Status/errors go to stderr as one line each, like win-app-audio ("ready", or "error: ...").
 #include <windows.h>
 #include <dwmapi.h>
@@ -31,8 +31,8 @@
 
 static const DWORD POLL_MS = 50;
 static const DWORD TREE_REFRESH_MS = 1000;
-// Plenty for any real desktop; a runaway count can't grow the line without bound.
-static const size_t MAX_WINDOWS = 256;
+// Plenty for any real app; a runaway count can't grow the line without bound.
+static const size_t MAX_WINDOWS = 64;
 
 [[noreturn]] static void fail(const char* format, ...) {
   va_list args;
@@ -112,7 +112,8 @@ static bool belongs(HWND window, const std::set<DWORD>& tree) {
 
 // What's actually on screen: shown, not minimized, not cloaked (a window on another virtual
 // desktop, or a suspended Store app, is "visible" but not drawn), with its visible frame rather
-// than GetWindowRect's, which includes invisible resize borders around every window.
+// than GetWindowRect's, which includes invisible resize borders around every window. The visible
+// frame is also exactly what a window capture of it delivers.
 static bool shownRect(HWND window, RECT* rect) {
   if (!IsWindowVisible(window) || IsIconic(window)) return false;
   DWORD cloaked = 0;
@@ -121,52 +122,35 @@ static bool shownRect(HWND window, RECT* rect) {
   return rect->right > rect->left && rect->bottom > rect->top;
 }
 
-// Click-through overlays (game and GPU overlays often stretch an invisible one over the whole
-// desktop) and fully transparent layered windows draw nothing, so they don't hide the app.
-static bool drawsNothing(HWND window) {
-  LONG_PTR style = GetWindowLongPtrW(window, GWL_EXSTYLE);
-  if (style & WS_EX_TRANSPARENT) return true;
-  BYTE alpha = 255;
-  DWORD flags = 0;
-  return (style & WS_EX_LAYERED) && GetLayeredWindowAttributes(window, nullptr, &alpha, &flags) && (flags & LWA_ALPHA) && !alpha;
-}
-
 struct Placed {
   RECT rect;
-  bool own;
+  HWND window;
 };
 
 struct Scan {
   const std::set<DWORD>* tree;
-  RECT monitor;
   std::vector<Placed> windows;
 };
 
 static BOOL CALLBACK scanWindow(HWND window, LPARAM param) {
   Scan* scan = reinterpret_cast<Scan*>(param);
   if (scan->windows.size() >= MAX_WINDOWS) return FALSE;
-  RECT rect, clipped;
-  if (!shownRect(window, &rect) || !IntersectRect(&clipped, &rect, &scan->monitor)) return TRUE;
-  bool own = belongs(window, *scan->tree);
-  if (!own && drawsNothing(window)) return TRUE;
-  scan->windows.push_back({clipped, own});
+  RECT rect;
+  if (belongs(window, *scan->tree) && shownRect(window, &rect)) scan->windows.push_back({rect, window});
   return TRUE;
 }
 
-static std::string layout(HWND target, const std::set<DWORD>& tree) {
-  MONITORINFO info = {sizeof(info)};
-  if (!GetMonitorInfoW(MonitorFromWindow(target, MONITOR_DEFAULTTONEAREST), &info)) fail("Could not find which monitor the shared window is on.");
-  Scan scan = {&tree, info.rcMonitor, {}};
+static std::string layout(const std::set<DWORD>& tree) {
+  Scan scan = {&tree, {}};
   EnumWindows(scanWindow, reinterpret_cast<LPARAM>(&scan));  // topmost first
-  while (!scan.windows.empty() && !scan.windows.back().own) scan.windows.pop_back();
-
-  const RECT& m = info.rcMonitor;
-  char part[96];
-  snprintf(part, sizeof(part), "{\"monitor\":[%ld,%ld,%ld,%ld],\"windows\":[", m.left, m.top, m.right - m.left, m.bottom - m.top);
+  char part[128];
+  snprintf(part, sizeof(part), "{\"desktop\":[%d,%d,%d,%d],\"windows\":[", GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN),
+           GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN));
   std::string line = part;
   for (size_t i = 0; i < scan.windows.size(); i++) {
     const RECT& r = scan.windows[i].rect;
-    snprintf(part, sizeof(part), "%s[%ld,%ld,%ld,%ld,%d]", i ? "," : "", r.left, r.top, r.right - r.left, r.bottom - r.top, scan.windows[i].own ? 1 : 0);
+    snprintf(part, sizeof(part), "%s[%ld,%ld,%ld,%ld,%llu]", i ? "," : "", r.left, r.top, r.right - r.left, r.bottom - r.top,
+             static_cast<unsigned long long>(reinterpret_cast<UINT_PTR>(scan.windows[i].window)));
     line += part;
   }
   return line + "]}\n";
@@ -175,7 +159,7 @@ static std::string layout(HWND target, const std::set<DWORD>& tree) {
 int wmain(int argc, wchar_t** argv) {
   out = GetStdHandle(STD_OUTPUT_HANDLE);
   _setmode(_fileno(stderr), _O_BINARY);  // plain "\n" line ends, same as win-app-audio
-  // Physical pixels everywhere, matching what the monitor capture delivers.
+  // Physical pixels everywhere, matching what a window capture delivers.
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
   wchar_t* end = nullptr;
   unsigned long long handle = argc == 2 ? wcstoull(argv[1], &end, 10) : 0;
@@ -197,7 +181,7 @@ int wmain(int argc, wchar_t** argv) {
       tree = processTree(pid);
       treeAt = GetTickCount64();
     }
-    std::string line = layout(target, tree);
+    std::string line = layout(tree);
     if (!ready) {
       fputs("ready\n", stderr);
       fflush(stderr);

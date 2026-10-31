@@ -425,6 +425,12 @@ app.whenReady().then(async () => {
     await until(c, '__test.session.remote.playing === false')
     await run(b, '__test.control("seek", 10)')
     await until(c, 'Math.abs(__test.session.remote.time - 10) < 1')
+    // Drawn, not just loaded (the caption runs 0–20s), and cleared again when switched off.
+    await until(b, 'document.getElementById("captions").textContent.includes("Shared test caption")')
+    await run(b, '__test.selectSubtitle(null)')
+    await until(b, 'document.getElementById("captions").textContent === ""')
+    await run(b, '__test.selectSubtitle(__test.session.remote.subtitles[0].value)')
+    await until(b, 'document.getElementById("captions").textContent.includes("Shared test caption")')
     await run(b, '__test.control("play")')
     await until(a, '!document.getElementById("local-video").paused')
     console.log('PASS: Viewer pause, seek and resume reach the host and other viewer')

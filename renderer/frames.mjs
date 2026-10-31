@@ -30,6 +30,8 @@ export function captureVideoFrames(video) {
     // Re-stamp with wall-clock time: media timestamps jump backwards on seeks, which WebRTC drops.
     const stamped = new VideoFrame(frame, {timestamp: Math.round(performance.now() * 1000)})
     frame.close()
+    // getSettings() on a generated track has no size; tuneSenders reads this instead.
+    generator.frameSize = {width: stamped.displayWidth, height: stamped.displayHeight}
     writing = true
     writer
       .write(stamped)

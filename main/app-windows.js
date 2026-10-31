@@ -1,7 +1,7 @@
 // Spawns native/win-app-windows, which reports where one application's windows are (see the top
-// of its main.cpp for the line format), for a whole-app share: the renderer captures the monitor
-// and masks it down to those windows. Unlike app-audio's byte stream, only the latest layout
-// matters, so a pull returns the newest line it hasn't returned yet and drops anything older.
+// of its main.cpp for the line format), for a whole-app share: the renderer captures each of
+// those windows and lays them out together. Unlike app-audio's byte stream, only the latest
+// layout matters, so a pull returns the newest line it hasn't returned yet and drops anything older.
 const fs = require('node:fs')
 const path = require('node:path')
 const {spawn} = require('node:child_process')
@@ -97,6 +97,13 @@ async function pull(id) {
   return {done: true, error: session.error}
 }
 
+// Whether the session's helper currently reports `hwnd` as one of the app's windows: the only
+// windows main lets a whole-app share capture.
+function reports(id, hwnd) {
+  const windows = sessions.get(id)?.layout?.windows
+  return Array.isArray(windows) && windows.some((entry) => Array.isArray(entry) && entry[4] === hwnd)
+}
+
 function stopSession(id) {
   const session = sessions.get(id)
   if (!session) return
@@ -110,4 +117,4 @@ function stopAll() {
   for (const id of [...sessions.keys()]) stopSession(id)
 }
 
-module.exports = {startSession, pull, stopSession, stopAll}
+module.exports = {startSession, pull, reports, stopSession, stopAll}

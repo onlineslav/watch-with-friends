@@ -1,7 +1,7 @@
 const path = require('node:path')
 const fs = require('node:fs')
 const os = require('node:os')
-const {app, BrowserWindow, dialog, ipcMain, screen, session, shell, desktopCapturer} = require('electron')
+const {app, BrowserWindow, dialog, ipcMain, session, shell, desktopCapturer} = require('electron')
 const log = require('./log')
 const media = require('./media')
 const appAudio = require('./app-audio')
@@ -23,10 +23,11 @@ const MEDIA_EXTENSIONS = [
 ]
 const SUBTITLE_EXTENSIONS = ['srt', 'ass', 'ssa', 'vtt']
 const downloadStores = new Map()
-// Set by screenshare:select right before the renderer calls getDisplayMedia, and read once by
-// the display-media handler below. Only a source this list itself just returned is ever granted.
+// Set by screenshare:select (or appwindows:grant) right before the renderer calls
+// getDisplayMedia, and read once by the display-media handler below. Only a source this list
+// itself just returned, or a window a whole-app share's helper just reported, is ever granted.
 let shareSourcesById = new Map()
-let pendingShareSourceId = null
+let pendingShareSource = null
 let pendingShareSystemAudio = false
 function downloadStore(contents) {
   if (!downloadStores.has(contents.id)) {
@@ -110,11 +111,10 @@ function registerIpc() {
   // to the shared window's own app. For a specific device instead, the renderer captures it
   // itself via getUserMedia and merges it into the share's stream.
   session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
-    const id = pendingShareSourceId
+    const source = pendingShareSource
     const systemAudio = pendingShareSystemAudio
-    pendingShareSourceId = null
+    pendingShareSource = null
     pendingShareSystemAudio = false
-    const source = id && shareSourcesById.get(id)
     if (!source) return callback({})
     callback({video: source, ...(systemAudio && {audio: 'loopback'})})
   }, {useSystemPicker: false})
@@ -155,36 +155,32 @@ function registerIpc() {
     return sources.map((source) => ({id: source.id, name: source.name, thumbnail: source.thumbnail.isEmpty() ? null : source.thumbnail.toDataURL()}))
   })
   ipcMain.handle('screenshare:select', (_event, id, options) => {
-    pendingShareSourceId = typeof id === 'string' && shareSourcesById.has(id) ? id : null
+    pendingShareSource = (typeof id === 'string' && shareSourcesById.get(id)) || null
     pendingShareSystemAudio = Boolean(options?.systemAudio)
-    return Boolean(pendingShareSourceId)
+    return Boolean(pendingShareSource)
   })
-  // A whole-app share: the helper finds the window's app and which monitor it's on, and the share
-  // captures that monitor instead (the renderer masks it down to the app's windows). Like
-  // screenshare:select, only a source the last listing returned is accepted, and the screen it
-  // grants is one that listing returned too.
-  ipcMain.handle('appwindows:start', async (_event, sourceId, options) => {
+  // A whole-app share: the helper reports every window the shared window's app has open, and the
+  // renderer captures each one on its own (appwindows:grant before each getDisplayMedia) and lays
+  // them out together. Like screenshare:select, only a source the last listing returned starts
+  // one; a plugin window isn't in that listing (desktopCapturer leaves out owned tool windows), so
+  // grant accepts a window only while that session's helper reports it as the app's.
+  ipcMain.handle('appwindows:start', async (_event, sourceId) => {
     const windowId = typeof sourceId === 'string' && shareSourcesById.has(sourceId) && /^window:(\d+):\d+$/.exec(sourceId)?.[1]
     if (!windowId) throw new Error('That window is no longer available. Try again.')
-    let started
     try {
-      started = await appWindows.startSession(Number(windowId))
+      const started = await appWindows.startSession(Number(windowId))
+      log.record('appwindows', 'start', {id: started.id, windows: started.layout.windows.length, desktop: started.layout.desktop})
+      return started
     } catch (error) {
       log.record('appwindows', 'start-failed', {message: error?.message}, 'error')
       throw error
     }
-    const [x, y, width, height] = started.layout.monitor
-    const display = screen.getDisplayNearestPoint(screen.screenToDipPoint({x: x + width / 2, y: y + height / 2}))
-    const screens = [...shareSourcesById.values()].filter((source) => source.id.startsWith('screen:'))
-    const source = screens.find((candidate) => candidate.display_id === String(display.id)) || (screens.length === 1 && screens[0])
-    if (!source) {
-      appWindows.stopSession(started.id)
-      throw new Error('Could not find the screen that window is on.')
-    }
-    pendingShareSourceId = source.id
+  })
+  ipcMain.handle('appwindows:grant', (_event, id, hwnd, options) => {
+    if (!Number.isSafeInteger(hwnd) || hwnd <= 0 || !appWindows.reports(id, hwnd)) return false
+    pendingShareSource = {id: `window:${hwnd}:0`, name: ''}
     pendingShareSystemAudio = Boolean(options?.systemAudio)
-    log.record('appwindows', 'start', {id: started.id, monitor: started.layout.monitor, windows: started.layout.windows.length, displayId: display.id})
-    return started
+    return true
   })
   ipcMain.handle('appwindows:pull', async (_event, id) => {
     const result = await appWindows.pull(id)

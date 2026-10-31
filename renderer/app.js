@@ -35,7 +35,7 @@ import {clampZoom, stepZoom, parseZoom, formatZoom, zoomPercent, MIN_ZOOM, MAX_Z
 import {captionHtml} from './subtitles.mjs'
 import {shareSources, hidesTimeline, RESOLUTIONS, FRAME_RATES, DEFAULT_RESOLUTION, DEFAULT_FRAME_RATE, shareVideoConstraints, audioInputs, windowIdFromSource, AUDIO_BITRATES, DEFAULT_AUDIO_BITRATE, shareAudioBitrate, SHARE_PRIORITIES, DEFAULT_SHARE_PRIORITY, sharePriority, cleanPeerShare, shareTiles, shareView, gridColumns} from './screenshare.mjs'
 import {createAppAudioTrack} from './app-audio.mjs'
-import {cleanLayout, sameMonitor} from './app-share.mjs'
+import {cleanLayout} from './app-share.mjs'
 import {appShareTrack} from './app-share-track.mjs'
 import {
   DRAWER,
@@ -957,12 +957,11 @@ function clearShare() {
 }
 
 // A whole-app share follows where the shared window's app has its windows (main/app-windows.js)
-// and keeps the latest layout for appShareTrack. Starting it is also what picks the monitor to
-// capture: main grants that screen to the getDisplayMedia call that follows. `onEnded(error)`
-// fires once if tracking stops on its own (the app closed); `onMonitor` when the app's main
-// window moves to another monitor, which needs a new capture.
-async function followAppWindows(sourceId, systemAudio) {
-  const {id, layout} = await window.api.startAppWindows(sourceId, {systemAudio})
+// and keeps the latest layout for appShareTrack. `capture(hwnd, systemAudio)` captures one of
+// those windows: main only grants a window this session's helper currently reports as the app's.
+// `onEnded(error)` fires once if tracking stops on its own (the shared window closed).
+async function followAppWindows(sourceId) {
+  const {id, layout} = await window.api.startAppWindows(sourceId)
   const first = cleanLayout(layout)
   if (!first) {
     window.api.stopAppWindows(id)
@@ -972,7 +971,11 @@ async function followAppWindows(sourceId, systemAudio) {
     layout: first,
     stopped: false,
     onEnded: null,
-    onMonitor: null,
+    async capture(hwnd, systemAudio = false) {
+      if (!await window.api.grantAppWindow(id, hwnd, {systemAudio})) throw new Error('That window isn\'t showing (it\'s minimized or closed).')
+      const video = {frameRate: shareVideoConstraints(shareSettings.resolution, shareSettings.frameRate).frameRate}
+      return navigator.mediaDevices.getDisplayMedia({video, audio: systemAudio ? SHARE_AUDIO_CONSTRAINTS : false})
+    },
     stop() {
       if (follower.stopped) return
       follower.stopped = true
@@ -989,15 +992,7 @@ async function followAppWindows(sourceId, systemAudio) {
         return
       }
       const next = cleanLayout(result?.layout)
-      if (!next) continue
-      if (!sameMonitor(next.monitor, follower.layout.monitor)) {
-        // Until the new capture starts, show nothing: the old capture is the other monitor.
-        follower.layout = {monitor: follower.layout.monitor, windows: []}
-        if (!follower.moved) follower.onMonitor?.()
-        follower.moved = true
-        continue
-      }
-      follower.layout = next
+      if (next) follower.layout = next
     }
   })()
   return follower
@@ -1076,33 +1071,45 @@ async function startShare(source) {
   // A host's share is part of its state; one alongside it only has its own announcement.
   const publish = () => (alongside ? announceShare() : broadcastState())
   let windows = null
-  let masked = null
+  let composite = null
   try {
     // Sharing a whole screen means sharing everything on it, sound included, so the shared
     // window's app falls back to system audio there.
     const windowId = windowIdFromSource(source.id)
     const audioSource = shareSettings.audioDeviceId === 'app' && windowId == null ? 'system' : shareSettings.audioDeviceId
     const systemAudio = audioSource === 'system'
-    // A whole-app share captures the monitor the window is on, masked down to the app's windows.
+    // A whole-app share captures each of the app's windows on its own, starting with this one, and
+    // lays them out together (appShareTrack); the shared window's capture carries system audio.
     const wholeApp = WHOLE_APP_SHARE && shareSettings.wholeApp && windowId != null
-    windows = wholeApp ? await followAppWindows(source.id, systemAudio) : null
-    if (!wholeApp && !await window.api.selectScreenShareSource(source.id, {systemAudio})) throw new Error('That source is no longer available. Try again.')
-    const video = shareVideoConstraints(shareSettings.resolution, shareSettings.frameRate)
-    let stream = await navigator.mediaDevices.getDisplayMedia({video, audio: systemAudio ? SHARE_AUDIO_CONSTRAINTS : false})
+    windows = wholeApp ? await followAppWindows(source.id) : null
+    let stream
+    if (windows) {
+      stream = await windows.capture(windowId, systemAudio)
+    } else {
+      if (!await window.api.selectScreenShareSource(source.id, {systemAudio})) throw new Error('That source is no longer available. Try again.')
+      const video = shareVideoConstraints(shareSettings.resolution, shareSettings.frameRate)
+      stream = await navigator.mediaDevices.getDisplayMedia({video, audio: systemAudio ? SHARE_AUDIO_CONSTRAINTS : false})
+    }
     const capture = stream.getVideoTracks()[0]
     if (windows) {
-      masked = appShareTrack(capture, () => windows.layout)
-      if (!masked) {
+      composite = appShareTrack({
+        getLayout: () => windows.layout,
+        captureWindow: async (hwnd) => (await windows.capture(hwnd)).getVideoTracks()[0],
+        initial: {hwnd: windowId, track: capture},
+        limits: shareOutputLimits(),
+        onCaptureError: (hwnd, error) => logError('screenshare', 'app-window-capture-failed', {hwnd, message: errorMessage(error)}),
+      })
+      if (!composite) {
         stream.getTracks().forEach((track) => track.stop())
         throw new Error('This version can\'t share a whole app. Turn off "Include the app\'s other windows" in the share picker.')
       }
-      stream = new MediaStream([masked.track, ...stream.getAudioTracks()])
+      stream = new MediaStream([composite.track, ...stream.getAudioTracks()])
     }
     const audio = await captureShareAudio(audioSource, windowId)
     if (!owns()) {
       stream.getTracks().forEach((track) => track.stop())
       capture.stop()
-      masked?.stop()
+      composite?.stop()
       windows?.stop()
       audio?.cleanup()
       audio?.track.stop()
@@ -1122,31 +1129,28 @@ async function startShare(source) {
       }, {once: true})
     }
     session.sharePending = null
-    session.screen = {id: String(claimedAt), name: source.name, source, audio: stream.getAudioTracks().length > 0, alongside, capture}
+    session.screen = {id: String(claimedAt), name: source.name, source, audio: stream.getAudioTracks().length > 0, alongside, composite}
     session.screenCleanup = () => {
       audio?.cleanup()
-      masked?.stop()
+      composite?.stop()
       windows?.stop()
     }
-    logEvent('screenshare', 'started', {audioDeviceId: shareSettings.audioDeviceId, audioSource, audio: session.screen.audio, resolution: shareSettings.resolution, frameRate: shareSettings.frameRate, alongside, wholeApp: Boolean(windows)})
+    logEvent('screenshare', 'started', {audioDeviceId: shareSettings.audioDeviceId, audioSource, audio: session.screen.audio, resolution: shareSettings.resolution, frameRate: shareSettings.frameRate, alongside, wholeApp: Boolean(windows), windows: windows?.layout.windows.length})
     const sharing = () => session === current && !current.closed && session.stream === stream
-    // The track also ends on its own when the OS source closes or the browser's own share bar is
-    // used. For a whole-app share that's the monitor capture: the masked track never ends itself.
-    capture.addEventListener('ended', () => {
-      if (sharing()) stopShare()
-    }, {once: true})
     if (windows) {
+      // The app's windows come and go (the composite recaptures them); the share ends with the
+      // shared window itself, which the helper reports.
       windows.onEnded = (error) => {
         if (!sharing()) return
         logEvent('screenshare', 'app-windows-ended', {message: error})
         if (error) toast(`Stopped sharing: ${error}`, true)
         stopShare()
       }
-      windows.onMonitor = () => {
-        if (!sharing()) return
-        logEvent('screenshare', 'app-windows-moved')
-        restartShare()
-      }
+    } else {
+      // The track also ends on its own when the OS source closes or the browser's own share bar is used.
+      capture.addEventListener('ended', () => {
+        if (sharing()) stopShare()
+      }, {once: true})
     }
     publishShareStream(stream, claimedAt)
     if (!alongside) broadcastState()
@@ -1159,7 +1163,7 @@ async function startShare(source) {
       })
     }
   } catch (error) {
-    masked?.stop()
+    composite?.stop()
     windows?.stop()
     if (!owns()) return
     if (!alongside) return failHosting(error)
@@ -1193,9 +1197,16 @@ function restartShare() {
   if (session.screen) startShare(session.screen.source)
 }
 
+// Settings' resolution and frame rate as a whole-app share's output limits.
+function shareOutputLimits() {
+  const constraints = shareVideoConstraints(shareSettings.resolution, shareSettings.frameRate)
+  return {frameRate: constraints.frameRate.max, width: constraints.width?.max, height: constraints.height?.max}
+}
+
 async function applyShareVideoConstraints() {
-  // A whole-app share's own track is generated; the capture underneath is what takes constraints.
-  const track = session.screen?.capture || session.stream?.getVideoTracks()[0]
+  // A whole-app share's track is drawn, not captured: its size and frame rate are the composite's.
+  if (session.screen?.composite) return session.screen.composite.setLimits(shareOutputLimits())
+  const track = session.stream?.getVideoTracks()[0]
   if (!session.screen || !track) return
   try {
     await track.applyConstraints(shareVideoConstraints(shareSettings.resolution, shareSettings.frameRate))
@@ -1304,6 +1315,15 @@ function publishShareStream(stream, claimedAt) {
   if (session.peers.size) Promise.all(session.room.addStream(stream, {metadata: {claimedAt}})).then(tuneSenders, () => {})
 }
 
+// A video track's size. Generated tracks (frames.mjs for films, app-share-track.mjs for a
+// whole-app share) have none in getSettings(), so they record the size of the frames they send;
+// without it every one of them was scaled as if it were 1080p, whatever its real size.
+function trackSize(track) {
+  const settings = track?.getSettings?.() || {}
+  if (settings.width && settings.height) return {width: settings.width, height: settings.height}
+  return track?.frameSize ? {width: track.frameSize.width, height: track.frameSize.height} : {}
+}
+
 // Raise WebRTC's conservative defaults so a movie looks and sounds like a movie.
 async function tuneSenders() {
   const current = session
@@ -1324,7 +1344,7 @@ async function tuneSenders() {
         // practical ceiling); file/image hosting keeps the fixed default, unaffected.
         const audioBitrate = current.screen ? shareAudioBitrate(shareSettings.audioBitrate) : AUDIO_MAX_BITRATE
         const maxBitrate = track.kind === 'video' ? quality?.bitrate || 4_000_000 : audioBitrate
-        const settings = track.getSettings()
+        const settings = trackSize(track)
         // Sharp text never downscales (bitrate still adapts); other modes and files keep the cap.
         const keepSharp = Boolean(current.screen) && sharePriority(shareSettings.priority).value === 'text'
         const scale = keepSharp ? 1 : quality?.scale || Math.max(1, (settings.width || 0) / MAX_STREAM_WIDTH, (settings.height || 0) / 1080)
@@ -1479,7 +1499,7 @@ async function sampleConnection() {
       if (isHost()) {
         p.sender = stats.outbound
         if (performance.now() - (p.receiverAt || 0) > HOST_TIMEOUT_MS) p.receiver = null
-        const dimensions = current.stream?.getVideoTracks()[0]?.getSettings() || {}
+        const dimensions = trackSize(current.stream?.getVideoTracks()[0])
         const playback = {
           playing: hostPlaying(),
           loading: Boolean(current.openingMedia),
@@ -2953,7 +2973,10 @@ async function selectSubtitle(id) {
   const slow = setTimeout(() => { if (active()) toast('Loading subtitles…') }, 400)
   try {
     const cues = await loadCues(id, controller.signal)
-    if (active()) captions.cues = cleanCues(cues)
+    if (active()) {
+      captions.cues = cleanCues(cues)
+      startCaptions()
+    }
   } catch (err) {
     if (!active()) return
     captions.id = null
@@ -2983,13 +3006,23 @@ function addSubtitleFile(filePath) {
 }
 
 // The viewer's picture trails the host's clock by the jitter buffer, so captions wait for it.
+// Runs every frame only while a track's cues are loaded (startCaptions), and stops once they're
+// gone, after clearing what it showed: a loop that never stops keeps Chromium producing 60 frames
+// a second with nothing on screen changing, which cost a quarter of a core idle and made the
+// window stutter when dragged.
 let captionsShown = ''
+let captionsFrame = 0
 function drawCaptions() {
-  requestAnimationFrame(drawCaptions)
+  captionsFrame = 0
   const {cues} = session.captions
   const delayMs = isHost() || youtube.videoId ? 0 : session.frameDelayMs ?? ((session.playoutDelayMs ?? session.buffer.bufferMs) + (session.link?.rttMs || 0) / 2 + DECODE_DELAY_MS)
   const html = cues.length && session.role !== 'idle' ? captionHtml(cues, currentTime() - delayMs / 1000) : ''
   if (html !== captionsShown) ui.captions.innerHTML = captionsShown = html
+  if (cues.length) captionsFrame = requestAnimationFrame(drawCaptions)
+}
+
+function startCaptions() {
+  if (!captionsFrame) captionsFrame = requestAnimationFrame(drawCaptions)
 }
 
 // ---------- Shared controls ----------
@@ -4601,7 +4634,6 @@ window.addEventListener('beforeunload', () => {
 })
 
 setInterval(render, 250)
-requestAnimationFrame(drawCaptions)
 setInterval(sendStroke, 50)
 setInterval(() => sampleConnection().catch(() => {}), TELEMETRY_INTERVAL_MS)
 setInterval(() => { if (session.room && !session.closed) refreshAvailability() }, 10000)

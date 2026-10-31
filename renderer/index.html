@@ -147,27 +147,29 @@
         </section>
         <section class="settings-section">
           <h2>Screen sharing</h2>
-          <div class="settings-row">
+          <div class="setting-field">
             <label for="share-resolution">Resolution</label>
             <select id="share-resolution"></select>
           </div>
-          <div class="settings-row">
+          <div class="setting-field">
             <label for="share-framerate">Frame rate</label>
             <select id="share-framerate"></select>
           </div>
-          <div class="settings-row">
-            <label for="share-priority">If the connection struggles</label>
+          <div class="setting-field">
+            <label for="share-priority">Priority</label>
             <select id="share-priority"></select>
+            <p id="share-priority-help" class="setting-help"></p>
           </div>
-          <div class="settings-row">
+          <div class="setting-field">
             <label for="share-audio-device">Audio source</label>
             <select id="share-audio-device"></select>
+            <p id="share-audio-help" class="setting-help"></p>
           </div>
-          <div class="settings-row">
+          <div class="setting-field">
             <label for="share-audio-bitrate">Audio quality</label>
             <select id="share-audio-bitrate"></select>
           </div>
-          <p class="hint">Applies the next time you share, and right away if you're sharing now (changing the audio source briefly restarts the share; resolution, frame rate and audio quality don't). "System audio" shares all sound on your computer, not just the one app. On macOS, "This app's audio" isolates just the one app you're sharing — but only when you share a specific window, not a whole screen. A virtual audio device such as BlackHole works the same way on any platform.</p>
+          <p class="hint">Right-click your own share to change these while you're sharing.</p>
         </section>
         <section class="settings-section">
           <h2>Having problems?</h2>
@@ -186,6 +188,10 @@
             <button id="new-username">Change username</button>
           </div>
         </section>
+        <footer class="settings-footer">
+          <button id="settings-discard" type="button">Discard</button>
+          <button id="settings-save" class="primary" type="button">Save</button>
+        </footer>
       </div>
     </div>
 
@@ -244,6 +250,23 @@
         <img id="picture" class="picture" alt="" draggable="false" hidden />
         <div id="share-grid" class="share-grid" hidden>
           <div id="share-tiles" class="share-tiles"></div>
+          <div id="share-menu" class="share-menu" popover="auto" aria-label="Your share">
+            <h2 class="share-menu-title">Your share</h2>
+            <label for="share-menu-resolution">Resolution</label>
+            <select id="share-menu-resolution"></select>
+            <label for="share-menu-framerate">Frame rate</label>
+            <select id="share-menu-framerate"></select>
+            <label for="share-menu-priority">Priority</label>
+            <select id="share-menu-priority"></select>
+            <label for="share-menu-audio-device">Audio source</label>
+            <select id="share-menu-audio-device"></select>
+            <label for="share-menu-audio-bitrate">Audio quality</label>
+            <select id="share-menu-audio-bitrate"></select>
+            <div class="share-menu-actions">
+              <button id="share-menu-settings" type="button">All settings…</button>
+              <button id="share-menu-stop" class="danger" type="button">Stop sharing</button>
+            </div>
+          </div>
         </div>
         <div id="captions" class="captions"></div>
         <canvas id="board" class="board"></canvas>

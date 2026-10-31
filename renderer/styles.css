@@ -830,6 +830,121 @@ button:disabled {
   gap: 8px;
 }
 
+/* A label column and a control column, so a long option never squeezes its label onto three lines. */
+.setting-field {
+  display: grid;
+  grid-template-columns: 7.5rem minmax(0, 1fr);
+  align-items: center;
+  gap: 4px 12px;
+}
+
+.setting-field label {
+  font-size: 14px;
+}
+
+.setting-help {
+  grid-column: 2;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.setting-help:empty {
+  display: none;
+}
+
+.setting-field select,
+.share-menu select {
+  width: 100%;
+  min-width: 0;
+  padding: 7px 30px 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5' fill='none' stroke='%239a9aab' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 10px center / 12px;
+  appearance: none;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.setting-field select:hover,
+.share-menu select:hover {
+  border-color: #464656;
+}
+
+.setting-field select option,
+.share-menu select option {
+  background: #22222c;
+}
+
+/* Right-click on your own share: the share settings, applied straight away. */
+.share-menu {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  width: 280px;
+  max-width: calc(100vw - 16px);
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #22222c;
+  color: var(--text);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.share-menu:popover-open {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px 10px;
+}
+
+.share-menu-title {
+  grid-column: 1 / -1;
+  margin: 0 0 2px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.share-menu label {
+  font-size: 13px;
+}
+
+.share-menu select {
+  padding-block: 5px;
+  font-size: 13px;
+}
+
+.share-menu-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.share-menu-actions button {
+  font-size: 13px;
+}
+
+.share-menu-actions .danger:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+/* Stays in view at the bottom of a long Settings card. */
+.settings-footer {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin: 0 -20px -20px;
+  padding: 12px 20px 20px;
+  border-radius: 0 0 14px 14px;
+  background: var(--bg);
+}
+
 .settings-note {
   width: 100%;
   box-sizing: border-box;

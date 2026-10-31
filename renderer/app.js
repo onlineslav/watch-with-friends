@@ -248,6 +248,18 @@ const ui = {
   shareAudioDevice: $('share-audio-device'),
   shareAudioBitrate: $('share-audio-bitrate'),
   sharePriority: $('share-priority'),
+  sharePriorityHelp: $('share-priority-help'),
+  shareAudioHelp: $('share-audio-help'),
+  settingsSave: $('settings-save'),
+  settingsDiscard: $('settings-discard'),
+  shareMenu: $('share-menu'),
+  shareMenuResolution: $('share-menu-resolution'),
+  shareMenuFramerate: $('share-menu-framerate'),
+  shareMenuPriority: $('share-menu-priority'),
+  shareMenuAudioDevice: $('share-menu-audio-device'),
+  shareMenuAudioBitrate: $('share-menu-audio-bitrate'),
+  shareMenuSettings: $('share-menu-settings'),
+  shareMenuStop: $('share-menu-stop'),
   leave: $('leave'),
   stage: $('stage'),
   localVideo: $('local-video'),
@@ -2957,6 +2969,11 @@ function createTileView(tile) {
       render()
     })
     root.append(view.mute)
+  } else {
+    root.addEventListener('contextmenu', (event) => {
+      event.preventDefault()
+      openShareMenu(event.clientX, event.clientY)
+    })
   }
   root.addEventListener('click', () => {
     session.shareView = session.shareView === tile.key ? 'all' : tile.key
@@ -3597,7 +3614,12 @@ ui.username.addEventListener('click', async () => {
 
 // Settings opens over the current screen. In a room it goes inside the room so it shows in fullscreen,
 // and changing your username waits until you leave, because the welcome screen takes the whole window.
-function showSettings(open) {
+// Changes show live while it's open. Save keeps them; Discard, or closing it any other way, puts
+// back what was there when it opened. A new audio source restarts a running share, so that one
+// waits for Save.
+let settingsSnapshot = null
+
+function showSettings(open, {save = false} = {}) {
   if (open) {
     const inRoom = !ui.room.hidden
     const parent = inRoom ? ui.room : document.body
@@ -3605,6 +3627,19 @@ function showSettings(open) {
     ui.newUsername.disabled = inRoom
     ui.newUsername.title = inRoom ? 'Leave the room to change your username' : ''
     populateAudioDevices({probe: true}) // pick up a virtual audio device installed since the list was last built
+    if (ui.settings.hidden) settingsSnapshot = {zoom, name: myName, share: {...shareSettings}}
+  } else if (settingsSnapshot && !ui.settings.hidden) {
+    const before = settingsSnapshot
+    settingsSnapshot = null
+    if (save) {
+      if (before.share.audioDeviceId !== shareSettings.audioDeviceId && session.screen) restartShare()
+    } else {
+      if (zoom !== before.zoom) applyZoom(before.zoom)
+      if (myName !== before.name) setMyName(before.name)
+      ui.profileName.value = myName
+      syncNameSave(ui.profileName)
+      updateShareSettings(before.share, {restart: false})
+    }
   }
   ui.settings.hidden = !open
 }
@@ -3699,10 +3734,12 @@ function saveShareSettings() {
   } catch {}
 }
 
-fillSelect(ui.shareResolution, RESOLUTIONS, shareSettings.resolution)
-fillSelect(ui.shareFramerate, FRAME_RATES.map((fps) => ({value: String(fps), label: `${fps} fps`})), String(shareSettings.frameRate))
-fillSelect(ui.shareAudioBitrate, AUDIO_BITRATES.map((bitrate) => ({value: String(bitrate), label: `${bitrate / 1000} kbps${bitrate === AUDIO_BITRATES.at(-1) ? ' (maximum)' : ''}`})), String(shareAudioBitrate(shareSettings.audioBitrate)))
-fillSelect(ui.sharePriority, SHARE_PRIORITIES, sharePriority(shareSettings.priority).value)
+const AUDIO_BITRATE_OPTIONS = AUDIO_BITRATES.map((bitrate) => ({value: String(bitrate), label: `${bitrate / 1000} kbps${bitrate === AUDIO_BITRATES.at(-1) ? ' (maximum)' : ''}`}))
+const FRAME_RATE_OPTIONS = FRAME_RATES.map((fps) => ({value: String(fps), label: `${fps} fps`}))
+for (const select of [ui.shareResolution, ui.shareMenuResolution]) fillSelect(select, RESOLUTIONS, shareSettings.resolution)
+for (const select of [ui.shareFramerate, ui.shareMenuFramerate]) fillSelect(select, FRAME_RATE_OPTIONS, String(shareSettings.frameRate))
+for (const select of [ui.shareAudioBitrate, ui.shareMenuAudioBitrate]) fillSelect(select, AUDIO_BITRATE_OPTIONS, String(shareAudioBitrate(shareSettings.audioBitrate)))
+for (const select of [ui.sharePriority, ui.shareMenuPriority]) fillSelect(select, SHARE_PRIORITIES, sharePriority(shareSettings.priority).value)
 
 // Device ids and labels are hidden until the mic permission prompt has been answered once, so the
 // list would otherwise be unusably empty on first use. Only ask for it (`probe: true`) when the
@@ -3722,47 +3759,84 @@ async function populateAudioDevices({probe = false} = {}) {
   const options = [
     // Native per-app capture (mac-app-audio / win-app-audio); a whole-screen share has no single
     // app to scope to, so it gets system audio instead (startShare).
-    ...(['darwin', 'win32'].includes(window.api.platform) ? [{value: 'app', label: 'Automatic (a window: just that app; a screen: everything)'}] : []),
+    ...(['darwin', 'win32'].includes(window.api.platform) ? [{value: 'app', label: 'Automatic'}] : []),
     {value: 'system', label: 'System audio'},
     {value: '', label: 'None'},
     ...audioInputs(devices).map((d) => ({value: d.deviceId, label: d.label})),
   ]
-  fillSelect(ui.shareAudioDevice, options, shareSettings.audioDeviceId)
+  for (const select of [ui.shareAudioDevice, ui.shareMenuAudioDevice]) fillSelect(select, options, shareSettings.audioDeviceId)
 }
 populateAudioDevices()
 navigator.mediaDevices.addEventListener('devicechange', () => populateAudioDevices())
 
-ui.shareResolution.addEventListener('change', () => {
-  shareSettings.resolution = ui.shareResolution.value
+const AUDIO_SOURCE_HELP = {
+  app: "A window shares just that app's sound; a whole screen shares everything.",
+  system: 'Everything playing on this computer, voice chat included.',
+  '': 'No sound.',
+}
+
+// Settings and the right-click menu on your own share both change these. A running share picks
+// up resolution, frame rate, priority and audio quality live; a new audio source restarts it.
+function updateShareSettings(next, {restart = true} = {}) {
+  const before = shareSettings
+  shareSettings = {...shareSettings, ...next}
   saveShareSettings()
-  applyShareVideoConstraints()
-})
-ui.shareFramerate.addEventListener('change', () => {
-  shareSettings.frameRate = Number(ui.shareFramerate.value)
-  saveShareSettings()
-  applyShareVideoConstraints()
-})
-ui.shareAudioBitrate.addEventListener('change', () => {
-  shareSettings.audioBitrate = Number(ui.shareAudioBitrate.value)
-  saveShareSettings()
-  tuneSenders() // picks it up immediately; it would anyway within a second via the state interval
-})
-ui.sharePriority.addEventListener('change', () => {
-  shareSettings.priority = sharePriority(ui.sharePriority.value).value
-  saveShareSettings()
+  syncShareControls()
+  if (!session.screen) return
+  if (before.resolution !== shareSettings.resolution || before.frameRate !== shareSettings.frameRate) applyShareVideoConstraints()
   // The content hint applies to the live capture track; the sender preference follows via tuneSenders.
-  session.stream?.getVideoTracks().forEach((track) => (track.contentHint = sharePriority(shareSettings.priority).contentHint))
+  if (before.priority !== shareSettings.priority) session.stream?.getVideoTracks().forEach((track) => (track.contentHint = sharePriority(shareSettings.priority).contentHint))
   tuneSenders()
-})
-ui.shareAudioDevice.addEventListener('change', () => {
-  shareSettings.audioDeviceId = ui.shareAudioDevice.value
-  saveShareSettings()
-  if (session.screen) restartShare()
-})
+  if (restart && before.audioDeviceId !== shareSettings.audioDeviceId) restartShare()
+}
+
+const shareControls = [
+  ['resolution', String, ui.shareResolution, ui.shareMenuResolution],
+  ['frameRate', Number, ui.shareFramerate, ui.shareMenuFramerate],
+  ['priority', (value) => sharePriority(value).value, ui.sharePriority, ui.shareMenuPriority],
+  ['audioDeviceId', String, ui.shareAudioDevice, ui.shareMenuAudioDevice],
+  ['audioBitrate', (value) => shareAudioBitrate(Number(value)), ui.shareAudioBitrate, ui.shareMenuAudioBitrate],
+]
+
+function syncShareControls() {
+  for (const [key, , ...selects] of shareControls) {
+    for (const select of selects) select.value = String(key === 'priority' ? sharePriority(shareSettings[key]).value : shareSettings[key])
+  }
+  ui.sharePriorityHelp.textContent = SHARE_PRIORITIES.find((p) => p.value === sharePriority(shareSettings.priority).value).help
+  ui.shareAudioHelp.textContent = AUDIO_SOURCE_HELP[shareSettings.audioDeviceId] ?? 'Sound from this input device.'
+}
+
+for (const [key, parse, settingsSelect, menuSelect] of shareControls) {
+  settingsSelect.addEventListener('change', () => updateShareSettings({[key]: parse(settingsSelect.value)}, {restart: false}))
+  menuSelect.addEventListener('change', () => updateShareSettings({[key]: parse(menuSelect.value)}))
+}
+syncShareControls()
 
 ui.openSettings.addEventListener('click', () => showSettings(true))
 ui.roomSettings.addEventListener('click', () => showSettings(true))
 ui.settingsBack.addEventListener('click', () => showSettings(false))
+ui.settingsDiscard.addEventListener('click', () => showSettings(false))
+
+// Like Discord's: right-click your own share for its settings without leaving the stage.
+function openShareMenu(x, y) {
+  if (!session.screen) return
+  syncShareControls()
+  ui.shareMenu.showPopover()
+  const box = ui.shareMenu.getBoundingClientRect()
+  ui.shareMenu.style.left = `${Math.max(8, Math.min(innerWidth - box.width - 8, x))}px`
+  ui.shareMenu.style.top = `${Math.max(8, Math.min(innerHeight - box.height - 8, y))}px`
+  ui.shareMenu.querySelector('select')?.focus()
+}
+ui.shareMenu.addEventListener('keydown', (event) => event.stopPropagation()) // keys belong to the menu, not playback
+ui.shareMenuSettings.addEventListener('click', () => {
+  ui.shareMenu.hidePopover()
+  showSettings(true)
+})
+ui.shareMenuStop.addEventListener('click', () => {
+  ui.shareMenu.hidePopover()
+  stopShare()
+})
+ui.settingsSave.addEventListener('click', () => showSettings(false, {save: true}))
 // Clicking the dimmed backdrop closes it, but a text selection that ends there doesn't.
 let backdropPress = false
 ui.settings.addEventListener('pointerdown', (event) => (backdropPress = event.target === ui.settings))

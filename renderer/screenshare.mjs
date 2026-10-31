@@ -93,9 +93,9 @@ export const shareAudioBitrate = (bitrate) => (AUDIO_BITRATES.includes(bitrate) 
 // What a share gives up when the connection can't carry everything: Balanced lets the browser
 // decide, Sharp text keeps resolution (frames drop), Smooth motion keeps frame rate (picture softens).
 export const SHARE_PRIORITIES = [
-  {value: 'balanced', label: 'Balanced (browser decides when the connection struggles)'},
-  {value: 'text', label: 'Sharp text (stays crisp, may get choppy)'},
-  {value: 'motion', label: 'Smooth motion (stays smooth, may get blurry)'},
+  {value: 'balanced', label: 'Balanced', help: 'On a weak connection, gives up a little sharpness and smoothness.'},
+  {value: 'text', label: 'Sharp text', help: 'On a weak connection, text stays crisp but motion may get choppy.'},
+  {value: 'motion', label: 'Smooth motion', help: 'On a weak connection, motion stays smooth but may get blurry.'},
 ]
 export const DEFAULT_SHARE_PRIORITY = 'balanced'
 const PRIORITY_SETTINGS = {

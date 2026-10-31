@@ -1,15 +1,15 @@
-## What's new in 0.6.0
+## What's new in 0.7.0
 
-Screen sharing, plus better picture and sound.
+Window sharing that shows the whole app, and a much smoother app.
 
-Windows users and Mac users on 0.5.3 receive this release through the in-app updater. Mac users on 0.5.2 or earlier should install the DMG below once to enable future in-app updates.
+Windows users and Mac users on 0.5.3 or later receive this release through the in-app updater. Mac users on 0.5.2 or earlier should install the DMG below once to enable future in-app updates.
 
-- **Share your screen or a window.** Pick it from the app's own picker. Several people can share at once; everyone sees a grid of tiles, and can click one (or use the tabs) to watch it full size. Each tile has its own mute button.
-- **Share just one app's sound.** On Windows and Mac, sharing a window sends only that app's audio by default, so your voice chat doesn't echo back to everyone. Settings also offers system audio, none, or any input device.
-- **Share settings.** Resolution, frame rate, audio quality (up to 510 kbps stereo), and a new **Share priority**: Sharp text keeps text readable, Smooth motion keeps games and video fluid, Balanced does a bit of both.
-- **Lower delay on shares.** Viewers no longer add a fixed quarter-second buffer to a screen share; it only grows when a connection struggles.
-- **Better sound and picture for films.** The host's player now gets lossless audio and a higher-quality picture before it's sent, so what friends receive is compressed once instead of twice.
-- **Draw on an empty stage**, and the controls hide when the mouse leaves the window.
+- **Share a whole app, plugins and pop-ups included (Windows).** Sharing a window now also shows that app's other windows, such as a DAW's plugin windows or a dialog, laid out the way they are on your screen, and nothing from any other app. A window covering the app no longer hides part of the share. Turn it off with "Include the app's other windows" in the share picker.
+- **Share a minimized window (Windows).** It starts right away; friends see a calm "is minimized" card until you restore it, and the same card if you minimize it while sharing.
+- **Change window without stopping.** Right-click your own share and choose **Change window…** to switch what you're sharing.
+- **Smoother all round.** The app no longer redraws itself 60 times a second while nothing changes, and the share picker no longer freezes the window every time it refreshes. Shares run at a steady frame rate and follow a window as it's resized.
+- **Sharper on weak connections.** Films and shares are now scaled down correctly when the connection struggles; 4K films are sent at 1080p instead of 4K.
+- **A quieter stop button.** Stop sharing is now a small button in the corner of your own share tile.
 
 ## Download
 

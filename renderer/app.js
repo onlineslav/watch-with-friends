@@ -3778,36 +3778,68 @@ async function openSharePicker() {
   ui.sharePicker.hidden = false
   ui.sharePickerStatus.textContent = 'Loading…'
   ui.sharePickerList.replaceChildren()
+  sharePickerButtons.clear()
+  clearInterval(sharePickerTimer)
+  // Windows opened, closed or restored while the picker is up show up without reopening it.
+  sharePickerTimer = setInterval(() => refreshSharePicker(current), SHARE_PICKER_REFRESH_MS)
+  await refreshSharePicker(current)
+}
+
+const SHARE_PICKER_REFRESH_MS = 2000
+const sharePickerButtons = new Map() // source id → its button, kept across refreshes
+let sharePickerTimer = null
+let sharePickerLoading = false
+
+async function refreshSharePicker(current) {
+  if (sharePickerLoading) return
+  sharePickerLoading = true
   let sources
   try {
     sources = shareSources(await window.api.screenShareSources())
   } catch (error) {
-    if (session === current) ui.sharePickerStatus.textContent = `Could not list screens or windows: ${errorMessage(error)}`
+    if (session === current && !sharePickerButtons.size) ui.sharePickerStatus.textContent = `Could not list screens or windows: ${errorMessage(error)}`
     return
+  } finally {
+    sharePickerLoading = false
   }
-  if (session !== current || ui.sharePicker.hidden) return // closed, or the room changed, while loading
+  if (session !== current || ui.sharePicker.hidden) return closeSharePicker() // closed, or the room changed, while loading
   ui.sharePickerStatus.textContent = sources.length ? 'Pick a screen or window to share.' : 'Nothing available to share.'
-  ui.sharePickerList.replaceChildren(...sources.map((source) => {
-    const button = element('button', 'share-source')
-    button.type = 'button'
+  const ids = new Set(sources.map((source) => source.id))
+  for (const [id, button] of sharePickerButtons) if (!ids.has(id)) { button.remove(); sharePickerButtons.delete(id) }
+  // Update in place, so a refresh never steals focus or scroll position from the list.
+  sources.forEach((source, index) => {
+    const button = sharePickerButtons.get(source.id) || sharePickerButton(source)
+    sharePickerButtons.set(source.id, button)
     button.title = source.name
+    button.querySelector('.share-source-name').textContent = source.name
     if (source.thumbnail) {
-      const thumbnail = new Image()
-      thumbnail.src = source.thumbnail
-      thumbnail.alt = ''
-      button.append(thumbnail)
+      let thumbnail = button.querySelector('img')
+      if (!thumbnail) {
+        thumbnail = new Image()
+        thumbnail.alt = ''
+        button.prepend(thumbnail)
+      }
+      if (thumbnail.src !== source.thumbnail) thumbnail.src = source.thumbnail
     }
-    button.append(element('span', 'share-source-name', source.name))
-    button.addEventListener('click', () => {
-      closeSharePicker()
-      startShare(source)
-    })
-    return button
-  }))
+    if (ui.sharePickerList.children[index] !== button) ui.sharePickerList.insertBefore(button, ui.sharePickerList.children[index] || null)
+  })
+}
+
+function sharePickerButton(source) {
+  const button = element('button', 'share-source')
+  button.type = 'button'
+  button.append(element('span', 'share-source-name', source.name))
+  button.addEventListener('click', () => {
+    closeSharePicker()
+    startShare(source)
+  })
+  return button
 }
 
 function closeSharePicker() {
   ui.sharePicker.hidden = true
+  clearInterval(sharePickerTimer)
+  sharePickerTimer = null
 }
 
 ui.shareScreen.addEventListener('click', () => openSharePicker())
@@ -4131,6 +4163,23 @@ ui.volume.addEventListener('change', () => {
   releaseVolume()
 })
 ui.mute.addEventListener('click', toggleMute)
+
+// Up/Down and the wheel over the picture step the volume, like the slider's own keys.
+const VOLUME_STEP = 0.05
+function nudgeVolume(steps) {
+  const max = Number(ui.volume.max)
+  const volume = Math.round(Math.min(max, Math.max(0, Number(ui.volume.value) + steps * VOLUME_STEP)) * 100) / 100
+  setVolume(volume)
+  rememberVolume(volume)
+  showVolumeReadout(1000)
+}
+for (const target of [ui.stage, ui.volumeControl]) {
+  target.addEventListener('wheel', (event) => {
+    if (ui.room.hidden || event.ctrlKey || !event.deltaY) return
+    event.preventDefault()
+    nudgeVolume(event.deltaY < 0 ? 1 : -1)
+  }, {passive: false})
+}
 try {
   rememberVolume(Number(localStorage.getItem('unmutedVolume')))
   const saved = localStorage.getItem('volume')
@@ -4198,6 +4247,9 @@ document.addEventListener('keydown', (event) => {
   } else if (event.code === 'ArrowLeft' || event.code === 'ArrowRight') {
     event.preventDefault()
     skip(event.code === 'ArrowLeft' ? -10 : 30)
+  } else if (event.code === 'ArrowUp' || event.code === 'ArrowDown') {
+    event.preventDefault() // a focused volume slider would otherwise step twice
+    nudgeVolume(event.code === 'ArrowUp' ? 1 : -1)
   } else if (event.code === 'KeyL') {
     toggleLoop()
   } else if (event.code === 'KeyF') {

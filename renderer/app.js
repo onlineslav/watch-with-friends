@@ -957,9 +957,10 @@ function clearShare() {
 }
 
 // A whole-app share follows where the shared window's app has its windows (main/app-windows.js)
-// and keeps the latest layout for appShareTrack. `capture(hwnd, systemAudio)` captures one of
-// those windows: main only grants a window this session's helper currently reports as the app's.
-// `onEnded(error)` fires once if tracking stops on its own (the shared window closed).
+// and keeps the latest layout for appShareTrack, telling `subscribe`rs about each new one.
+// `capture(hwnd, systemAudio)` captures one of those windows: main only grants a window this
+// session's helper currently reports as the app's. `onEnded(error)` fires once if tracking stops
+// on its own (the shared window closed).
 async function followAppWindows(sourceId) {
   const {id, layout} = await window.api.startAppWindows(sourceId)
   const first = cleanLayout(layout)
@@ -967,10 +968,15 @@ async function followAppWindows(sourceId) {
     window.api.stopAppWindows(id)
     throw new Error('Could not tell where that app\'s windows are.')
   }
+  const listeners = new Set()
   const follower = {
     layout: first,
     stopped: false,
     onEnded: null,
+    subscribe(fn) {
+      listeners.add(fn)
+      return () => listeners.delete(fn)
+    },
     async capture(hwnd, systemAudio = false) {
       if (!await window.api.grantAppWindow(id, hwnd, {systemAudio})) throw new Error('That window isn\'t showing (it\'s minimized or closed).')
       const video = {frameRate: shareVideoConstraints(shareSettings.resolution, shareSettings.frameRate).frameRate}
@@ -992,7 +998,9 @@ async function followAppWindows(sourceId) {
         return
       }
       const next = cleanLayout(result?.layout)
-      if (next) follower.layout = next
+      if (!next) continue
+      follower.layout = next
+      for (const fn of listeners) fn(next)
     }
   })()
   return follower
@@ -1094,10 +1102,14 @@ async function startShare(source) {
     if (windows) {
       composite = appShareTrack({
         getLayout: () => windows.layout,
+        subscribe: windows.subscribe,
         captureWindow: async (hwnd) => (await windows.capture(hwnd)).getVideoTracks()[0],
         initial: {hwnd: windowId, track: capture},
         limits: shareOutputLimits(),
         onCaptureError: (hwnd, error) => logError('screenshare', 'app-window-capture-failed', {hwnd, message: errorMessage(error)}),
+        // Every 10s: frames sent untouched vs drawn, drawing time, frames in from the captures.
+        onStats: ({type, ...stats}) => logEvent('screenshare', 'app-composite', stats),
+        onCrop: ({box, size, windows: count}) => logEvent('screenshare', 'app-crop', {box, size, windows: count}),
       })
       if (!composite) {
         stream.getTracks().forEach((track) => track.stop())

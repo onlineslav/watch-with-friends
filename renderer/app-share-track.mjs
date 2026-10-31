@@ -1,67 +1,60 @@
-// A whole-app share: every window the app has open (getLayout(), the latest cleaned
-// win-app-windows layout) is captured on its own, and this draws them together the way they sit
-// on screen, into a MediaStreamTrackGenerator the way frames.mjs does for films. A window
-// capture shows the window's own content even where something covers it, so another app's window
-// on top neither hides part of the share nor leaks into it; only the gaps between the app's
-// windows are black. `captureWindow(hwnd)` resolves with a capture track for one window;
-// `initial` is the shared window's capture, already started. Untested here for the same reason
-// frames.mjs is: the frame APIs only exist in a real renderer.
-import {captureChanges, outputSize, settleCrop} from './app-share.mjs'
+// A whole-app share: every window the app has open (the latest cleaned win-app-windows layout) is
+// captured on its own, and app-share-worker.mjs draws them together the way they sit on screen
+// into a MediaStreamTrackGenerator. A window capture shows the window's own content even where
+// something covers it, so another app's window on top neither hides part of the share nor leaks
+// into it; only the gaps between the app's windows are black.
+//
+// This side only starts and stops captures (getDisplayMedia exists only here) and hands each
+// capture's frame stream, the output's writable and every layout to the worker, so no frame ever
+// touches the page's main thread. `captureWindow(hwnd)` resolves with a capture track for one
+// window; `initial` is the shared window's capture, already started; `subscribe(fn)` calls `fn`
+// with each new layout. Untested here for the same reason frames.mjs is: the frame APIs only
+// exist in a real renderer.
+import {captureChanges} from './app-share.mjs'
 
-// A still screen sends few frames; one at least this often keeps a joining viewer's picture coming.
-const KEEPALIVE_MS = 500
 // A window that couldn't be captured isn't tried again for this long.
 const RETRY_MS = 5000
+// How often captures of windows gone for good are let go, between layout changes.
+const SWEEP_MS = 1000
 
-export function appShareTrack({getLayout, captureWindow, initial, limits, onCaptureError}) {
-  if (typeof MediaStreamTrackProcessor !== 'function' || typeof MediaStreamTrackGenerator !== 'function' || typeof OffscreenCanvas !== 'function') return null
+export function appShareTrack({getLayout, subscribe, captureWindow, initial, limits, workerUrl = 'app-share-worker.js', onCaptureError, onStats, onCrop}) {
+  if (typeof MediaStreamTrackProcessor !== 'function' || typeof MediaStreamTrackGenerator !== 'function' || typeof Worker !== 'function') return null
   const generator = new MediaStreamTrackGenerator({kind: 'video'})
-  const writer = generator.writable.getWriter()
-  const canvas = new OffscreenCanvas(2, 2)
-  const context = canvas.getContext('2d', {alpha: false})
-  const captures = new Map() // hwnd → {track, reader, frame, seen}
+  const worker = new Worker(workerUrl)
+  const captures = new Map() // hwnd → {track, seen}
   const pending = new Set() // hwnds whose capture is starting
   const failed = new Map() // hwnd → when its capture last failed
-  let current = {...limits}
   let queue = Promise.resolve()
-  let crop = null
-  let lastLayout = null
-  let dirty = true
-  let lastSent = 0
-  let writing = false
   let stopped = false
-  let timer = null
+
+  worker.onmessage = ({data}) => {
+    if (data.type === 'ended') {
+      captures.get(data.hwnd)?.track.stop()
+      captures.delete(data.hwnd)
+      reconcile(getLayout())
+    } else if (data.type === 'size') {
+      // getSettings() on a generated track has no size; tuneSenders reads this instead.
+      generator.frameSize = {width: data.width, height: data.height}
+    } else if (data.type === 'stats') {
+      onStats?.(data)
+    } else if (data.type === 'crop') {
+      onCrop?.(data)
+    }
+  }
+  worker.onerror = (event) => onCaptureError?.(null, new Error(event.message || 'The share\'s worker failed'))
+
+  const watch = (hwnd, track) => {
+    captures.set(hwnd, {track, seen: performance.now()})
+    const {readable} = new MediaStreamTrackProcessor({track})
+    worker.postMessage({type: 'window', hwnd, readable}, [readable])
+  }
 
   const drop = (hwnd) => {
     const entry = captures.get(hwnd)
     if (!entry) return
     captures.delete(hwnd)
-    entry.frame?.close()
-    entry.reader.cancel().catch(() => {})
+    worker.postMessage({type: 'drop', hwnd})
     entry.track.stop()
-    dirty = true
-  }
-
-  // Keeps only the newest frame of each window; a capture that ends (its window closed) drops out.
-  const watch = (hwnd, track) => {
-    const entry = {track, reader: new MediaStreamTrackProcessor({track}).readable.getReader(), frame: null, seen: performance.now()}
-    captures.set(hwnd, entry)
-    ;(async () => {
-      try {
-        for (;;) {
-          const {value, done} = await entry.reader.read()
-          if (done) break
-          if (stopped || captures.get(hwnd) !== entry) {
-            value.close()
-            break
-          }
-          entry.frame?.close()
-          entry.frame = value
-          dirty = true
-        }
-      } catch {}
-      if (captures.get(hwnd) === entry) drop(hwnd)
-    })()
   }
 
   // One at a time: main grants each getDisplayMedia call exactly one window, in order.
@@ -83,7 +76,9 @@ export function appShareTrack({getLayout, captureWindow, initial, limits, onCapt
     })
   }
 
-  const reconcile = (layout, now) => {
+  function reconcile(layout) {
+    if (stopped) return
+    const now = performance.now()
     for (const win of layout.windows) {
       const entry = captures.get(win.hwnd)
       if (entry) entry.seen = now
@@ -95,79 +90,34 @@ export function appShareTrack({getLayout, captureWindow, initial, limits, onCapt
     for (const hwnd of gone) drop(hwnd)
   }
 
-  // Bottom window first, each at its place in the crop, scaled with it.
-  const compose = (layout, now) => {
-    crop = settleCrop(crop, layout.windows, layout.desktop, now)
-    const {box} = crop
-    const size = outputSize(box, current)
-    if (canvas.width !== size.width || canvas.height !== size.height) {
-      canvas.width = size.width
-      canvas.height = size.height
-    }
-    const sx = size.width / box.width
-    const sy = size.height / box.height
-    context.fillStyle = '#000'
-    context.fillRect(0, 0, size.width, size.height)
-    for (const win of [...layout.windows].reverse()) {
-      const frame = captures.get(win.hwnd)?.frame
-      if (!frame) continue
-      try {
-        context.drawImage(frame, (win.x - box.x) * sx, (win.y - box.y) * sy, win.width * sx, win.height * sy)
-      } catch {
-        drop(win.hwnd) // its capture ended under it (the window closed): the next layout leaves it out
-      }
-    }
-    return new VideoFrame(canvas, {timestamp: Math.round(now * 1000)})
-  }
-
-  const tick = () => {
+  const onLayout = (layout) => {
     if (stopped) return
-    const now = performance.now()
-    const layout = getLayout()
-    if (layout !== lastLayout) {
-      lastLayout = layout
-      dirty = true
-    }
-    reconcile(layout, now)
-    if (writing || (!dirty && now - lastSent < KEEPALIVE_MS)) return
-    if (![...captures.values()].some((entry) => entry.frame)) return
-    dirty = false
-    lastSent = now
-    const frame = compose(layout, now)
-    // getSettings() on a generated track has no size; tuneSenders reads this instead.
-    generator.frameSize = {width: canvas.width, height: canvas.height}
-    writing = true
-    writer
-      .write(frame)
-      .catch(() => {
-        frame.close()
-        stop() // the share's track was stopped
-      })
-      .finally(() => (writing = false))
+    worker.postMessage({type: 'layout', layout})
+    reconcile(layout)
   }
-
-  const run = () => {
-    clearInterval(timer)
-    timer = setInterval(tick, 1000 / current.frameRate)
-  }
+  const unsubscribe = subscribe(onLayout)
+  const sweep = setInterval(() => reconcile(getLayout()), SWEEP_MS)
 
   function stop() {
     if (stopped) return
     stopped = true
-    clearInterval(timer)
+    clearInterval(sweep)
+    unsubscribe?.()
     for (const hwnd of [...captures.keys()]) drop(hwnd)
-    writer.close().catch(() => {})
+    worker.postMessage({type: 'stop'})
+    // The worker closes the writable; if it's already gone, nothing else holds the generator open.
+    setTimeout(() => worker.terminate(), 1000)
   }
 
   // Settings' resolution and frame rate, applied live: the output size, and how often it's drawn.
-  function setLimits(limits) {
-    current = {...limits}
-    dirty = true
-    for (const {track} of captures.values()) track.applyConstraints({frameRate: {ideal: current.frameRate, max: current.frameRate}}).catch(() => {})
-    if (!stopped) run()
+  function setLimits(next) {
+    worker.postMessage({type: 'limits', limits: {...next}})
+    for (const {track} of captures.values()) track.applyConstraints({frameRate: {ideal: next.frameRate, max: next.frameRate}}).catch(() => {})
   }
 
+  const {writable} = generator
+  worker.postMessage({type: 'start', writable, anchor: initial.hwnd, limits: {...limits}, layout: getLayout()}, [writable])
   watch(initial.hwnd, initial.track)
-  run()
+  reconcile(getLayout())
   return {track: generator, stop, setLimits}
 }

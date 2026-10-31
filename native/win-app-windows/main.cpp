@@ -13,6 +13,11 @@
 // The renderer captures each of those windows on its own and lays them out the same way, so a
 // window from another app on top of them never hides or leaks into the share.
 // Status/errors go to stderr as one line each, like win-app-audio ("ready", or "error: ...").
+//
+// Event-driven: WinEvent hooks wake it when any window moves, appears, hides or changes order,
+// and it rescans at most every MIN_SCAN_MS, so a dragged plugin window's position follows at
+// display rate while a still desktop costs nothing. A slow timer catches anything no event
+// reports (and refreshes the process tree).
 #include <windows.h>
 #include <dwmapi.h>
 #include <tlhelp32.h>
@@ -29,8 +34,8 @@
 #include <unordered_map>
 #include <vector>
 
-static const DWORD POLL_MS = 50;
-static const DWORD TREE_REFRESH_MS = 1000;
+static const DWORD MIN_SCAN_MS = 8;
+static const DWORD SLOW_SCAN_MS = 1000;
 // Plenty for any real app; a runaway count can't grow the line without bound.
 static const size_t MAX_WINDOWS = 64;
 
@@ -156,6 +161,51 @@ static std::string layout(const std::set<DWORD>& tree) {
   return line + "]}\n";
 }
 
+static HWND target_ = nullptr;
+static DWORD pid_ = 0;
+static std::set<DWORD> tree_;
+static std::string last_;
+static ULONGLONG scannedAt_ = 0;
+static UINT_PTR pendingTimer_ = 0;
+
+static void scan() {
+  if (!IsWindow(target_)) fail("The shared window closed.");
+  scannedAt_ = GetTickCount64();
+  std::string line = layout(tree_);
+  if (line != last_) {
+    writeOut(line);
+    last_ = line;
+  }
+}
+
+static void CALLBACK pendingScan(HWND, UINT, UINT_PTR id, DWORD) {
+  KillTimer(nullptr, id);
+  pendingTimer_ = 0;
+  scan();
+}
+
+// Events come in bursts (a drag moves a window hundreds of times a second): scan straight away
+// if the last scan was long enough ago, otherwise once, when it is.
+static void scanSoon() {
+  ULONGLONG since = GetTickCount64() - scannedAt_;
+  if (since >= MIN_SCAN_MS) return scan();
+  if (!pendingTimer_) pendingTimer_ = SetTimer(nullptr, 0, UINT(MIN_SCAN_MS - since), pendingScan);
+}
+
+// Only the app's own top-level windows change the layout. A destroyed window can't be asked who
+// owned it any more, so any destroyed window counts.
+static void CALLBACK onEvent(HWINEVENTHOOK, DWORD event, HWND window, LONG object, LONG child, DWORD, DWORD) {
+  if (!window || object != OBJID_WINDOW || child != CHILDID_SELF) return;
+  if (event == EVENT_OBJECT_DESTROY || (GetAncestor(window, GA_ROOT) == window && belongs(window, tree_))) scanSoon();
+}
+
+// Plugin hosts and helpers start and stop while the app runs; and a safety net for any change no
+// event reported.
+static void CALLBACK slowScan(HWND, UINT, UINT_PTR, DWORD) {
+  tree_ = processTree(pid_);
+  scan();
+}
+
 int wmain(int argc, wchar_t** argv) {
   out = GetStdHandle(STD_OUTPUT_HANDLE);
   _setmode(_fileno(stderr), _O_BINARY);  // plain "\n" line ends, same as win-app-audio
@@ -170,27 +220,27 @@ int wmain(int argc, wchar_t** argv) {
   if (!pid) fail("Could not find which app owns that window.");
   if (pid == parentPid() || pid == GetCurrentProcessId()) fail("That's Watch With Friends' own window; share another window.");
 
-  std::set<DWORD> tree = processTree(pid);
-  ULONGLONG treeAt = GetTickCount64();
-  std::string last;
-  bool ready = false;
-  for (;;) {
-    if (!IsWindow(target)) fail("The shared window closed.");
-    // Plugin hosts and helpers start and stop while the app runs.
-    if (GetTickCount64() - treeAt >= TREE_REFRESH_MS) {
-      tree = processTree(pid);
-      treeAt = GetTickCount64();
-    }
-    std::string line = layout(tree);
-    if (!ready) {
-      fputs("ready\n", stderr);
-      fflush(stderr);
-      ready = true;
-    }
-    if (line != last) {
-      writeOut(line);
-      last = line;
-    }
-    Sleep(POLL_MS);
+  pid_ = pid;
+  target_ = target;
+  tree_ = processTree(pid);
+  scan();
+  fputs("ready\n", stderr);
+  fflush(stderr);
+
+  // Out-of-context hooks are delivered to this thread's message loop.
+  const DWORD events[][2] = {
+      {EVENT_OBJECT_CREATE, EVENT_OBJECT_HIDE},  // create, destroy, show, hide
+      {EVENT_OBJECT_REORDER, EVENT_OBJECT_REORDER},
+      {EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE},
+      {EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND},
+      {EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MINIMIZEEND},
+      {EVENT_OBJECT_CLOAKED, EVENT_OBJECT_UNCLOAKED},
+  };
+  for (const auto& range : events) {
+    if (!SetWinEventHook(range[0], range[1], nullptr, onEvent, 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS)) fail("Could not watch windows (%lu).", GetLastError());
   }
+  SetTimer(nullptr, 0, SLOW_SCAN_MS, slowScan);
+  MSG message;
+  while (GetMessageW(&message, nullptr, 0, 0) > 0) DispatchMessageW(&message);
+  return 0;
 }

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {CROP_GRID, KEEP_HIDDEN_MS, MAX_OUTPUT, MAX_WINDOWS, SHRINK_AFTER_MS, captureChanges, cleanLayout, outputSize, regionBounds, settleCrop, snapBox} from '../renderer/app-share.mjs'
+import {CROP_GRID, KEEP_HIDDEN_MS, MAX_OUTPUT, MAX_WINDOWS, SHRINK_AFTER_MS, captureChanges, cleanLayout, cropTarget, outputSize, regionBounds, settleCrop, snapBox} from '../renderer/app-share.mjs'
 
 // The shape win-app-windows prints: Ableton's main window and one VST window on top of it.
 const REAL_LINE = {desktop: [0, 0, 3440, 1440], windows: [[314, 213, 465, 593, 6362204], [0, 0, 2294, 1392, 40572320]]}
@@ -81,6 +81,33 @@ test('outputSize is pixel for pixel unless a limit makes it smaller', () => {
   assert.equal(fit.width % 2 + fit.height % 2, 0, 'even sizes')
   const wide = outputSize({x: 0, y: 0, width: 7680, height: 1440})
   assert.ok(wide.width <= MAX_OUTPUT.width, 'a share across monitors fits what encoders take')
+})
+
+test('cropTarget hugs the shared window exactly until something reaches outside it', () => {
+  const main = {x: 0, y: 0, width: 1720, height: 1392, hwnd: 1}
+  const proQ = {x: 82, y: 216, width: 1299, height: 887, hwnd: 2}
+  const wide = {width: 3440, height: 1440}
+  assert.deepEqual(cropTarget([main], wide, 1), {x: 0, y: 0, width: 1720, height: 1392}, 'a lone window: its exact frame, no grid')
+  assert.deepEqual(cropTarget([proQ, main], wide, 1), {x: 0, y: 0, width: 1720, height: 1392}, 'a plugin inside it changes nothing')
+  const dragged = cropTarget([{...proQ, x: 1000}, main], wide, 1)
+  assert.equal(dragged.x, 0)
+  assert.ok(dragged.width >= 2299 && dragged.width < 2299 + CROP_GRID, `dragged past the edge: widened to the grid (${dragged.width})`)
+  assert.deepEqual(cropTarget([{...main, x: -8, y: -8, width: 1736, height: 1408}], wide, 1), {x: 0, y: 0, width: 1728, height: 1400}, 'kept on the desktop')
+  assert.deepEqual(cropTarget([proQ], wide, 1), snapBox(proQ, 3440, 1440), 'the shared window hidden: the rest, on the grid')
+  assert.equal(cropTarget([], wide, 1), null)
+})
+
+test('settleCrop shrinks back once a plugin dragged outside comes back in', () => {
+  const main = {x: 0, y: 0, width: 1720, height: 1392, hwnd: 1}
+  const proQ = {x: 82, y: 216, width: 1299, height: 887, hwnd: 2}
+  const wide = {width: 3440, height: 1440}
+  let state = settleCrop(null, [proQ, main], wide, 0, 1)
+  for (let x = 82, t = 10; x <= 1500; x += 50, t += 10) state = settleCrop(state, [{...proQ, x}, main], wide, t, 1)
+  assert.ok(state.box.width > 2700, 'grew while dragged out')
+  let t = 1000
+  for (let x = 1500; x >= 82; x -= 50, t += 10) state = settleCrop(state, [{...proQ, x: Math.max(82, x)}, main], wide, t, 1)
+  state = settleCrop(state, [proQ, main], wide, t + SHRINK_AFTER_MS + 10, 1)
+  assert.deepEqual(state.box, {x: 0, y: 0, width: 1720, height: 1392}, 'back to exactly the main window')
 })
 
 test('regionBounds spans every window', () => {

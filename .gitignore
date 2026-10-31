@@ -1,6 +1,7 @@
 node_modules/
 dist/
 renderer/bundle.js
+renderer/app-share-worker.js
 config/turn.json
 .cache/
 build/mac-updater/

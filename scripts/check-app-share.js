@@ -15,7 +15,8 @@ const {spawn} = require('node:child_process')
 const {app, BrowserWindow, ipcMain, session} = require('electron')
 
 const root = path.join(__dirname, '..')
-const helper = path.join(root, 'native/win-app-windows/win-app-windows.exe')
+// WIN_APP_WINDOWS points at another build, for checking one while the app holds the usual file.
+const helper = process.env.WIN_APP_WINDOWS || path.join(root, 'native/win-app-windows/win-app-windows.exe')
 const work = fs.mkdtempSync(path.join(os.tmpdir(), 'check-app-share-'))
 const children = []
 
@@ -39,6 +40,8 @@ $main.Add_Shown({
   $timer.Add_Tick({
     if (Test-Path '${path.join(work, 'open')}') { Remove-Item '${path.join(work, 'open')}'; $script:extra = ${form('230,230,20', 150, 450, 250, 150, 'SizableToolWindow')}; $script:extra.Show($main) }
     if (Test-Path '${path.join(work, 'close')}') { Remove-Item '${path.join(work, 'close')}'; $script:plugin.Close() }
+    if (Test-Path '${path.join(work, 'out')}') { Remove-Item '${path.join(work, 'out')}'; $script:plugin.Left = 1100 }
+    if (Test-Path '${path.join(work, 'in')}') { Remove-Item '${path.join(work, 'in')}'; $script:plugin.Left = 300 }
   })
   $timer.Start()
 })
@@ -93,6 +96,10 @@ ipcRenderer.on('start', async (_event, helper, hwnd) => {
     }
     const composite = Track.appShareTrack({
       getLayout: () => layout,
+      subscribe: (fn) => {
+        proc.stdout.on('data', () => fn(layout))
+        return () => {}
+      },
       captureWindow: capture,
       initial: {hwnd, track: await capture(hwnd)},
       limits: {frameRate: 30},
@@ -134,6 +141,7 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 async function main() {
   assert.ok(fs.existsSync(helper), 'build the helper first: node scripts/build-win-app-audio.js')
+  const {SHRINK_AFTER_MS} = await import(require('node:url').pathToFileURL(path.join(root, 'renderer/app-share.mjs')))
   await app.whenReady()
   const appForms = run('app', appScript)
   const appWindow = Number(await appForms.first)
@@ -160,6 +168,7 @@ async function main() {
   win.webContents.on('console-message', ({message}) => console.log('page:', message))
   const file = path.join(work, 'page.html')
   fs.writeFileSync(file, page)
+  fs.writeFileSync(path.join(work, 'app-share-worker.js'), bundle('renderer/app-share-worker.mjs'))
   await win.loadFile(file)
   const once = (channel) => new Promise((resolve) => ipcMain.once(channel, (_event, value) => resolve(value)))
   const started = once('started')
@@ -181,6 +190,18 @@ async function main() {
   assert.ok(first.counts.green > 270 * 260, `the green tool window shows in full, covered part included (${first.counts.green})`)
   assert.equal(first.counts.blue, 0, 'nothing of the other app\'s window comes through')
   assert.ok(first.size[0] < 1200 && first.size[1] < 700, `cropped to the app (${first.size})`)
+
+  // Dragged out past the app's edge, the crop grows; dragged back in, it shrinks again.
+  fs.writeFileSync(path.join(work, 'out'), '')
+  const out = await sample()
+  console.log('plugin dragged out:', JSON.stringify(out))
+  assert.ok(out.size[0] > first.size[0] + 200, `the crop grows to follow it (${out.size})`)
+  fs.writeFileSync(path.join(work, 'in'), '')
+  await wait(SHRINK_AFTER_MS)
+  const back = await sample()
+  console.log('plugin dragged back in:', JSON.stringify(back))
+  assert.deepEqual(back.size, [600, 400], 'and shrinks back to exactly the app window once it is inside again')
+  assert.equal(back.counts.blue, 0)
 
   fs.writeFileSync(path.join(work, 'open'), '')
   const opened = await sample()

@@ -5,7 +5,7 @@
 export const MAX_WINDOWS = 64
 // The crop grows at once when a plugin window opens, and only shrinks back after the app has
 // stayed smaller this long, so closing and reopening a window doesn't keep resizing the stream.
-export const SHRINK_AFTER_MS = 3000
+export const SHRINK_AFTER_MS = 1500
 // Crop edges snap outward to this grid: small moves don't change the stream's size, and the
 // encoder gets dimensions it likes.
 export const CROP_GRID = 16
@@ -66,14 +66,32 @@ const contains = (outer, inner) =>
 const sameBox = (a, b) => a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height
 const union = (a, b) => regionBounds([a, b])
 
+const clip = (box, desktop) => {
+  const left = Math.max(0, box.x)
+  const top = Math.max(0, box.y)
+  return {x: left, y: top, width: Math.min(desktop.width, box.x + box.width) - left, height: Math.min(desktop.height, box.y + box.height) - top}
+}
+
+// What the crop should be for these windows: exactly the shared window (`anchor`, an hwnd) while
+// everything else is inside it, so a lone window goes out untouched and opening a plugin inside it
+// doesn't change the stream's size; anything reaching outside it widens the crop to the grid.
+export function cropTarget(windows, desktop, anchor) {
+  const main = anchor == null ? null : windows.find((win) => win.hwnd === anchor)
+  const others = windows.filter((win) => win !== main)
+  const outside = others.length ? regionBounds(others) : null
+  if (!main) return outside && snapBox(outside, desktop.width, desktop.height)
+  const exact = clip(main, desktop)
+  if (!outside || contains(exact, clip(outside, desktop))) return exact
+  return clip(union(exact, snapBox(outside, desktop.width, desktop.height)), desktop)
+}
+
 // The next crop, from the last one (`state`: {box, smallerSince}) and the app's windows now. A
 // share starts on the whole desktop until the app shows something; with nothing showing (the app
 // minimized), the crop stays where it was.
-export function settleCrop(state, windows, desktop, now) {
-  const bounds = regionBounds(windows)
-  const box = state?.box || snapBox(bounds || {x: 0, y: 0, width: desktop.width, height: desktop.height}, desktop.width, desktop.height)
-  if (!bounds) return {box, smallerSince: null}
-  const wanted = snapBox(bounds, desktop.width, desktop.height)
+export function settleCrop(state, windows, desktop, now, anchor) {
+  const wanted = cropTarget(windows, desktop, anchor)
+  const box = state?.box || wanted || {x: 0, y: 0, width: desktop.width, height: desktop.height}
+  if (!wanted || wanted.width <= 0 || wanted.height <= 0) return {box, smallerSince: null}
   if (!state?.box || sameBox(box, wanted)) return {box: wanted, smallerSince: null}
   if (!contains(box, wanted)) {
     const grown = union(box, wanted)
@@ -83,12 +101,14 @@ export function settleCrop(state, windows, desktop, now) {
   return now - since >= SHRINK_AFTER_MS ? {box: wanted, smallerSince: null} : {box, smallerSince: since}
 }
 
-// The stream's size for a crop box: the box itself (pixel for pixel), scaled down only to fit
-// `limit` (Settings' resolution, or MAX_OUTPUT), keeping its shape. Even numbers, as H.264 wants.
+// The stream's size for a crop box: the box itself (pixel for pixel, the same size a lone
+// window's own capture is), scaled down only to fit `limit` (Settings' resolution, or
+// MAX_OUTPUT), keeping its shape, to even numbers then.
 export function outputSize(box, limit = MAX_OUTPUT) {
   const maxWidth = Math.min(limit?.width || Infinity, MAX_OUTPUT.width)
   const maxHeight = Math.min(limit?.height || Infinity, MAX_OUTPUT.height)
   const scale = Math.min(1, maxWidth / box.width, maxHeight / box.height)
+  if (scale === 1) return {width: box.width, height: box.height, scale}
   const even = (value) => Math.max(2, Math.floor((value * scale) / 2) * 2)
   return {width: even(box.width), height: even(box.height), scale}
 }

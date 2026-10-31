@@ -9,7 +9,7 @@
     "postinstall": "node scripts/patch-trystero.js",
     "prebundle": "node scripts/patch-trystero.js && node scripts/build-mac-app-audio.js --if-needed && node scripts/build-win-app-audio.js --if-needed",
     "pretest": "node scripts/patch-trystero.js",
-    "bundle": "esbuild renderer/app.js --bundle --format=iife --target=chrome130 --outfile=renderer/bundle.js",
+    "bundle": "esbuild renderer/app.js --bundle --format=iife --target=chrome130 --outfile=renderer/bundle.js && esbuild renderer/app-share-worker.mjs --bundle --format=iife --target=chrome130 --outfile=renderer/app-share-worker.js",
     "start": "npm run bundle && node scripts/electron.js .",
     "test": "node --test",
     "test:startup": "npm run bundle && node scripts/electron.js scripts/check-startup.js && node scripts/check-profiles.js",
@@ -52,6 +52,7 @@
       "renderer/styles.css",
       "renderer/youtube/**",
       "renderer/bundle.js",
+      "renderer/app-share-worker.js",
       "!node_modules/ffprobe-static/bin/linux/**"
     ],
     "asarUnpack": [

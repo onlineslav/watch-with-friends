@@ -932,17 +932,10 @@ button:disabled {
   color: var(--danger);
 }
 
-/* Stays in view at the bottom of a long Settings card. */
 .settings-footer {
-  position: sticky;
-  bottom: 0;
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  margin: 0 -20px -20px;
-  padding: 12px 20px 20px;
-  border-radius: 0 0 14px 14px;
-  background: var(--bg);
 }
 
 .settings-note {

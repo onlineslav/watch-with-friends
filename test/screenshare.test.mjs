@@ -6,14 +6,16 @@ test('shareSources shapes raw desktopCapturer output for the picker and drops ju
   const raw = [
     {id: 'screen:0:0', name: 'Entire Screen', thumbnail: 'data:image/png;base64,AA=='},
     {id: 'window:123:0', name: 'x'.repeat(300), thumbnail: null},
+    {id: 'window:456:0', name: 'Minimized app', thumbnail: null, minimized: true},
     {id: '', name: 'No id'},
     {name: 'Missing id entirely'},
     null,
   ]
   const shaped = shareSources(raw)
   assert.deepEqual(shaped, [
-    {id: 'screen:0:0', name: 'Entire Screen', thumbnail: 'data:image/png;base64,AA=='},
-    {id: 'window:123:0', name: 'x'.repeat(MAX_SOURCE_NAME), thumbnail: null},
+    {id: 'screen:0:0', name: 'Entire Screen', thumbnail: 'data:image/png;base64,AA==', minimized: false},
+    {id: 'window:123:0', name: 'x'.repeat(MAX_SOURCE_NAME), thumbnail: null, minimized: false},
+    {id: 'window:456:0', name: 'Minimized app', thumbnail: null, minimized: true},
   ])
 })
 

@@ -7,8 +7,9 @@
 // This side only starts and stops captures (getDisplayMedia exists only here) and hands each
 // capture's frame stream, the output's writable and every layout to the worker, so no frame ever
 // touches the page's main thread. `captureWindow(hwnd)` resolves with a capture track for one
-// window; `initial` is the shared window's capture, already started; `subscribe(fn)` calls `fn`
-// with each new layout. Untested here for the same reason frames.mjs is: the frame APIs only
+// window; `anchor` is the shared window's hwnd and `initial` its capture if already started (not
+// while it's minimized: Windows can't capture a minimized window, so it starts once it's
+// restored, and the worker shows a card until then); `subscribe(fn)` calls `fn` with each new layout. Untested here for the same reason frames.mjs is: the frame APIs only
 // exist in a real renderer.
 import {captureChanges} from './app-share.mjs'
 
@@ -19,7 +20,7 @@ const ENDED_RETRY_MS = 1000
 // How often captures of windows gone for good are let go, between layout changes.
 const SWEEP_MS = 1000
 
-export function appShareTrack({getLayout, subscribe, captureWindow, initial, limits, workerUrl = 'app-share-worker.js', onCaptureError, onStats, onCrop}) {
+export function appShareTrack({getLayout, subscribe, captureWindow, anchor, initial, limits, workerUrl = 'app-share-worker.js', onCaptureError, onStats, onCrop, onShowing}) {
   if (typeof MediaStreamTrackProcessor !== 'function' || typeof MediaStreamTrackGenerator !== 'function' || typeof Worker !== 'function') return null
   const generator = new MediaStreamTrackGenerator({kind: 'video'})
   const worker = new Worker(workerUrl)
@@ -43,6 +44,8 @@ export function appShareTrack({getLayout, subscribe, captureWindow, initial, lim
       onStats?.(data)
     } else if (data.type === 'crop') {
       onCrop?.(data)
+    } else if (data.type === 'showing') {
+      onShowing?.(data.kind)
     }
   }
   worker.onerror = (event) => onCaptureError?.(null, new Error(event.message || 'The share\'s worker failed'))
@@ -120,8 +123,10 @@ export function appShareTrack({getLayout, subscribe, captureWindow, initial, lim
   }
 
   const {writable} = generator
-  worker.postMessage({type: 'start', writable, anchor: initial.hwnd, limits: {...limits}, layout: getLayout()}, [writable])
-  watch(initial.hwnd, initial.track)
+  worker.postMessage({type: 'start', writable, anchor, limits: {...limits}, layout: getLayout()}, [writable])
+  if (initial) watch(initial.hwnd, initial.track)
   reconcile(getLayout())
+  // A share of a minimized window starts with the card straight away rather than nothing.
+  worker.postMessage({type: 'layout', layout: getLayout()})
   return {track: generator, stop, setLimits}
 }

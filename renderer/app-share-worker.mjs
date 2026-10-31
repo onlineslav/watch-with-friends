@@ -7,7 +7,7 @@
 // beats against the captures' own rate, which dropped and doubled frames unevenly. With only the
 // shared window showing and nothing to crop, its frames go out untouched; otherwise the windows
 // are drawn together, bottom first. A still screen still sends one at least every KEEPALIVE_MS.
-import {outputSize, settleCrop} from './app-share.mjs'
+import {outputSize, placeholderText, settleCrop} from './app-share.mjs'
 
 const KEEPALIVE_MS = 500
 const STATS_MS = 10_000
@@ -26,6 +26,10 @@ let context = null
 let sentSize = ''
 let sentCrop = ''
 let cropPostedAt = -Infinity
+let shown = '' // 'picture' or 'placeholder', for the log
+let card = null
+let cardTitle = ''
+let cardSize = [1280, 720]
 let stats = {passed: 0, composed: 0, composeMs: 0, framesIn: 0, busy: 0}
 
 const post = (message) => self.postMessage(message)
@@ -88,8 +92,12 @@ function compose(box, size) {
     const win = layout.windows[i]
     const frame = windows.get(win.hwnd)?.frame
     if (!frame) continue
+    // At its own size, trimmed to the window, never stretched: while a window is being resized its
+    // capture runs a frame behind the new size, and stretching that made the picture wobble.
+    const w = Math.min(frame.displayWidth, win.width)
+    const h = Math.min(frame.displayHeight, win.height)
     try {
-      context.drawImage(frame, (win.x - box.x) * sx, (win.y - box.y) * sy, win.width * sx, win.height * sy)
+      context.drawImage(frame, 0, 0, w, h, (win.x - box.x) * sx, (win.y - box.y) * sy, w * sx, h * sy)
     } catch {
       drop(win.hwnd) // its capture ended under it (the window closed): the next layout leaves it out
     }
@@ -106,8 +114,13 @@ function send() {
     timer = setTimeout(send, 4)
     return
   }
-  if (!layout.windows.some((win) => windows.get(win.hwnd)?.frame)) return
-  crop = settleCrop(crop, layout.windows, layout.desktop, now, anchor)
+  if (!layout.windows.some((win) => windows.get(win.hwnd)?.frame)) {
+    // Nothing to show (minimized, say): a card saying so, at the size the picture had, twice a second.
+    const text = placeholderText(layout)
+    if (text) sendFrame(placeholder(text), now, 'placeholder')
+    return
+  }
+  crop = settleCrop(crop, layout.windows, layout.desktop, anchor)
   const {box} = crop
   let size = outputSize(box, limits)
   const lone = layout.windows.length === 1 && layout.windows[0].hwnd === anchor ? windows.get(anchor)?.frame : null
@@ -125,12 +138,6 @@ function send() {
     stats.composeMs += performance.now() - started
     stats.composed++
   }
-  lastSent = now
-  const sizeKey = `${size.width}x${size.height}`
-  if (sizeKey !== sentSize) {
-    sentSize = sizeKey
-    post({type: 'size', width: size.width, height: size.height})
-  }
   // A drag changes the crop many times a second; the log gets where it went, twice a second at most.
   const cropKey = `${box.x},${box.y},${box.width},${box.height}`
   if (cropKey !== sentCrop && now - cropPostedAt >= 500) {
@@ -138,10 +145,50 @@ function send() {
     cropPostedAt = now
     post({type: 'crop', box, size, windows: layout.windows.length})
   }
+  sendFrame(frame, now)
+}
+
+function sendFrame(frame, now, kind = 'picture') {
+  lastSent = now
+  const sizeKey = `${frame.displayWidth}x${frame.displayHeight}`
+  if (sizeKey !== sentSize) {
+    sentSize = sizeKey
+    post({type: 'size', width: frame.displayWidth, height: frame.displayHeight})
+  }
+  if (kind !== shown) {
+    shown = kind
+    post({type: 'showing', kind}) // logged: when viewers got the card, and when the picture came back
+  }
   writer.write(frame).catch(() => {
     frame.close()
     stop() // the share's track was stopped
   })
+}
+
+// The card, as big as the last picture was (so restoring the window doesn't resize the stream
+// twice), or 1280×720 if there hasn't been one.
+function placeholder({title, detail}) {
+  const [width, height] = sentSize && shown === 'picture' ? sentSize.split('x').map(Number) : cardSize
+  cardSize = [width, height]
+  if (!card || card.width !== width || card.height !== height || cardTitle !== title) {
+    card ??= new OffscreenCanvas(width, height)
+    card.width = width
+    card.height = height
+    cardTitle = title
+    const draw = card.getContext('2d', {alpha: false})
+    draw.fillStyle = '#16161c'
+    draw.fillRect(0, 0, width, height)
+    draw.textAlign = 'center'
+    draw.textBaseline = 'middle'
+    const unit = Math.max(12, Math.round(Math.min(width / 28, height / 16)))
+    draw.fillStyle = '#e8e8ee'
+    draw.font = `600 ${unit}px "Segoe UI", system-ui, sans-serif`
+    draw.fillText(title, width / 2, height / 2 - unit * 0.6, width * 0.9)
+    draw.fillStyle = '#8a8a96'
+    draw.font = `${Math.round(unit * 0.6)}px "Segoe UI", system-ui, sans-serif`
+    draw.fillText(detail, width / 2, height / 2 + unit * 0.7, width * 0.9)
+  }
+  return new VideoFrame(card, {timestamp: Math.round(performance.now() * 1000)})
 }
 
 function stop() {

@@ -956,14 +956,21 @@ function clearShare() {
   session.screenCleanup = null
 }
 
-// A whole-app share follows where the shared window's app has its windows (main/app-windows.js)
-// and keeps the latest layout for appShareTrack, telling `subscribe`rs about each new one.
-// `capture(hwnd, systemAudio)` captures one of those windows: main only grants a window this
-// session's helper currently reports as the app's. `onEnded(error)` fires once if tracking stops
-// on its own (the shared window closed).
-async function followAppWindows(sourceId) {
+// A window share on Windows follows where the shared window's app has its windows
+// (main/app-windows.js) and keeps the latest layout for appShareTrack, telling `subscribe`rs about
+// each new one: every window of the app with `wholeApp`, or just the shared one (`anchor`)
+// without, which still gets the minimized card. `capture(hwnd)` captures one of those windows:
+// main only grants a window this session's helper currently reports as the app's.
+// `systemAudio()` gets whole-system sound on its own, since the shared window may be minimized
+// and so not capturable yet. `onEnded(error)` fires once if tracking stops on its own (the shared
+// window closed).
+async function followAppWindows(sourceId, {anchor, wholeApp}) {
   const {id, layout} = await window.api.startAppWindows(sourceId)
-  const first = cleanLayout(layout)
+  const pick = (value) => {
+    const clean = cleanLayout(value)
+    return clean && !wholeApp ? {...clean, windows: clean.windows.filter((win) => win.hwnd === anchor)} : clean
+  }
+  const first = pick(layout)
   if (!first) {
     window.api.stopAppWindows(id)
     throw new Error('Could not tell where that app\'s windows are.')
@@ -977,10 +984,16 @@ async function followAppWindows(sourceId) {
       listeners.add(fn)
       return () => listeners.delete(fn)
     },
-    async capture(hwnd, systemAudio = false) {
-      if (!await window.api.grantAppWindow(id, hwnd, {systemAudio})) throw new Error('That window isn\'t showing (it\'s minimized or closed).')
+    async capture(hwnd) {
+      if (!await window.api.grantAppWindow(id, hwnd)) throw new Error('That window isn\'t showing right now.')
       const video = {frameRate: shareVideoConstraints(shareSettings.resolution, shareSettings.frameRate).frameRate}
-      return navigator.mediaDevices.getDisplayMedia({video, audio: systemAudio ? SHARE_AUDIO_CONSTRAINTS : false})
+      return (await navigator.mediaDevices.getDisplayMedia({video, audio: false})).getVideoTracks()[0]
+    },
+    async systemAudio() {
+      if (!await window.api.grantSystemAudio()) return []
+      const stream = await navigator.mediaDevices.getDisplayMedia({video: true, audio: SHARE_AUDIO_CONSTRAINTS})
+      stream.getVideoTracks().forEach((track) => track.stop())
+      return stream.getAudioTracks()
     },
     stop() {
       if (follower.stopped) return
@@ -997,7 +1010,7 @@ async function followAppWindows(sourceId) {
         follower.onEnded?.(result.error || null)
         return
       }
-      const next = cleanLayout(result?.layout)
+      const next = pick(result?.layout)
       if (!next) continue
       follower.layout = next
       for (const fn of listeners) fn(next)
@@ -1086,41 +1099,46 @@ async function startShare(source) {
     const windowId = windowIdFromSource(source.id)
     const audioSource = shareSettings.audioDeviceId === 'app' && windowId == null ? 'system' : shareSettings.audioDeviceId
     const systemAudio = audioSource === 'system'
-    // A whole-app share captures each of the app's windows on its own, starting with this one, and
-    // lays them out together (appShareTrack); the shared window's capture carries system audio.
-    const wholeApp = WHOLE_APP_SHARE && shareSettings.wholeApp && windowId != null
-    windows = wholeApp ? await followAppWindows(source.id) : null
+    // A window share on Windows captures each of the app's windows on its own (only the shared
+    // one, with "Include the app's other windows" off) and lays them out together
+    // (appShareTrack). The shared window may be minimized, which Windows can't capture: then its
+    // capture starts once it's restored, and viewers see a card saying so meanwhile.
+    windows = APP_WINDOWS && windowId != null ? await followAppWindows(source.id, {anchor: windowId, wholeApp: shareSettings.wholeApp}) : null
     let stream
+    let capture = null
     if (windows) {
-      stream = await windows.capture(windowId, systemAudio)
-    } else {
-      if (!await window.api.selectScreenShareSource(source.id, {systemAudio})) throw new Error('That source is no longer available. Try again.')
-      const video = shareVideoConstraints(shareSettings.resolution, shareSettings.frameRate)
-      stream = await navigator.mediaDevices.getDisplayMedia({video, audio: systemAudio ? SHARE_AUDIO_CONSTRAINTS : false})
-    }
-    const capture = stream.getVideoTracks()[0]
-    if (windows) {
+      const audioTracks = systemAudio ? await windows.systemAudio() : []
+      const shown = windows.layout.windows.some((win) => win.hwnd === windowId)
+      capture = shown ? await windows.capture(windowId) : null
       composite = appShareTrack({
         getLayout: () => windows.layout,
         subscribe: windows.subscribe,
-        captureWindow: async (hwnd) => (await windows.capture(hwnd)).getVideoTracks()[0],
-        initial: {hwnd: windowId, track: capture},
+        captureWindow: (hwnd) => windows.capture(hwnd),
+        anchor: windowId,
+        initial: capture && {hwnd: windowId, track: capture},
         limits: shareOutputLimits(),
         onCaptureError: (hwnd, error) => logError('screenshare', 'app-window-capture-failed', {hwnd, message: errorMessage(error)}),
         // Every 10s: frames sent untouched vs drawn, drawing time, frames in from the captures.
         onStats: ({type, ...stats}) => logEvent('screenshare', 'app-composite', stats),
         onCrop: ({box, size, windows: count}) => logEvent('screenshare', 'app-crop', {box, size, windows: count}),
+        onShowing: (kind) => logEvent('screenshare', 'app-showing', {kind}),
       })
       if (!composite) {
-        stream.getTracks().forEach((track) => track.stop())
-        throw new Error('This version can\'t share a whole app. Turn off "Include the app\'s other windows" in the share picker.')
+        capture?.stop()
+        audioTracks.forEach((track) => track.stop())
+        throw new Error('This version of the app can\'t share windows.')
       }
-      stream = new MediaStream([composite.track, ...stream.getAudioTracks()])
+      stream = new MediaStream([composite.track, ...audioTracks])
+    } else {
+      if (!await window.api.selectScreenShareSource(source.id, {systemAudio})) throw new Error('That source is no longer available. Try again.')
+      const video = shareVideoConstraints(shareSettings.resolution, shareSettings.frameRate)
+      stream = await navigator.mediaDevices.getDisplayMedia({video, audio: systemAudio ? SHARE_AUDIO_CONSTRAINTS : false})
+      capture = stream.getVideoTracks()[0]
     }
     const audio = await captureShareAudio(audioSource, windowId)
     if (!owns()) {
       stream.getTracks().forEach((track) => track.stop())
-      capture.stop()
+      capture?.stop()
       composite?.stop()
       windows?.stop()
       audio?.cleanup()
@@ -1147,7 +1165,7 @@ async function startShare(source) {
       composite?.stop()
       windows?.stop()
     }
-    logEvent('screenshare', 'started', {audioDeviceId: shareSettings.audioDeviceId, audioSource, audio: session.screen.audio, resolution: shareSettings.resolution, frameRate: shareSettings.frameRate, alongside, wholeApp: Boolean(windows), windows: windows?.layout.windows.length})
+    logEvent('screenshare', 'started', {audioDeviceId: shareSettings.audioDeviceId, audioSource, audio: session.screen.audio, resolution: shareSettings.resolution, frameRate: shareSettings.frameRate, alongside, appWindows: Boolean(windows), wholeApp: Boolean(windows) && shareSettings.wholeApp !== false, minimized: windows?.layout.minimized, windows: windows?.layout.windows.length})
     const sharing = () => session === current && !current.closed && session.stream === stream
     if (windows) {
       // The app's windows come and go (the composite recaptures them); the share ends with the
@@ -3884,9 +3902,10 @@ applyZoom(zoom)
 // On Windows a window share sends only that window's app by default: whole-system audio there
 // also carries Discord and everything else playing, so people heard themselves back.
 const DEFAULT_SHARE_AUDIO = window.api.platform === 'win32' ? 'app' : 'system'
-// Sharing a window shows its app's other windows too (a DAW's plugin windows, say): the share
-// picker's checkbox, Windows only, since that's where native/win-app-windows exists.
-const WHOLE_APP_SHARE = window.api.platform === 'win32'
+// Window shares go through native/win-app-windows (Windows only): it's what lets a share show its
+// app's other windows too (a DAW's plugin windows, say; the share picker's checkbox) and wait out
+// the window being minimized.
+const APP_WINDOWS = window.api.platform === 'win32'
 const DEFAULT_SHARE_SETTINGS = {resolution: DEFAULT_RESOLUTION, frameRate: DEFAULT_FRAME_RATE, audioDeviceId: DEFAULT_SHARE_AUDIO, audioBitrate: DEFAULT_AUDIO_BITRATE, priority: DEFAULT_SHARE_PRIORITY, audioFirst: true, wholeApp: true}
 let shareSettings = {...DEFAULT_SHARE_SETTINGS}
 try {
@@ -4073,8 +4092,9 @@ async function refreshSharePicker(current) {
   sources.forEach((source, index) => {
     const button = sharePickerButtons.get(source.id) || sharePickerButton(source)
     sharePickerButtons.set(source.id, button)
-    button.title = source.name
+    button.title = source.minimized ? `${source.name} (minimized: it shows once it's restored)` : source.name
     button.querySelector('.share-source-name').textContent = source.name
+    button.classList.toggle('minimized', source.minimized)
     if (source.thumbnail) {
       let thumbnail = button.querySelector('img')
       if (!thumbnail) {
@@ -4106,7 +4126,7 @@ function closeSharePicker() {
 }
 
 // Saved straight away, like the picker's own choice, not through Settings' Save/Discard.
-ui.shareWholeApp.hidden = !WHOLE_APP_SHARE
+ui.shareWholeApp.hidden = !APP_WINDOWS
 ui.shareWholeApp.querySelector('input').checked = shareSettings.wholeApp !== false
 ui.shareWholeApp.querySelector('input').addEventListener('change', (event) => {
   shareSettings = {...shareSettings, wholeApp: event.target.checked}

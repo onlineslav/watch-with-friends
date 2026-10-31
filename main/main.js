@@ -184,10 +184,19 @@ function registerIpc() {
       throw error
     }
   })
-  ipcMain.handle('appwindows:grant', (_event, id, hwnd, options) => {
+  ipcMain.handle('appwindows:grant', (_event, id, hwnd) => {
     if (!Number.isSafeInteger(hwnd) || hwnd <= 0 || !appWindows.reports(id, hwnd)) return false
     pendingShareSource = {id: `window:${hwnd}:0`, name: ''}
-    pendingShareSystemAudio = Boolean(options?.systemAudio)
+    pendingShareSystemAudio = false
+    return true
+  })
+  // System audio for a window share, captured on its own: the window may be minimized and so not
+  // capturable yet. Rides on a screen from the last listing; the renderer stops its video at once.
+  ipcMain.handle('appwindows:system-audio', () => {
+    const screen = [...shareSourcesById.values()].find((source) => source.id.startsWith('screen:'))
+    if (!screen) return false
+    pendingShareSource = screen
+    pendingShareSystemAudio = true
     return true
   })
   ipcMain.handle('appwindows:pull', async (_event, id) => {

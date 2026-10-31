@@ -14,10 +14,11 @@
 // `screen:<n>:0` with n the EnumDisplayDevices index of an active display (Chromium's own screen
 // list numbers screens that way), `window:<hwnd>:0`. The windows are the ones desktopCapturer
 // lists: visible top-level windows with a title, not owned (unless they ask for a taskbar
-// button), not cloaked, not minimized (desktopCapturer leaves those out too: there's nothing to
-// show until they're restored, and the next refresh lists them then). Left out as well: this
-// app's own windows (its parent process), and tool windows and click-through overlays (a GPU
-// overlay, say), which desktopCapturer lists but nobody means to share. Titles come from InternalGetWindowText, which never waits on the
+// button), not cloaked; and minimized ones too, which desktopCapturer leaves out: those come with
+// `"minimized":true` and their app's icon as the thumbnail, and sharing one starts with a card
+// saying it's minimized until it's restored. Left out: this app's own windows (its parent
+// process), and tool windows and click-through overlays (a GPU overlay, say), which
+// desktopCapturer lists but nobody means to share. Titles come from InternalGetWindowText, which never waits on the
 // window's thread, and a hung window gets no thumbnail, so one frozen app can't stall the list.
 #include <windows.h>
 #include <dwmapi.h>
@@ -207,6 +208,41 @@ static std::string windowThumbnail(HWND window, const RECT& frame) {
   return result;
 }
 
+// A minimized window has no picture to take; its app's icon, large, on a dark tile instead. The
+// icon comes from the program file (crisp at this size); failing that, the window's own, asked
+// for with a short timeout so a hung app can't hold up the list.
+static std::string iconThumbnail(HWND window, DWORD pid) {
+  const int size = 64, w = THUMB_BOX, h = THUMB_BOX * 9 / 16;
+  HICON icon = nullptr;
+  bool owned = false;
+  wchar_t path[MAX_PATH];
+  DWORD length = MAX_PATH;
+  HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+  if (process) {
+    if (QueryFullProcessImageNameW(process, 0, path, &length) && PrivateExtractIconsW(path, 0, size, size, &icon, nullptr, 1, 0) == 1 && icon) owned = true;
+    CloseHandle(process);
+  }
+  if (!icon) {
+    DWORD_PTR result = 0;
+    if (SendMessageTimeoutW(window, WM_GETICON, ICON_BIG, 0, SMTO_ABORTIFHUNG | SMTO_BLOCK, 50, &result) && result) icon = reinterpret_cast<HICON>(result);
+    if (!icon) icon = reinterpret_cast<HICON>(GetClassLongPtrW(window, GCLP_HICON));
+  }
+  HDC screen = GetDC(nullptr);
+  std::string encoded = "null";
+  {
+    Thumb thumb(screen, w, h);
+    RECT all = {0, 0, w, h};
+    HBRUSH background = CreateSolidBrush(RGB(24, 24, 30));
+    FillRect(thumb.dc, &all, background);
+    DeleteObject(background);
+    if (icon) DrawIconEx(thumb.dc, (w - size) / 2, (h - size) / 2, icon, size, size, 0, nullptr, DI_NORMAL);
+    encoded = encode(thumb);
+  }
+  ReleaseDC(nullptr, screen);
+  if (owned) DestroyIcon(icon);
+  return encoded;
+}
+
 struct Lister {
   DWORD skipPid;
   std::vector<std::string> entries;
@@ -215,7 +251,7 @@ struct Lister {
 static BOOL CALLBACK listWindow(HWND window, LPARAM param) {
   Lister* list = reinterpret_cast<Lister*>(param);
   if (list->entries.size() >= MAX_SOURCES) return FALSE;
-  if (!IsWindowVisible(window) || IsIconic(window) || GetAncestor(window, GA_ROOT) != window) return TRUE;
+  if (!IsWindowVisible(window) || GetAncestor(window, GA_ROOT) != window) return TRUE;
   LONG_PTR ex = GetWindowLongPtrW(window, GWL_EXSTYLE);
   if ((ex & WS_EX_TOOLWINDOW) || (ex & WS_EX_TRANSPARENT)) return TRUE;
   if (GetWindow(window, GW_OWNER) && !(ex & WS_EX_APPWINDOW)) return TRUE;
@@ -233,7 +269,9 @@ static BOOL CALLBACK listWindow(HWND window, LPARAM param) {
   if (frame.right - frame.left < 2 || frame.bottom - frame.top < 2) return TRUE;
   char id[48];
   snprintf(id, sizeof(id), "window:%llu:0", static_cast<unsigned long long>(reinterpret_cast<UINT_PTR>(window)));
-  list->entries.push_back("{\"id\":\"" + std::string(id) + "\",\"name\":" + jsonString(utf8(title)) + ",\"thumbnail\":" + windowThumbnail(window, frame) + "}");
+  const bool minimized = IsIconic(window);
+  list->entries.push_back("{\"id\":\"" + std::string(id) + "\",\"name\":" + jsonString(utf8(title)) + ",\"minimized\":" + (minimized ? "true" : "false") +
+                          ",\"thumbnail\":" + (minimized ? iconThumbnail(window, pid) : windowThumbnail(window, frame)) + "}");
   return TRUE;
 }
 

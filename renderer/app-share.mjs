@@ -3,11 +3,8 @@
 // what part of the desktop to show (settleCrop) and at what size (outputSize).
 
 export const MAX_WINDOWS = 64
-// The crop grows at once when a plugin window opens, and only shrinks back after the app has
-// stayed smaller this long, so closing and reopening a window doesn't keep resizing the stream.
-export const SHRINK_AFTER_MS = 1500
-// Crop edges snap outward to this grid: small moves don't change the stream's size, and the
-// encoder gets dimensions it likes.
+// Crop edges past the shared window snap outward to this grid: small moves of a plugin window
+// outside it don't change the stream's size.
 export const CROP_GRID = 16
 // A capture outlives its window disappearing by this long: an app that hides its plugin windows
 // while it's in the background (Ableton does) gets them back without a new capture starting.
@@ -17,9 +14,11 @@ export const MAX_OUTPUT = {width: 3840, height: 2160}
 
 const isInt = (value) => Number.isInteger(value) && Math.abs(value) < 1e6
 
-// The helper's line, {"desktop":[x,y,w,h],"windows":[[x,y,w,h,hwnd],...]} topmost first, as
-// {desktop: {x, y, width, height}, windows: [{x, y, width, height, hwnd}]} with the windows'
-// positions relative to the desktop's top-left, or null for junk.
+export const MAX_APP_NAME = 80
+
+// The helper's line, {"desktop":[x,y,w,h],"minimized":0|1,"app":"name","windows":[[x,y,w,h,hwnd],...]}
+// topmost first, as {desktop: {x, y, width, height}, minimized, app, windows: [{x, y, width,
+// height, hwnd}]} with the windows' positions relative to the desktop's top-left, or null for junk.
 export function cleanLayout(value) {
   if (!value || typeof value !== 'object' || !Array.isArray(value.desktop) || !Array.isArray(value.windows)) return null
   const [x, y, width, height] = value.desktop
@@ -31,7 +30,17 @@ export function cleanLayout(value) {
     if (entry[2] <= 0 || entry[3] <= 0) continue
     windows.push({x: entry[0] - x, y: entry[1] - y, width: entry[2], height: entry[3], hwnd: entry[4]})
   }
-  return {desktop: {x, y, width, height}, windows}
+  const app = typeof value.app === 'string' ? value.app.slice(0, MAX_APP_NAME) : ''
+  return {desktop: {x, y, width, height}, minimized: value.minimized === 1 || value.minimized === true, app, windows}
+}
+
+// What viewers see instead of the picture, or null while there's a picture: the shared window is
+// minimized (Windows can't capture a minimized window), or none of the app's windows are on screen.
+export function placeholderText(layout) {
+  const app = layout.app || 'The shared app'
+  if (layout.minimized) return {title: `${app} is minimized`, detail: 'It will show up here again once it is restored.'}
+  if (!layout.windows.length) return {title: `${app} isn't on screen`, detail: 'It will show up here again once it is.'}
+  return null
 }
 
 // Which window captures to start and stop. `captures` maps each captured hwnd to when its window
@@ -63,7 +72,6 @@ export function snapBox(bounds, width, height) {
 
 const contains = (outer, inner) =>
   inner.x >= outer.x && inner.y >= outer.y && inner.x + inner.width <= outer.x + outer.width && inner.y + inner.height <= outer.y + outer.height
-const sameBox = (a, b) => a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height
 const union = (a, b) => regionBounds([a, b])
 
 const clip = (box, desktop) => {
@@ -85,20 +93,15 @@ export function cropTarget(windows, desktop, anchor) {
   return clip(union(exact, snapBox(outside, desktop.width, desktop.height)), desktop)
 }
 
-// The next crop, from the last one (`state`: {box, smallerSince}) and the app's windows now. A
-// share starts on the whole desktop until the app shows something; with nothing showing (the app
-// minimized), the crop stays where it was.
-export function settleCrop(state, windows, desktop, now, anchor) {
+// The next crop (`state`: {box}): straight to `cropTarget`, growing and shrinking alike, so the
+// share follows the window as it's resized or a plugin is dragged in and out. (It used to shrink
+// only after a wait, to spare the encoder resizes when plugins opened and closed; `cropTarget`
+// hugging the shared window already does that, and the wait read as lag.) A share starts on the
+// whole desktop until the app shows something; with nothing showing, the crop stays where it was.
+export function settleCrop(state, windows, desktop, anchor) {
   const wanted = cropTarget(windows, desktop, anchor)
-  const box = state?.box || wanted || {x: 0, y: 0, width: desktop.width, height: desktop.height}
-  if (!wanted || wanted.width <= 0 || wanted.height <= 0) return {box, smallerSince: null}
-  if (!state?.box || sameBox(box, wanted)) return {box: wanted, smallerSince: null}
-  if (!contains(box, wanted)) {
-    const grown = union(box, wanted)
-    return {box: grown, smallerSince: sameBox(grown, wanted) ? null : now}
-  }
-  const since = state.smallerSince ?? now
-  return now - since >= SHRINK_AFTER_MS ? {box: wanted, smallerSince: null} : {box, smallerSince: since}
+  if (!wanted || wanted.width <= 0 || wanted.height <= 0) return {box: state?.box || {x: 0, y: 0, width: desktop.width, height: desktop.height}}
+  return {box: wanted}
 }
 
 // The stream's size for a crop box: the box itself (pixel for pixel, the same size a lone

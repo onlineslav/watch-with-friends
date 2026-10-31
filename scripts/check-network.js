@@ -772,7 +772,6 @@ app.whenReady().then(async () => {
         return stream;
       };
       __test.shareSettings.audioDeviceId = 'system';
-      __test.shareSettings.wholeApp = false; // a synthetic window has no real app to follow
       true`)
     const [idA, idB, idC] = await Promise.all(windows.map((win) => run(win, '__test.selfId')))
     const tileKeys = (win) => run(win, '[...document.querySelectorAll("#share-tiles .share-tile")].map(tile => tile.dataset.key)')
@@ -787,7 +786,8 @@ app.whenReady().then(async () => {
     assert.equal(await run(a, '__test.session.playing'), null, "the first share replaced alpha's movie")
     console.log('PASS: A first share claims host and replaces the movie')
 
-    await run(c, '__test.startShare({id: "window:1:0", name: "Charlie window"}); true')
+    // A screen: a window share on Windows follows a real window (win-app-windows), and this one is synthetic.
+    await run(c, '__test.startShare({id: "screen:1:0", name: "Charlie window"}); true')
     await until(c, '__test.session.screen?.alongside === true')
     assert.equal(await run(c, '__test.session.role'), 'viewer')
     assert.equal(await run(b, '__test.session.role === "host" && Boolean(__test.session.screen)'), true, 'a share alongside leaves the host sharing')

@@ -42,6 +42,8 @@ $main.Add_Shown({
     if (Test-Path '${path.join(work, 'close')}') { Remove-Item '${path.join(work, 'close')}'; $script:plugin.Close() }
     if (Test-Path '${path.join(work, 'out')}') { Remove-Item '${path.join(work, 'out')}'; $script:plugin.Left = 1100 }
     if (Test-Path '${path.join(work, 'in')}') { Remove-Item '${path.join(work, 'in')}'; $script:plugin.Left = 300 }
+    if (Test-Path '${path.join(work, 'minimize')}') { Remove-Item '${path.join(work, 'minimize')}'; $main.WindowState = 'Minimized' }
+    if (Test-Path '${path.join(work, 'restore')}') { Remove-Item '${path.join(work, 'restore')}'; $main.WindowState = 'Normal' }
   })
   $timer.Start()
 })
@@ -101,7 +103,8 @@ ipcRenderer.on('start', async (_event, helper, hwnd) => {
         return () => {}
       },
       captureWindow: capture,
-      initial: {hwnd, track: await capture(hwnd)},
+      anchor: hwnd,
+      initial: layout.windows.some((win) => win.hwnd === hwnd) ? {hwnd, track: await capture(hwnd)} : null,
       limits: {frameRate: 30},
       onCaptureError: (target, error) => ipcRenderer.send('capture-error', target, String(error)),
     })
@@ -124,10 +127,11 @@ ipcRenderer.on('sample', async () => {
   const context = canvas.getContext('2d')
   context.drawImage(frame, 0, 0)
   const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data
-  const counts = {red: 0, green: 0, blue: 0, yellow: 0}
+  const counts = {red: 0, green: 0, blue: 0, yellow: 0, card: 0}
   for (let i = 0; i < pixels.length; i += 4) {
     const [r, g, b] = [pixels[i], pixels[i + 1], pixels[i + 2]]
-    if (r > 200 && g > 200 && b < 60) counts.yellow++
+    if (r >= 18 && r <= 26 && g >= 18 && g <= 26 && b >= 24 && b <= 32) counts.card++
+    else if (r > 200 && g > 200 && b < 60) counts.yellow++
     else if (r > 200 && g < 60 && b < 60) counts.red++
     else if (g > 200 && r < 60 && b < 60) counts.green++
     else if (b > 200 && r < 60 && g < 60) counts.blue++
@@ -214,6 +218,17 @@ async function main() {
   console.log('after closing a window:', JSON.stringify(closed), 'windows reported:', reported.size)
   assert.equal(closed.counts.green, 0, 'a closed window disappears')
   assert.equal(closed.counts.blue, 0)
+
+  // Minimized: Windows can't capture it, so viewers get a card saying so; restored, the picture.
+  fs.writeFileSync(path.join(work, 'minimize'), '')
+  const minimized = await sample()
+  console.log('app minimized:', JSON.stringify(minimized))
+  assert.equal(minimized.counts.red, 0, 'nothing of the minimized window')
+  assert.ok(minimized.counts.card > (minimized.size[0] * minimized.size[1]) / 2, 'the card instead')
+  fs.writeFileSync(path.join(work, 'restore'), '')
+  const restored = await sample()
+  console.log('app restored:', JSON.stringify(restored))
+  assert.ok(restored.counts.red > 100_000, 'the picture comes back once it is restored')
   assert.deepEqual(errors, [], 'every window could be captured')
   console.log('app share check passed')
 }

@@ -2473,6 +2473,7 @@ button:disabled {
 }
 
 .share-source {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: stretch;
@@ -2498,6 +2499,19 @@ button:disabled {
   object-fit: contain;
   background: #000;
   border-radius: 6px;
+}
+
+/* A minimized window's tile shows its app's icon; this says why. */
+.share-source.minimized::after {
+  content: 'Minimized';
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgb(0 0 0 / 0.6);
+  color: var(--muted);
+  font-size: 11px;
 }
 
 /* A window that couldn't be pictured (a frozen app) keeps the same size of tile. */

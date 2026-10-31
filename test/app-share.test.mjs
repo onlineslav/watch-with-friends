@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {CROP_GRID, KEEP_HIDDEN_MS, MAX_OUTPUT, MAX_WINDOWS, SHRINK_AFTER_MS, captureChanges, cleanLayout, cropTarget, outputSize, regionBounds, settleCrop, snapBox} from '../renderer/app-share.mjs'
+import {CROP_GRID, KEEP_HIDDEN_MS, MAX_OUTPUT, MAX_WINDOWS, captureChanges, cleanLayout, cropTarget, outputSize, placeholderText, regionBounds, settleCrop, snapBox} from '../renderer/app-share.mjs'
 
 // The shape win-app-windows prints: Ableton's main window and one VST window on top of it.
 const REAL_LINE = {desktop: [0, 0, 3440, 1440], windows: [[314, 213, 465, 593, 6362204], [0, 0, 2294, 1392, 40572320]]}
@@ -48,29 +48,35 @@ test('snapBox snaps outward to the grid and stays on the desktop', () => {
   assert.equal(box.width % CROP_GRID, 0)
 })
 
-test('settleCrop grows at once and shrinks only after the app stays smaller', () => {
-  const main = [{x: 0, y: 0, width: 800, height: 600}]
-  const withPlugin = [...main, {x: 800, y: 0, width: 400, height: 400}]
-  let state = settleCrop(null, main, desktop, 0)
-  assert.deepEqual(state.box, {x: 0, y: 0, width: 800, height: 608})
-  state = settleCrop(state, withPlugin, desktop, 100)
-  assert.deepEqual(state.box, {x: 0, y: 0, width: 1200, height: 608}, 'a plugin opening grows it right away')
-  state = settleCrop(state, main, desktop, 200)
-  assert.equal(state.box.width, 1200, 'closing it keeps the size for now')
-  state = settleCrop(state, withPlugin, desktop, 1000)
-  assert.equal(state.smallerSince, null, 'reopening it resets the wait')
-  state = settleCrop(state, main, desktop, 1100)
-  state = settleCrop(state, main, desktop, 1100 + SHRINK_AFTER_MS - 1)
-  assert.equal(state.box.width, 1200)
-  state = settleCrop(state, main, desktop, 1100 + SHRINK_AFTER_MS)
-  assert.equal(state.box.width, 800, 'shrinks once it has stayed smaller long enough')
+test('settleCrop follows the shared window straight away, growing and shrinking', () => {
+  const main = {x: 0, y: 0, width: 800, height: 600, hwnd: 1}
+  const outside = {x: 800, y: 0, width: 400, height: 400, hwnd: 2}
+  let state = settleCrop(null, [main], desktop, 1)
+  assert.deepEqual(state.box, {x: 0, y: 0, width: 800, height: 600})
+  state = settleCrop(state, [outside, main], desktop, 1)
+  assert.deepEqual(state.box, {x: 0, y: 0, width: 1200, height: 600}, 'a plugin opening outside grows it')
+  state = settleCrop(state, [main], desktop, 1)
+  assert.deepEqual(state.box, {x: 0, y: 0, width: 800, height: 600}, 'and closing it shrinks it, no wait')
+  state = settleCrop(state, [{...main, width: 500, height: 300}], desktop, 1)
+  assert.deepEqual(state.box, {x: 0, y: 0, width: 500, height: 300}, 'resizing the window smaller: the crop follows exactly')
 })
 
 test('settleCrop starts on the whole desktop and holds still while nothing shows', () => {
-  let state = settleCrop(null, [], desktop, 0)
+  let state = settleCrop(null, [], desktop, 1)
   assert.deepEqual(state.box, {x: 0, y: 0, width: 1920, height: 1080})
-  state = settleCrop({box: {x: 0, y: 0, width: 800, height: 608}, smallerSince: null}, [], desktop, 50)
+  state = settleCrop({box: {x: 0, y: 0, width: 800, height: 608}}, [], desktop, 1)
   assert.deepEqual(state.box, {x: 0, y: 0, width: 800, height: 608}, 'minimized: keep the last crop')
+})
+
+test('cleanLayout reads minimized and the app name; placeholderText says what viewers see', () => {
+  const minimized = cleanLayout({desktop: [0, 0, 100, 100], minimized: 1, app: 'Ableton Live 12 Suite', windows: []})
+  assert.equal(minimized.minimized, true)
+  assert.equal(minimized.app, 'Ableton Live 12 Suite')
+  assert.equal(placeholderText(minimized).title, 'Ableton Live 12 Suite is minimized')
+  assert.match(placeholderText({...minimized, minimized: false}).title, /isn't on screen/)
+  assert.equal(placeholderText({...minimized, minimized: false, windows: [{x: 0, y: 0, width: 1, height: 1, hwnd: 1}]}), null, 'a picture: no card')
+  assert.equal(cleanLayout({desktop: [0, 0, 100, 100], app: 'x'.repeat(500), windows: []}).app.length, 80)
+  assert.equal(placeholderText(cleanLayout({desktop: [0, 0, 100, 100], minimized: 1, windows: []})).title, 'The shared app is minimized', 'an older helper without a name')
 })
 
 test('outputSize is pixel for pixel unless a limit makes it smaller', () => {
@@ -101,12 +107,11 @@ test('settleCrop shrinks back once a plugin dragged outside comes back in', () =
   const main = {x: 0, y: 0, width: 1720, height: 1392, hwnd: 1}
   const proQ = {x: 82, y: 216, width: 1299, height: 887, hwnd: 2}
   const wide = {width: 3440, height: 1440}
-  let state = settleCrop(null, [proQ, main], wide, 0, 1)
-  for (let x = 82, t = 10; x <= 1500; x += 50, t += 10) state = settleCrop(state, [{...proQ, x}, main], wide, t, 1)
+  let state = settleCrop(null, [proQ, main], wide, 1)
+  for (let x = 82; x <= 1500; x += 50) state = settleCrop(state, [{...proQ, x}, main], wide, 1)
   assert.ok(state.box.width > 2700, 'grew while dragged out')
-  let t = 1000
-  for (let x = 1500; x >= 82; x -= 50, t += 10) state = settleCrop(state, [{...proQ, x: Math.max(82, x)}, main], wide, t, 1)
-  state = settleCrop(state, [proQ, main], wide, t + SHRINK_AFTER_MS + 10, 1)
+  for (let x = 1500; x >= 82; x -= 50) state = settleCrop(state, [{...proQ, x: Math.max(82, x)}, main], wide, 1)
+  state = settleCrop(state, [proQ, main], wide, 1)
   assert.deepEqual(state.box, {x: 0, y: 0, width: 1720, height: 1392}, 'back to exactly the main window')
 })
 

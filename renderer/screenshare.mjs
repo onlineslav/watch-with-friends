@@ -16,6 +16,7 @@ export function shareSources(sources) {
       id: source.id,
       name: typeof source.name === 'string' ? source.name.slice(0, MAX_SOURCE_NAME) : '',
       thumbnail: typeof source.thumbnail === 'string' ? source.thumbnail : null,
+      minimized: source.minimized === true,
     })
   }
   return result

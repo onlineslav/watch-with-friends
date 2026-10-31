@@ -7,9 +7,10 @@
 // any window owned by one of those (a plugin bridge can live in an unrelated process).
 //
 // Writes one JSON line to stdout whenever the layout changes, in physical pixels:
-//   {"desktop":[x,y,w,h],"windows":[[x,y,w,h,hwnd],...]}
-// `desktop` is the virtual screen (every monitor); `windows` are the app's visible top-level
-// windows, topmost first, with their visible frame (what a window capture of that HWND shows).
+//   {"desktop":[x,y,w,h],"minimized":0|1,"app":"name","windows":[[x,y,w,h,hwnd],...]}
+// `desktop` is the virtual screen (every monitor); `minimized` whether the given window is;
+// `app` the program's name; `windows` are the app's visible top-level windows, topmost first,
+// with their visible frame (what a window capture of that HWND shows).
 // The renderer captures each of those windows on its own and lays them out the same way, so a
 // window from another app on top of them never hides or leaks into the share.
 // Status/errors go to stderr as one line each, like win-app-audio ("ready", or "error: ...").
@@ -145,13 +146,48 @@ static BOOL CALLBACK scanWindow(HWND window, LPARAM param) {
   return TRUE;
 }
 
-static std::string layout(const std::set<DWORD>& tree) {
+static std::string jsonString(const wchar_t* text) {
+  int size = WideCharToMultiByte(CP_UTF8, 0, text, -1, nullptr, 0, nullptr, nullptr);
+  std::string utf8(size > 1 ? size - 1 : 0, '\0');
+  if (size > 1) WideCharToMultiByte(CP_UTF8, 0, text, -1, utf8.data(), size, nullptr, nullptr);
+  std::string result = "\"";
+  for (unsigned char c : utf8) {
+    if (c == '"' || c == '\\') {
+      result += '\\';
+      result += char(c);
+    } else if (c >= 0x20) {
+      result += char(c);
+    }
+  }
+  return result + "\"";
+}
+
+// What viewers see named while the window is minimized: the program's file name without ".exe"
+// ("Ableton Live 12 Suite"), which says which app far better than a window title does.
+static std::string appName(DWORD pid) {
+  wchar_t path[MAX_PATH] = L"";
+  DWORD size = MAX_PATH;
+  HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+  if (process) {
+    if (!QueryFullProcessImageNameW(process, 0, path, &size)) path[0] = 0;
+    CloseHandle(process);
+  }
+  const wchar_t* name = wcsrchr(path, L'\\');
+  std::wstring base = name ? name + 1 : path;
+  if (base.size() > 4 && _wcsicmp(base.c_str() + base.size() - 4, L".exe") == 0) base.resize(base.size() - 4);
+  if (base.size() > 80) base.resize(80);
+  return jsonString(base.c_str());
+}
+
+// Also says whether the shared window itself (`target`) is minimized: Windows can't capture a
+// minimized window, so the share shows a card saying so until it's restored.
+static std::string layout(const std::set<DWORD>& tree, HWND target, const std::string& appJson) {
   Scan scan = {&tree, {}};
   EnumWindows(scanWindow, reinterpret_cast<LPARAM>(&scan));  // topmost first
-  char part[128];
-  snprintf(part, sizeof(part), "{\"desktop\":[%d,%d,%d,%d],\"windows\":[", GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN),
-           GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN));
-  std::string line = part;
+  char part[160];
+  snprintf(part, sizeof(part), "{\"desktop\":[%d,%d,%d,%d],\"minimized\":%d,\"app\":", GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN),
+           GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN), IsIconic(target) ? 1 : 0);
+  std::string line = part + appJson + ",\"windows\":[";
   for (size_t i = 0; i < scan.windows.size(); i++) {
     const RECT& r = scan.windows[i].rect;
     snprintf(part, sizeof(part), "%s[%ld,%ld,%ld,%ld,%llu]", i ? "," : "", r.left, r.top, r.right - r.left, r.bottom - r.top,
@@ -165,13 +201,14 @@ static HWND target_ = nullptr;
 static DWORD pid_ = 0;
 static std::set<DWORD> tree_;
 static std::string last_;
+static std::string app_;
 static ULONGLONG scannedAt_ = 0;
 static UINT_PTR pendingTimer_ = 0;
 
 static void scan() {
   if (!IsWindow(target_)) fail("The shared window closed.");
   scannedAt_ = GetTickCount64();
-  std::string line = layout(tree_);
+  std::string line = layout(tree_, target_, app_);
   if (line != last_) {
     writeOut(line);
     last_ = line;
@@ -222,6 +259,7 @@ int wmain(int argc, wchar_t** argv) {
 
   pid_ = pid;
   target_ = target;
+  app_ = appName(pid);
   tree_ = processTree(pid);
   scan();
   fputs("ready\n", stderr);

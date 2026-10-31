@@ -239,11 +239,9 @@ const ui = {
   sharePickerStatus: $('share-picker-status'),
   sharePickerList: $('share-picker-list'),
   shareWholeApp: $('share-whole-app'),
-  screenSharing: $('screen-sharing'),
   shareGrid: $('share-grid'),
   shareTabs: $('share-tabs'),
   shareTiles: $('share-tiles'),
-  screenSharingTitle: $('screen-sharing-title'),
   screenSharingAudio: $('screen-sharing-audio'),
   stopShare: $('stop-share'),
   shareResolution: $('share-resolution'),
@@ -3207,6 +3205,8 @@ function renderShares() {
   const shown = session.shareView === 'all' ? tiles.length : 1
   const columns = gridColumns(shown)
   ui.shareTiles.dataset.focus = String(session.shareView !== 'all')
+  // Clicking a tile switches between all of them and that one full size: no point with one tile.
+  ui.shareTiles.dataset.switchable = String(tiles.length > 1)
   ui.shareTiles.style.setProperty('--columns', String(columns))
   ui.shareTiles.style.setProperty('--rows', String(Math.max(1, Math.ceil(shown / columns))))
   ui.shareGrid.hidden = !tiles.length
@@ -3281,9 +3281,12 @@ function render() {
   }
   ui.stage.classList.toggle('showing-image', imageMode)
   ui.stage.classList.toggle('sharing-screen', Boolean(session.screen))
-  ui.screenSharing.hidden = !session.screen
+  // Your own share's status is a small corner button: the details live in its tooltip.
+  ui.stopShare.hidden = !session.screen
   if (session.screen) {
-    ui.screenSharingTitle.textContent = `Sharing: ${session.screen.name}`
+    const audio = session.screen.audio ? '' : '\nNo audio source selected: others see video only. Pick one in Settings.'
+    ui.stopShare.title = `Sharing: ${session.screen.name}\nClick to stop sharing${audio}`
+    ui.stopShare.setAttribute('aria-label', `Stop sharing ${session.screen.name}`)
     ui.screenSharingAudio.hidden = session.screen.audio
   }
   // A viewer can share only beside someone else's share; taking over a movie means opening something.

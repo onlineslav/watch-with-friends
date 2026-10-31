@@ -300,12 +300,12 @@
         </div>
         <div class="share-bar">
           <div id="share-tabs" class="share-tabs" role="group" aria-label="Shown shares" hidden></div>
-          <div id="screen-sharing" class="screen-sharing" hidden>
-            <p id="screen-sharing-title"></p>
-            <button id="stop-share">Stop sharing</button>
-            <p id="screen-sharing-audio" class="hint" hidden>No audio source selected &mdash; others see video only. Pick one in Settings.</p>
-          </div>
         </div>
+        <button id="stop-share" class="stop-share" hidden>
+          <svg viewBox="0 0 24 24"><path d="M4 5h16v11H4zM9 20h6M12 16v4M3 3l18 18" /></svg>
+          <span>Stop sharing</span>
+          <i id="screen-sharing-audio" class="stop-share-warning" hidden></i>
+        </button>
         <div id="empty" class="empty">
           <p id="empty-text"></p>
           <button data-open-media class="primary">Open media</button>

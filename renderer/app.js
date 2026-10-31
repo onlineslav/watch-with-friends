@@ -3691,11 +3691,11 @@ async function populateAudioDevices({probe = false} = {}) {
     } catch {}
   }
   const options = [
-    {value: '', label: 'None'},
-    {value: 'system', label: 'System audio'},
     // Native per-app capture (mac-app-audio / win-app-audio); a whole-screen share has no single
     // app to scope to, so it gets system audio instead (startShare).
-    ...(['darwin', 'win32'].includes(window.api.platform) ? [{value: 'app', label: "Shared window's app only (screens: system audio)"}] : []),
+    ...(['darwin', 'win32'].includes(window.api.platform) ? [{value: 'app', label: 'Automatic (a window: just that app; a screen: everything)'}] : []),
+    {value: 'system', label: 'System audio'},
+    {value: '', label: 'None'},
     ...audioInputs(devices).map((d) => ({value: d.deviceId, label: d.label})),
   ]
   fillSelect(ui.shareAudioDevice, options, shareSettings.audioDeviceId)

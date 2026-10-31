@@ -201,6 +201,17 @@
           <button id="settings-save" class="primary" type="button">Save</button>
         </footer>
       </div>
+      <div id="settings-unsaved" class="unsaved-prompt" hidden>
+        <div class="unsaved-card" role="alertdialog" aria-modal="true" aria-labelledby="unsaved-title" aria-describedby="unsaved-text">
+          <h2 id="unsaved-title">Unsaved changes</h2>
+          <p id="unsaved-text">You changed some settings. Save them before closing?</p>
+          <div class="unsaved-actions">
+            <button id="unsaved-keep" class="ghost" type="button">Keep editing</button>
+            <button id="unsaved-discard" type="button">Discard</button>
+            <button id="unsaved-save" class="primary" type="button">Save</button>
+          </div>
+        </div>
+      </div>
     </div>
 
     <div id="share-picker" class="modal" hidden>

@@ -261,6 +261,10 @@ const ui = {
   shareMenuSettings: $('share-menu-settings'),
   shareMenuStop: $('share-menu-stop'),
   audioFirst: $('audio-first'),
+  settingsUnsaved: $('settings-unsaved'),
+  unsavedKeep: $('unsaved-keep'),
+  unsavedDiscard: $('unsaved-discard'),
+  unsavedSave: $('unsaved-save'),
   leave: $('leave'),
   stage: $('stage'),
   localVideo: $('local-video'),
@@ -3641,6 +3645,7 @@ function showSettings(open, {save = false} = {}) {
     const before = settingsSnapshot
     settingsSnapshot = null
     if (save) {
+      if (ui.profileName.value !== myName) setMyName(ui.profileName.value) // typed, but the box never lost focus
       if (before.share.audioDeviceId !== shareSettings.audioDeviceId && session.screen) restartShare()
     } else {
       if (zoom !== before.zoom) applyZoom(before.zoom)
@@ -3651,6 +3656,28 @@ function showSettings(open, {save = false} = {}) {
     }
   }
   ui.settings.hidden = !open
+  ui.settingsUnsaved.hidden = true
+}
+
+function settingsChanged() {
+  const before = settingsSnapshot
+  if (!before) return false
+  const typed = cleanDisplayName(ui.profileName.value)
+  return zoom !== before.zoom || myName !== before.name || Boolean(typed && typed !== before.name) ||
+    JSON.stringify(shareSettings) !== JSON.stringify(before.share)
+}
+
+// Escape, the close button and the backdrop ask first when there's something to lose.
+function requestCloseSettings() {
+  if (ui.settings.hidden) return
+  if (!settingsChanged()) return showSettings(false)
+  ui.settingsUnsaved.hidden = false
+  ui.unsavedSave.focus()
+}
+
+function keepEditingSettings() {
+  ui.settingsUnsaved.hidden = true
+  ui.settingsSave.focus()
 }
 
 // ---------- UI scale ----------
@@ -3826,7 +3853,21 @@ syncShareControls()
 
 ui.openSettings.addEventListener('click', () => showSettings(true))
 ui.roomSettings.addEventListener('click', () => showSettings(true))
-ui.settingsBack.addEventListener('click', () => showSettings(false))
+ui.settingsBack.addEventListener('click', () => requestCloseSettings())
+ui.unsavedKeep.addEventListener('click', keepEditingSettings)
+ui.unsavedDiscard.addEventListener('click', () => showSettings(false))
+ui.unsavedSave.addEventListener('click', () => showSettings(false, {save: true}))
+ui.settingsUnsaved.addEventListener('click', (event) => {
+  if (event.target === ui.settingsUnsaved) keepEditingSettings()
+})
+ui.settingsUnsaved.addEventListener('keydown', (event) => {
+  if (event.key === 'Tab') { // keep focus inside the prompt
+    const buttons = [ui.unsavedKeep, ui.unsavedDiscard, ui.unsavedSave]
+    const index = buttons.indexOf(document.activeElement)
+    event.preventDefault()
+    buttons[(index + (event.shiftKey ? -1 : 1) + buttons.length) % buttons.length].focus()
+  }
+})
 ui.settingsDiscard.addEventListener('click', () => showSettings(false))
 
 // Like Discord's: right-click your own share for its settings without leaving the stage.
@@ -3853,7 +3894,7 @@ ui.settingsSave.addEventListener('click', () => showSettings(false, {save: true}
 let backdropPress = false
 ui.settings.addEventListener('pointerdown', (event) => (backdropPress = event.target === ui.settings))
 ui.settings.addEventListener('click', (event) => {
-  if (backdropPress && event.target === ui.settings) showSettings(false)
+  if (backdropPress && event.target === ui.settings) requestCloseSettings()
 })
 
 // Our own picker (a grid of thumbnails), not the OS one: main only grants a source this list
@@ -4376,8 +4417,9 @@ document.addEventListener('keydown', (event) => {
   setReactionsOpen(false)
   endItemDrag(false)
   closeSharePicker()
-  if (!event.target.matches('input')) {
-    showSettings(false) // in the name box, Escape only undoes the edit
+  if (!ui.settingsUnsaved.hidden) return keepEditingSettings()
+  if (!event.target.matches('input:not([type=checkbox], [type=range])')) {
+    requestCloseSettings() // in the name box, Escape only undoes the edit
     setPeopleOpen(false)
   }
 })

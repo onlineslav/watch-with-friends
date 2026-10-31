@@ -974,6 +974,68 @@ button:disabled {
   accent-color: var(--accent);
 }
 
+/* Asked when Settings is closed with changes not yet saved. */
+.unsaved-prompt {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(5, 5, 8, 0.55);
+  animation: unsaved-fade 0.14s ease-out;
+}
+
+.unsaved-prompt[hidden] {
+  display: none;
+}
+
+.unsaved-card {
+  width: min(360px, 100%);
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+  animation: unsaved-pop 0.18s cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+
+.unsaved-card h2 {
+  margin: 0 0 6px;
+  font-size: 17px;
+}
+
+.unsaved-card p {
+  margin: 0 0 18px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.unsaved-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.unsaved-actions .ghost {
+  margin-right: auto;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+
+.unsaved-actions .ghost:hover {
+  color: var(--text);
+}
+
+@keyframes unsaved-fade {
+  from { opacity: 0; }
+}
+
+@keyframes unsaved-pop {
+  from { opacity: 0; transform: scale(0.96) translateY(4px); }
+}
+
 .settings-footer {
   display: flex;
   justify-content: flex-end;

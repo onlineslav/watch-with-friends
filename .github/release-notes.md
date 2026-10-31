@@ -1,11 +1,15 @@
-## What's new in 0.5.9
+## What's new in 0.6.0
 
-Fix friends showing as offline when one app has been open for a while.
+Screen sharing, plus better picture and sound.
 
 Windows users and Mac users on 0.5.3 receive this release through the in-app updater. Mac users on 0.5.2 or earlier should install the DMG below once to enable future in-app updates.
 
-- **Connect from an app that has been open a while.** Spare connections older than a minute were refreshed in a way that never started connecting, so a friend coming online couldn't reach you (friends list, room presence and rooms all failed) until you restarted. Old spares are now replaced with fresh ones.
-- **Check it before release.** A transport test covers stale spare connections being replaced instead of reused.
+- **Share your screen or a window.** Pick it from the app's own picker. Several people can share at once; everyone sees a grid of tiles, and can click one (or use the tabs) to watch it full size. Each tile has its own mute button.
+- **Share just one app's sound.** On Windows and Mac, sharing a window sends only that app's audio by default, so your voice chat doesn't echo back to everyone. Settings also offers system audio, none, or any input device.
+- **Share settings.** Resolution, frame rate, audio quality (up to 510 kbps stereo), and a new **Share priority**: Sharp text keeps text readable, Smooth motion keeps games and video fluid, Balanced does a bit of both.
+- **Lower delay on shares.** Viewers no longer add a fixed quarter-second buffer to a screen share; it only grows when a connection struggles.
+- **Better sound and picture for films.** The host's player now gets lossless audio and a higher-quality picture before it's sent, so what friends receive is compressed once instead of twice.
+- **Draw on an empty stage**, and the controls hide when the mouse leaves the window.
 
 ## Download
 

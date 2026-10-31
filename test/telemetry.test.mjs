@@ -4,6 +4,9 @@ import {
   MAX_BUFFER_MS,
   MIN_BUFFER_MS,
   adaptBuffer,
+  adaptShareBuffer,
+  SHARE_BUFFER_START,
+  SHARE_BUFFER_STEPS,
   bitrateDelta,
   describeLink,
   describePeer,
@@ -114,6 +117,28 @@ test('adaptBuffer grows fast, caps, and shrinks only after a calm stretch', () =
   assert.equal(state.bufferMs, MAX_BUFFER_MS)
   state = adaptBuffer(state, false, 2000)
   assert.equal(state.bufferMs, MAX_BUFFER_MS - 250)
+})
+
+test('adaptShareBuffer starts at zero, steps up only when troubled, and shrinks after a calm stretch', () => {
+  let state = SHARE_BUFFER_START
+  assert.equal(state.bufferMs, 0)
+  for (let i = 0; i < 10; i++) state = adaptShareBuffer(state, false, 2000)
+  assert.equal(state.bufferMs, 0, 'calm never raises it')
+  state = adaptShareBuffer(state, true, 2000)
+  assert.equal(state.bufferMs, 100)
+  state = adaptShareBuffer(state, true, 2000)
+  assert.equal(state.bufferMs, 250)
+  state = adaptShareBuffer(state, true, 2000)
+  assert.equal(state.bufferMs, SHARE_BUFFER_STEPS.at(-1), 'capped at 250')
+  assert.ok(SHARE_BUFFER_STEPS.at(-1) <= MIN_BUFFER_MS)
+  for (let i = 0; i < 14; i++) state = adaptShareBuffer(state, false, 2000)
+  assert.equal(state.bufferMs, 250, 'not yet calm for long enough')
+  state = adaptShareBuffer(state, false, 2000)
+  assert.equal(state.bufferMs, 100)
+  for (let i = 0; i < 15; i++) state = adaptShareBuffer(state, false, 2000)
+  assert.equal(state.bufferMs, 0)
+  state = adaptShareBuffer({bufferMs: 100, calmMs: 20000}, true, 2000)
+  assert.deepEqual(state, {bufferMs: 250, calmMs: 0}, 'trouble resets the calm timer')
 })
 
 test('describeLink explains what is limiting playback from each side', () => {

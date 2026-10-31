@@ -106,6 +106,20 @@ export function adaptBuffer(state, troubled, intervalMs) {
   return {bufferMs: Math.max(MIN_BUFFER_MS, state.bufferMs - SHRINK_STEP_MS), calmMs: 0}
 }
 
+// A live share or game is not a film: the 250 ms floor above that smooths playback is pure lag
+// there. Share receivers start at 0 (the browser's own adaptive buffer), step up only while this
+// viewer's connection is troubled, and step back down after the same calm stretch.
+export const SHARE_BUFFER_STEPS = [0, 100, 250]
+export const SHARE_BUFFER_START = {bufferMs: SHARE_BUFFER_STEPS[0], calmMs: 0}
+
+export function adaptShareBuffer(state, troubled, intervalMs) {
+  const index = Math.max(0, SHARE_BUFFER_STEPS.indexOf(state.bufferMs))
+  if (troubled) return {bufferMs: SHARE_BUFFER_STEPS[Math.min(SHARE_BUFFER_STEPS.length - 1, index + 1)], calmMs: 0}
+  const calmMs = state.calmMs + intervalMs
+  if (index === 0 || calmMs < CALM_BEFORE_SHRINK_MS) return {bufferMs: SHARE_BUFFER_STEPS[index], calmMs}
+  return {bufferMs: SHARE_BUFFER_STEPS[index - 1], calmMs: 0}
+}
+
 // `sender` is the host's outgoing video, `receiver` what a viewer reports getting. `host` and
 // `viewer` say whose they are ("Your", "Your friend's").
 function assess({rttMs, relayed, sender, receiver}, host, viewer) {

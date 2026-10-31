@@ -75,6 +75,8 @@ import {
 import {
   MIN_BUFFER_MS,
   adaptBuffer,
+  adaptShareBuffer,
+  SHARE_BUFFER_START,
   bitrateDelta,
   describeLink,
   describePeer,
@@ -592,6 +594,7 @@ async function openRoom(code, joining) {
     if (share === undefined) return
     if (share) session.shares.set(peerId, share)
     else session.shares.delete(peerId)
+    applyViewerBuffer(session.room?.getPeers()[peerId], peerId)
     render()
   })
   session.cuesAction.onRequest = limited('cues', async (request) => {
@@ -670,7 +673,7 @@ async function openRoom(code, joining) {
     const previous = session.peerStreams.get(peerId)
     if (previous?.claimedAt > metadata.claimedAt) return
     session.peerStreams.set(peerId, {stream, claimedAt: metadata.claimedAt})
-    applyViewerBuffer(room.getPeers()[peerId])
+    applyViewerBuffer(room.getPeers()[peerId], peerId)
     attachRemoteStream()
     render() // a share's tile appears once its stream arrives
   }
@@ -1279,10 +1282,15 @@ function hostState() {
 
 // ---------- Connection health ----------
 
-function applyViewerBuffer(pc) {
+// A peer whose stream is a live share (its own, or the host's) rather than a film.
+const isShareSender = (peerId) => session.shares.has(peerId) || Boolean(session.role === 'viewer' && peerId === session.hostId && session.remote?.screen)
+
+// Shares use their own low-latency buffer per sender (starts at 0); films keep session.buffer.
+function applyViewerBuffer(pc, peerId) {
+  const bufferMs = isShareSender(peerId) ? (person(peerId).shareBuffer ||= {...SHARE_BUFFER_START}).bufferMs : session.buffer.bufferMs
   for (const receiver of pc?.getReceivers() || []) {
-    if ('jitterBufferTarget' in receiver && receiver.jitterBufferTarget !== session.buffer.bufferMs) {
-      receiver.jitterBufferTarget = session.buffer.bufferMs
+    if ('jitterBufferTarget' in receiver && receiver.jitterBufferTarget !== bufferMs) {
+      receiver.jitterBufferTarget = bufferMs
     }
   }
 }
@@ -1344,6 +1352,17 @@ async function sampleConnection() {
     if (stats && session.peers.has(id)) {
       const p = person(id)
       Object.assign(p, {rttMs: stats.rttMs, relayed: stats.relayed})
+      if (isShareSender(id) && stats.inbound) {
+        // Low-latency policy for live shares. Freezes are ignored: a still screen sends few frames.
+        const delta = inboundDelta(p.shareInbound, stats.inbound)
+        p.shareInbound = stats.inbound
+        p.shareBuffer = adaptShareBuffer(p.shareBuffer || SHARE_BUFFER_START, isTroubled(delta && {...delta, freezes: 0}, stats.inbound.jitterMs), TELEMETRY_INTERVAL_MS)
+        applyViewerBuffer(pcs[id], id)
+      } else if (p.shareInbound) {
+        p.shareInbound = null
+        p.shareBuffer = null
+        applyViewerBuffer(pcs[id], id)
+      }
       if (isHost()) {
         p.sender = stats.outbound
         if (performance.now() - (p.receiverAt || 0) > HOST_TIMEOUT_MS) p.receiver = null
@@ -1410,16 +1429,21 @@ async function sampleConnection() {
     const delta = measured && !steady ? {...measured, freezes: 0, droppedFrames: 0} : measured
     session.lastInbound = stats.inbound
     if (measured?.delayMs != null) session.playoutDelayMs = measured.delayMs
-    session.buffer = adaptBuffer(session.buffer, isTroubled(delta, steady ? stats.inbound.jitterMs : 0), TELEMETRY_INTERVAL_MS)
-    applyViewerBuffer(pc)
+    const sharing = isShareSender(peerId)
+    // A share's buffer is adapted per sender above; the film buffer is left alone meanwhile.
+    if (!sharing) {
+      session.buffer = adaptBuffer(session.buffer, isTroubled(delta, steady ? stats.inbound.jitterMs : 0), TELEMETRY_INTERVAL_MS)
+      applyViewerBuffer(pc, peerId)
+    }
+    const shownBufferMs = sharing ? person(peerId).shareBuffer?.bufferMs ?? 0 : session.buffer.bufferMs
     const receiver = {
       lossPct: delta?.lossPct ?? 0,
       freezes: Math.max(0, delta?.freezes || 0, steady && !session.remote?.audioOnly && session.lastFrameAt && performance.now() - session.lastFrameAt > 4000 ? 1 : 0),
       droppedFrames: Math.max(0, delta?.droppedFrames || 0),
       fps: stats.inbound.fps,
       height: stats.inbound.height,
-      bufferMs: session.buffer.bufferMs,
-      delayMs: Math.max(0, Math.min(10000, session.frameDelayMs ?? (session.playoutDelayMs || session.buffer.bufferMs) + (stats.rttMs || 0) / 2 + DECODE_DELAY_MS)),
+      bufferMs: shownBufferMs,
+      delayMs: Math.max(0, Math.min(10000, session.frameDelayMs ?? (session.playoutDelayMs || shownBufferMs) + (stats.rttMs || 0) / 2 + DECODE_DELAY_MS)),
     }
     session.link = {...base, receiver, sender: session.remote?.senders?.[selfId] || null}
     logEvent('telemetry', 'viewer-sample', {

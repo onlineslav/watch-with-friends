@@ -138,3 +138,13 @@ test('isSubtitleSidecar matches subtitles named after the video', () => {
   assert.ok(!isSubtitleSidecar('/m/Movie.2020.mkv', '/m/Other.srt'))
   assert.ok(!isSubtitleSidecar('/m/Movie.2020.mkv', '/m/Movie.2020.mkv'))
 })
+
+test('encodes FLAC audio when Chromium supports it, AAC otherwise', () => {
+  const withFlac = planSession({media: media8Bit, filePath: 'movie.mkv', audioIndex: 2, support: {...allSupported, flac: true}})
+  assert.equal(withFlac.mime, 'video/mp4; codecs="hvc1.1.6.L153.B0,flac"')
+  assert.deepEqual(withFlac.args.slice(withFlac.args.indexOf('-c:a'), withFlac.args.indexOf('-c:a') + 4), ['-c:a', 'flac', '-ac', '2'])
+  assert.ok(!withFlac.args.includes('-b:a'))
+  const withoutFlac = planSession({media: media8Bit, filePath: 'movie.mkv', audioIndex: 2, support: allSupported})
+  assert.match(withoutFlac.mime, /mp4a\.40\.2"$/)
+  assert.ok(withoutFlac.args.includes('aac'))
+})

@@ -171,8 +171,15 @@ function planSession({
   }
 
   if (audioIndex != null) {
-    args.push('-map', `0:${audioIndex}`, '-c:a', 'aac', '-b:a', '192k', '-ac', '2')
-    codecs.push(CODECS.aac)
+    // FLAC when Chromium accepts it: this stream only reaches the host's own player, and WebRTC
+    // then re-encodes to Opus, so AAC would be a second lossy generation for viewers.
+    if (support.flac) {
+      args.push('-map', `0:${audioIndex}`, '-c:a', 'flac', '-ac', '2')
+      codecs.push(CODECS.flac)
+    } else {
+      args.push('-map', `0:${audioIndex}`, '-c:a', 'aac', '-b:a', '192k', '-ac', '2')
+      codecs.push(CODECS.aac)
+    }
   }
 
   args.push(

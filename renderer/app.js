@@ -260,6 +260,7 @@ const ui = {
   shareMenuAudioBitrate: $('share-menu-audio-bitrate'),
   shareMenuSettings: $('share-menu-settings'),
   shareMenuStop: $('share-menu-stop'),
+  audioFirst: $('audio-first'),
   leave: $('leave'),
   stage: $('stage'),
   localVideo: $('local-video'),
@@ -1236,17 +1237,19 @@ async function tuneSenders() {
         const keepSharp = Boolean(current.screen) && sharePriority(shareSettings.priority).value === 'text'
         const scale = keepSharp ? 1 : quality?.scale || Math.max(1, (settings.width || 0) / MAX_STREAM_WIDTH, (settings.height || 0) / 1080)
         const degradation = current.screen ? sharePriority(shareSettings.priority).degradation : 'maintain-framerate'
-        // Audio comes first when the connection struggles: it wins the bandwidth split against
-        // video and is marked for priority on the network, so the picture gives way, not the sound.
-        const audioFirst = track.kind !== 'audio' || (encoding.priority === 'high' && encoding.networkPriority === 'high')
-        if (encoding.maxBitrate === maxBitrate && audioFirst && (track.kind !== 'video' || (encoding.scaleResolutionDownBy === scale && params.degradationPreference === degradation))) continue
+        // With Advanced's "keep audio quality" on (the default), audio wins the bandwidth split
+        // against video and is marked for priority on the network, so the picture gives way, not
+        // the sound. Off puts it back to WebRTC's default, 'low', the same as video.
+        const audioPriority = shareSettings.audioFirst ? 'high' : 'low'
+        const audioSet = track.kind !== 'audio' || (encoding.priority === audioPriority && encoding.networkPriority === audioPriority)
+        if (encoding.maxBitrate === maxBitrate && audioSet && (track.kind !== 'video' || (encoding.scaleResolutionDownBy === scale && params.degradationPreference === degradation))) continue
         encoding.maxBitrate = maxBitrate
         if (track.kind === 'video') {
           encoding.scaleResolutionDownBy = scale
           params.degradationPreference = degradation
         } else {
-          encoding.priority = 'high'
-          encoding.networkPriority = 'high'
+          encoding.priority = audioPriority
+          encoding.networkPriority = audioPriority
         }
         await sender.setParameters(params).then(() => {
           logEvent('telemetry', 'send-parameters-applied', {peer: peerId, kind: track.kind, maxBitrate, scale: track.kind === 'video' ? scale : null})
@@ -3721,7 +3724,7 @@ applyZoom(zoom)
 // On Windows a window share sends only that window's app by default: whole-system audio there
 // also carries Discord and everything else playing, so people heard themselves back.
 const DEFAULT_SHARE_AUDIO = window.api.platform === 'win32' ? 'app' : 'system'
-const DEFAULT_SHARE_SETTINGS = {resolution: DEFAULT_RESOLUTION, frameRate: DEFAULT_FRAME_RATE, audioDeviceId: DEFAULT_SHARE_AUDIO, audioBitrate: DEFAULT_AUDIO_BITRATE, priority: DEFAULT_SHARE_PRIORITY}
+const DEFAULT_SHARE_SETTINGS = {resolution: DEFAULT_RESOLUTION, frameRate: DEFAULT_FRAME_RATE, audioDeviceId: DEFAULT_SHARE_AUDIO, audioBitrate: DEFAULT_AUDIO_BITRATE, priority: DEFAULT_SHARE_PRIORITY, audioFirst: true}
 let shareSettings = {...DEFAULT_SHARE_SETTINGS}
 try {
   const saved = JSON.parse(localStorage.getItem('shareSettings') || 'null')
@@ -3788,6 +3791,7 @@ function updateShareSettings(next, {restart = true} = {}) {
   shareSettings = {...shareSettings, ...next}
   saveShareSettings()
   syncShareControls()
+  if (before.audioFirst !== shareSettings.audioFirst) tuneSenders() // films too, not just shares
   if (!session.screen) return
   if (before.resolution !== shareSettings.resolution || before.frameRate !== shareSettings.frameRate) applyShareVideoConstraints()
   // The content hint applies to the live capture track; the sender preference follows via tuneSenders.
@@ -3810,12 +3814,14 @@ function syncShareControls() {
   }
   ui.sharePriorityHelp.textContent = SHARE_PRIORITIES.find((p) => p.value === sharePriority(shareSettings.priority).value).help
   ui.shareAudioHelp.textContent = AUDIO_SOURCE_HELP[shareSettings.audioDeviceId] ?? 'Sound from this input device.'
+  ui.audioFirst.checked = shareSettings.audioFirst !== false
 }
 
 for (const [key, parse, settingsSelect, menuSelect] of shareControls) {
   settingsSelect.addEventListener('change', () => updateShareSettings({[key]: parse(settingsSelect.value)}, {restart: false}))
   menuSelect.addEventListener('change', () => updateShareSettings({[key]: parse(menuSelect.value)}))
 }
+ui.audioFirst.addEventListener('change', () => updateShareSettings({audioFirst: ui.audioFirst.checked}, {restart: false}))
 syncShareControls()
 
 ui.openSettings.addEventListener('click', () => showSettings(true))

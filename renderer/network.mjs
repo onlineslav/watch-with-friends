@@ -11,6 +11,7 @@ export function createNetwork({getIceServers, PeerConnection, now = Date.now, re
   const peers = new Set()
   let servers = [], expiresAt = 0, pending = null, timer = null, disposed = false
   let nextConnectionId = 0
+  const iceErrors = new Set() // kinds of ICE candidate error already logged
   const network = new EventTarget()
   network.error = null
   const iceFor = (pcConfig = {}) => [...(pcConfig.iceServers || []).filter((s) => [].concat(s.urls).every((url) => /^stuns?:/i.test(url))), ...servers]
@@ -40,7 +41,16 @@ export function createNetwork({getIceServers, PeerConnection, now = Date.now, re
         record('peer-state', state)
       }
       for (const event of ['connectionstatechange', 'iceconnectionstatechange', 'icegatheringstatechange', 'signalingstatechange']) this.addEventListener(event, trace)
-      this.addEventListener('icecandidateerror', (event) => record('ice-error', {connection, code: event.errorCode, message: event.errorText}))
+      this.addEventListener('icecandidateerror', (event) => {
+        // Once per kind of error per run: a local interface that can't reach a STUN server (a VPN's
+        // IPv6 address, say) fails the same way on every one of the pooled connections, which once
+        // filled the log with thousands of identical lines while connecting worked fine.
+        const family = String(event.address || '').includes(':') ? 'ipv6' : 'ipv4'
+        const key = `${event.errorCode}|${event.url || ''}|${family}`
+        if (iceErrors.has(key)) return
+        iceErrors.add(key)
+        record('ice-error', {connection, code: event.errorCode, message: event.errorText, url: event.url || null, family})
+      })
       trace()
       this.addEventListener('connectionstatechange', () => {
         if (this.connectionState === 'closed') peers.delete(this)

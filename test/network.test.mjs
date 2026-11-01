@@ -79,11 +79,20 @@ test('connection diagnostics distinguish negotiation from ICE failures without c
     pc.iceConnectionState = pc.connectionState = 'failed'
     pc.dispatchEvent(new Event('connectionstatechange'))
     assert.equal(events.at(-1).connectionState, 'failed')
-    const error = new Event('icecandidateerror')
-    Object.assign(error, {errorCode: 701, errorText: 'STUN request timed out'})
-    pc.dispatchEvent(error)
-    assert.deepEqual(events.at(-1), {event: 'ice-error', connection: events[0].connection, code: 701, message: 'STUN request timed out'})
-    assert.ok(!/private|192\.168/.test(JSON.stringify(events)), 'only state and candidate errors are recorded')
+    const iceError = (url, address) => {
+      const error = new Event('icecandidateerror')
+      Object.assign(error, {errorCode: 701, errorText: 'STUN host lookup received error.', url, address})
+      pc.dispatchEvent(error)
+    }
+    iceError('stun:stun.l.google.com:19302', 'fd7a:115c:a1e0::1')
+    assert.deepEqual(events.at(-1), {event: 'ice-error', connection: events[0].connection, code: 701, message: 'STUN host lookup received error.', url: 'stun:stun.l.google.com:19302', family: 'ipv6'})
+    const logged = events.length
+    iceError('stun:stun.l.google.com:19302', 'fd7a:115c:a1e0::2')
+    assert.equal(events.length, logged, 'the same error again is not logged again')
+    iceError('stun:stun.cloudflare.com:3478', '192.168.1.14')
+    assert.equal(events.length, logged + 1, 'another server, or another address family, is')
+    assert.equal(events.at(-1).family, 'ipv4')
+    assert.ok(!/private|192\.168|fd7a/.test(JSON.stringify(events)), 'only state and candidate errors are recorded, never local addresses')
     pc.close()
   } finally { network.stop() }
 })

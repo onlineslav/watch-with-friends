@@ -112,3 +112,50 @@ if (!utils.startsWith(retryMarker)) {
   utils = utils.replace('socket.onclose = () => {', 'socket.onclose = (event) => {').replace(before, after)
   fs.writeFileSync(utilsPath, retryMarker + utils)
 }
+
+// A room pairs each incoming stream (or added track) with the next pending metadata message,
+// first come first served, and dropped a stream that arrived with none pending. Over a reused
+// connection the tracks for a just-joined room arrive at once, while the host's metadata for that
+// room can still be held until the room's token resolves: the stream was dropped, the metadata
+// then waited for it forever, and the viewer never got the host's video (the network check's
+// intermittent "viewer video never ready", with an empty stream list on the viewer). Streams and
+// tracks are now matched to metadata by the ids it already carries, and one that arrives first is
+// kept for its metadata to find (the existing cache lookup in receiveStreamMeta/receiveTrackMeta).
+// Matching by id also stops a stream meant for another room on the same connection from taking
+// this room's metadata.
+patch('media.mjs', [
+  ['getRemoteStream: (key, streamId) => remoteStreamsByKey.get(key) ?? (streamId ? remoteStreamsById.get(streamId) : void 0),',
+   `getRemoteStream: (key, streamId) => remoteStreamsByKey.get(key) ?? (streamId ? remoteStreamsById.get(streamId) : void 0),
+		rememberArrivedStream: (stream) => {
+			if (typeof stream?.id === "string") remoteStreamsById.set(stream.id, stream);
+		},`],
+  ['getRemoteTrack: (key, trackId) => remoteTracksByKey.get(key) ?? (trackId ? remoteTracksById.get(trackId) : void 0),',
+   `getRemoteTrack: (key, trackId) => remoteTracksByKey.get(key) ?? (trackId ? remoteTracksById.get(trackId) : void 0),
+		rememberArrivedTrack: (track, stream) => {
+			if (typeof track?.id === "string") remoteTracksById.set(track.id, { track, stream });
+		},`],
+  [`			const next = pendingStreamMetas[id]?.shift();
+			if (!next) return;
+			emitStream(id, next.key, stream, next.metadata);`,
+   `			const pending = pendingStreamMetas[id] ?? [];
+			let index = pending.findIndex((meta) => meta.streamId === stream.id);
+			if (index < 0) index = pending.findIndex((meta) => meta.streamId === void 0);
+			if (index < 0) {
+				getSharedMediaPeer(id)?.__trysteroMedia?.rememberArrivedStream(stream);
+				return;
+			}
+			const [next] = pending.splice(index, 1);
+			emitStream(id, next.key, stream, next.metadata);`],
+  [`			const next = pendingTrackMetas[id]?.shift();
+			if (!next) return;
+			emitTrack(id, next.key, track, stream, next.metadata);`,
+   `			const pending = pendingTrackMetas[id] ?? [];
+			let index = pending.findIndex((meta) => meta.trackId === track.id);
+			if (index < 0) index = pending.findIndex((meta) => meta.trackId === void 0);
+			if (index < 0) {
+				getSharedMediaPeer(id)?.__trysteroMedia?.rememberArrivedTrack(track, stream);
+				return;
+			}
+			const [next] = pending.splice(index, 1);
+			emitTrack(id, next.key, track, stream, next.metadata);`],
+])

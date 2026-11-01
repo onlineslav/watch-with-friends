@@ -834,6 +834,10 @@ async function hostFile(filePath, item = null, {preview = false, start, autoplay
     })
     current.openingMedia = false
     if (opened && autoplay && !current.preview) ui.localVideo.play().catch((error) => {
+      // AbortError is play() being interrupted (a pause, or the next file loading) before it got
+      // going, not the media failing: pausing straight after opening used to end the host's
+      // session with "could not play this media". Real failures come through the player's 'error'.
+      if (error?.name === 'AbortError') return logEvent('media', 'play-interrupted', {message: errorMessage(error)})
       if (session === current && !current.closed && current.claimedAt === claimedAt && isHost()) failHosting(error)
     })
   } catch (err) {

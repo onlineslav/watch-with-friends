@@ -5,6 +5,61 @@ import {createActionWireManager} from '../node_modules/@trystero-p2p/core/dist/a
 import {createReceiveBudget} from '../shared/receive-budget.mjs'
 import {OfferPool, offerTtl} from '../node_modules/@trystero-p2p/core/dist/offer-pool.mjs'
 import {createHandshakeManager} from '../node_modules/@trystero-p2p/core/dist/handshake.mjs'
+import {createMediaIdentityCache, createMediaManager} from '../node_modules/@trystero-p2p/core/dist/media.mjs'
+
+// A room's media manager over one shared connection, recording what reaches onPeerStream/onPeerTrack.
+function mediaRoom() {
+  const shared = {__trysteroMedia: createMediaIdentityCache()}
+  const media = createMediaManager({iterate() {}, isActive: () => true, getSharedMediaPeer: () => shared})
+  const streams = []
+  const tracks = []
+  media.onPeerStream = (stream, id, metadata) => streams.push({stream, id, metadata})
+  media.onPeerTrack = (track, stream, id, metadata) => tracks.push({track, stream, id, metadata})
+  return {media, streams, tracks}
+}
+
+test('a stream that arrives before its room has its metadata is still delivered (reused connection, new room)', () => {
+  // Rejoining over a reused connection, the host's stream metadata for the new room can be held
+  // until the room's token resolves while the tracks themselves arrive at once. The stream used
+  // to be dropped, and the late metadata then waited for it forever: a viewer with no video.
+  const {media, streams} = mediaRoom()
+  const stream = {id: 'film'}
+  media.receiveRemoteStream('host', stream) // video track
+  media.receiveRemoteStream('host', stream) // audio track of the same stream
+  assert.equal(streams.length, 0, 'nothing to deliver without metadata yet')
+  media.receiveStreamMeta({k: 'key-1', s: 'film', m: {claimedAt: 1}}, 'host')
+  assert.equal(streams.length, 1)
+  assert.equal(streams[0].stream, stream)
+  assert.deepEqual(streams[0].metadata, {claimedAt: 1})
+})
+
+test('streams are matched to their own metadata by id, not by arrival order', () => {
+  const {media, streams} = mediaRoom()
+  media.receiveStreamMeta({k: 'key-a', s: 'a', m: {claimedAt: 1}}, 'host')
+  media.receiveStreamMeta({k: 'key-b', s: 'b', m: {claimedAt: 2}}, 'host')
+  media.receiveRemoteStream('host', {id: 'b'})
+  media.receiveRemoteStream('host', {id: 'a'})
+  assert.deepEqual(streams.map(({stream, metadata}) => [stream.id, metadata.claimedAt]), [['b', 2], ['a', 1]])
+})
+
+test('metadata first, then the stream, still works the usual way', () => {
+  const {media, streams} = mediaRoom()
+  media.receiveStreamMeta({k: 'key-1', s: 'film', m: {claimedAt: 3}}, 'host')
+  media.receiveRemoteStream('host', {id: 'film'})
+  media.receiveRemoteStream('host', {id: 'film'}) // its second track: delivered once
+  assert.deepEqual(streams.map(({stream, metadata}) => [stream.id, metadata.claimedAt]), [['film', 3]])
+})
+
+test('a single added track that arrives before its metadata is still delivered', () => {
+  const {media, tracks} = mediaRoom()
+  const stream = {id: 'film'}
+  const track = {id: 'audio-2'}
+  media.receiveRemoteTrack('host', track, stream)
+  media.receiveTrackMeta({k: 'key-t', s: 'film', t: 'audio-2', m: {claimedAt: 4}}, 'host')
+  assert.equal(tracks.length, 1)
+  assert.equal(tracks[0].track, track)
+  assert.equal(tracks[0].stream, stream)
+})
 
 function payload(type, body = [], {last = true, nonce = 0} = {}) {
   const out = new Uint8Array(36 + body.length)

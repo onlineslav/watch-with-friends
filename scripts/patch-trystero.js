@@ -113,6 +113,41 @@ if (!utils.startsWith(retryMarker)) {
   fs.writeFileSync(utilsPath, retryMarker + utils)
 }
 
+// Renegotiation (a host adding its film or share to a connection) is one offer and one answer
+// over the data channel, and nothing recovers if the answer never comes back: the connection
+// sits in have-local-offer forever and the viewer never gets the host's video (the network
+// check's intermittent "viewer video never ready", caught with the host's connection to one
+// viewer stuck in have-local-offer while that viewer had already answered). An offer still
+// unanswered after a few seconds on a live connection is sent again; the other side answers a
+// repeated offer like any other. And an answer that arrives with no offer pending (a repeat) is
+// ignored rather than applied, which would fail and make the shared connection tear itself down.
+patch('peer.mjs', [
+  ['\tlet makingOffer = false;', '\tlet makingOffer = false;\n\tlet offerWatch = null;'],
+  [`			await pc.setLocalDescription(restartIce ? await pc.createOffer({ iceRestart: true }) : void 0);
+			return await emitLocalDescriptionSignal();`,
+   `			await pc.setLocalDescription(restartIce ? await pc.createOffer({ iceRestart: true }) : void 0);
+			const sent = await emitLocalDescriptionSignal();
+			watchOffer(pc.localDescription?.sdp);
+			return sent;`],
+  ['\tpc.onnegotiationneeded = async () => createOffer(false);',
+   `\tconst watchOffer = (sdp, attempt = 1) => {
+		resetTimer(offerWatch);
+		offerWatch = setTimeout(() => {
+			offerWatch = null;
+			if (!sdp || pc.signalingState !== "have-local-offer" || pc.localDescription?.sdp !== sdp || pc.connectionState === "closed") return;
+			emitSignal(localDescriptionSignal(pc));
+			if (attempt < 4) watchOffer(sdp, attempt + 1);
+		}, 3e3 * attempt);
+	};
+	pc.onnegotiationneeded = async () => createOffer(false);`],
+  [`				if (sdp.type === answerType) {
+					isSettingRemoteAnswerPending = true;`,
+   `				if (sdp.type === answerType) {
+					if (pc.signalingState !== "have-local-offer") return;
+					isSettingRemoteAnswerPending = true;`],
+  ['\t\tdestroy: () => {\n\t\t\tclearDisconnectedCloseTimer();', '\t\tdestroy: () => {\n\t\t\tclearDisconnectedCloseTimer();\n\t\t\tresetTimer(offerWatch);'],
+])
+
 // A room pairs each incoming stream (or added track) with the next pending metadata message,
 // first come first served, and dropped a stream that arrived with none pending. Over a reused
 // connection the tracks for a just-joined room arrive at once, while the host's metadata for that

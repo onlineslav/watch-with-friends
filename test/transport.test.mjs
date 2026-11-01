@@ -6,6 +6,76 @@ import {createReceiveBudget} from '../shared/receive-budget.mjs'
 import {OfferPool, offerTtl} from '../node_modules/@trystero-p2p/core/dist/offer-pool.mjs'
 import {createHandshakeManager} from '../node_modules/@trystero-p2p/core/dist/handshake.mjs'
 import {createMediaIdentityCache, createMediaManager} from '../node_modules/@trystero-p2p/core/dist/media.mjs'
+import createPeer from '../node_modules/@trystero-p2p/core/dist/peer.mjs'
+
+// Just enough RTCPeerConnection for peer.mjs's offer/answer handling, with an open data channel
+// (so this is renegotiation on a live connection, as when a host adds its film).
+let offers = 0
+class FakeConnection extends EventTarget {
+  signalingState = 'stable'
+  connectionState = 'connected'
+  iceConnectionState = 'connected'
+  iceGatheringState = 'complete'
+  localDescription = null
+  remoteDescription = null
+  createDataChannel() { return {readyState: 'open', send() {}, close() {}} }
+  async setLocalDescription(description) {
+    if (description?.type === 'rollback') { this.signalingState = 'stable'; return }
+    const type = this.signalingState === 'have-remote-offer' ? 'answer' : 'offer'
+    this.localDescription = {type, sdp: `v=0 a=rtpmap:111 opus ${type} ${++offers}`}
+    this.signalingState = type === 'offer' ? 'have-local-offer' : 'stable'
+  }
+  async setRemoteDescription(description) {
+    if (description.type === 'answer') {
+      if (this.signalingState !== 'have-local-offer') throw new Error('Called in wrong state: ' + this.signalingState)
+      this.signalingState = 'stable'
+    } else this.signalingState = 'have-remote-offer'
+    this.remoteDescription = description
+  }
+  getSenders() { return [] }
+  close() { this.connectionState = 'closed' }
+}
+const settle = () => new Promise((resolve) => setImmediate(resolve))
+
+test('an offer whose answer never arrives is sent again, and a repeated answer is ignored', async (t) => {
+  t.mock.timers.enable({apis: ['setTimeout']})
+  const peer = createPeer(true, {rtcPolyfill: FakeConnection, trickleIce: true})
+  const sent = []
+  const errors = []
+  peer.setHandlers({signal: (signal) => sent.push(signal), error: (error) => errors.push(error.message)})
+  await settle()
+  const offersSent = () => sent.filter((signal) => signal.type === 'offer')
+  assert.equal(offersSent().length, 1, 'the offer goes out')
+  t.mock.timers.tick(2999)
+  await settle()
+  assert.equal(offersSent().length, 1, 'not repeated straight away')
+  t.mock.timers.tick(1)
+  await settle()
+  assert.equal(offersSent().length, 2, 'unanswered after 3s: sent again')
+  assert.equal(offersSent()[1].sdp, offersSent()[0].sdp, 'the same offer')
+  await peer.signal({type: 'answer', sdp: 'v=0 a=rtpmap:111 opus answer'})
+  assert.equal(peer.connection.signalingState, 'stable')
+  t.mock.timers.tick(60_000)
+  await settle()
+  assert.equal(offersSent().length, 2, 'answered: no more repeats')
+  await peer.signal({type: 'answer', sdp: 'v=0 a=rtpmap:111 opus answer'}) // the repeat's answer
+  assert.deepEqual(errors, [], 'a repeated answer is ignored, not an error that tears the connection down')
+  peer.destroy()
+})
+
+test('an offer is repeated a few times at most', async (t) => {
+  t.mock.timers.enable({apis: ['setTimeout']})
+  const peer = createPeer(true, {rtcPolyfill: FakeConnection, trickleIce: true})
+  const sent = []
+  peer.setHandlers({signal: (signal) => sent.push(signal)})
+  await settle()
+  for (let i = 0; i < 20; i++) {
+    t.mock.timers.tick(10_000)
+    await settle()
+  }
+  assert.equal(sent.filter((signal) => signal.type === 'offer').length, 5, 'the offer and four repeats, then it stops')
+  peer.destroy()
+})
 
 // A room's media manager over one shared connection, recording what reaches onPeerStream/onPeerTrack.
 function mediaRoom() {

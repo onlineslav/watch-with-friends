@@ -21,6 +21,13 @@ app.setPath('userData', path.join(temporary, 'profile'))
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const run = (win, source) => win.webContents.executeJavaScript(source).catch((error) => { throw new Error(`${error.message}\nExecuting: ${source}`) })
+const testWindows = [] // [name, BrowserWindow], for failure dumps
+const connectionDump = `JSON.stringify({self: __test.selfId, role: __test.session.role, claimedAt: __test.session.claimedAt, preview: Boolean(__test.session.preview),
+  published: __test.session.stream?.getTracks().map((t) => t.kind + ':' + t.readyState) ?? null,
+  peers: Object.entries(__test.session.room?.getPeers() || {}).map(([id, pc]) => ({id, inSession: __test.session.peers.has(id), conn: pc.connectionState, ice: pc.iceConnectionState, sig: pc.signalingState,
+    senders: pc.getSenders().map((s) => s.track ? s.track.kind + ':' + s.track.readyState : 'none'),
+    receivers: pc.getReceivers().map((r) => r.track.kind + ':' + r.track.readyState + (r.track.muted ? ':muted' : '')),
+    transceivers: pc.getTransceivers().map((t) => (t.mid ?? '-') + ':' + t.direction + '/' + (t.currentDirection ?? '-'))}))})`
 async function until(win, condition, timeoutMs = publicDiscovery ? 90000 : 15000) {
   const start = Date.now()
   while (Date.now() - start < timeoutMs) {
@@ -28,6 +35,12 @@ async function until(win, condition, timeoutMs = publicDiscovery ? 90000 : 15000
     await pause(100)
   }
   console.error(await run(win, `JSON.stringify({identity:__test.identity?.username, friendIdentity:__test.friendNetwork.identity?.username, homeHidden:document.getElementById('home').hidden, welcomeHidden:document.getElementById('welcome').hidden, startupHidden:document.getElementById('startup').hidden, startup:document.getElementById('startup-status').textContent})`))
+  // Every window's WebRTC side of it: what each is sending and receiving, per connection, and
+  // where negotiation stands. A viewer with no stream is usually explained on the host's side.
+  for (const [name, other] of testWindows) {
+    if (other.isDestroyed()) continue
+    console.error(`${name} connections: ` + await run(other, connectionDump).catch((error) => error.message))
+  }
     console.error(await run(win, `JSON.stringify({friends:__test.friendNetwork.list(), role:__test.session.role, peers:[...__test.session.peers], remote:__test.session.remote, connection:__test.session.connection, video:{ready:document.getElementById('remote-video').readyState, frames:document.getElementById('remote-video').getVideoPlaybackQuality().totalVideoFrames}, streams:[...__test.session.peerStreams].map(([id, entry]) => ({id, claimedAt:entry.claimedAt, tracks:entry.stream.getTracks().map(t => ({kind:t.kind, muted:t.muted, state:t.readyState}))})), errors:__test.errors})`))
   assert.fail(`Timed out: ${condition}`)
 }
@@ -151,6 +164,7 @@ app.whenReady().then(async () => {
     for (const name of ['alpha', 'bravo', 'charlie']) {
       const win = new BrowserWindow({show: false, webPreferences: {partition: `network-${name}`, backgroundThrottling: false, autoplayPolicy: 'no-user-gesture-required', preload: path.join(temporary, 'preload.js')}})
       windows.push(win)
+      testWindows.push([name, win])
       win.webContents.setAudioMuted(true) // checks read levels inside Web Audio; nothing plays out loud
       require('../main/main').watchTransportWarnings(win.webContents)
       if (checkYouTube) registerYouTube(win.webContents.session)
@@ -331,16 +345,21 @@ app.whenReady().then(async () => {
       assert.equal(await run(b, 'document.getElementById("playlist-item-menu").matches(":popover-open")'), false)
       assert.equal(await run(b, 'document.activeElement.classList.contains("playlist-options")'), true)
       const wasPaused = await run(a, '__test.getState().paused')
+      // Native key events only reach a focused page, and the three hidden windows trade focus.
+      b.webContents.focus()
       b.webContents.sendInputEvent({type: 'keyDown', keyCode: 'Space'})
       b.webContents.sendInputEvent({type: 'keyUp', keyCode: 'Space'})
       await until(b, 'document.getElementById("playlist-item-menu").matches(":popover-open")')
       assert.equal(await run(a, '__test.getState().paused'), wasPaused)
+      b.webContents.focus()
       b.webContents.sendInputEvent({type: 'keyDown', keyCode: 'Escape'})
       b.webContents.sendInputEvent({type: 'keyUp', keyCode: 'Escape'})
       await until(b, '!document.getElementById("playlist-item-menu").matches(":popover-open")')
+      const baseRatio = await run(b, 'devicePixelRatio')
       for (const zoom of [0.5, 1, 2]) {
         b.webContents.setZoomFactor(zoom)
-        await pause(100)
+        // The new zoom reaches the page's layout a moment later; a fixed pause wasn't always enough.
+        await until(b, `Math.abs(devicePixelRatio - ${baseRatio * zoom}) < 0.01`)
         await showDownloadMenu(b)
         assert.equal(await run(b, `(() => {
           const box = document.getElementById('playlist-item-menu').getBoundingClientRect();

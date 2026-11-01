@@ -342,7 +342,10 @@ app.whenReady().then(async () => {
         if (!__test.session.downloads.jobs.has('${downloadItem}')) throw new Error('Download click did not start a job');
       })()`)
     }
-    const downloadsIdle = (win) => until(win, '__test.session.downloads.jobs.size === 0')
+    // A whole file crossing a data channel while a film streams: how long that takes is the
+    // machine's throughput, not a state change, and CI's Intel Mac runner needed more than the 15s
+    // every other wait gets (its connections were healthy, the transfer just wasn't done).
+    const downloadsIdle = (win) => until(win, '__test.session.downloads.jobs.size === 0', publicDiscovery ? 90000 : 60000)
     try {
       await showDownloadMenu(b)
       assert.equal(await run(b, `document.activeElement.id`), 'playlist-download')

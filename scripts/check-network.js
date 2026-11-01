@@ -847,8 +847,26 @@ app.whenReady().then(async () => {
     for (const win of windows) assert.deepEqual(await run(win, '__test.errors'), [])
   } finally {
     clearTimeout(watchdog)
+    // So a failure's log below includes what the windows recorded in their last moments.
+    await Promise.all(windows.map((win) => (win.isDestroyed() ? null : run(win, '__test.flushLog()').catch(() => {}))))
+    await pause(300)
     for (const win of windows) if (!win.isDestroyed()) win.destroy()
     require('../main/media').stopAll()
     diagnostics.stop()
   }
-}).then(() => app.exit(0), (error) => { console.error(error); app.exit(1) })
+}).then(() => app.exit(0), (error) => {
+  console.error(error)
+  // A timeout says what never happened, not why: the windows' own log usually does (a host
+  // failing to play, ffmpeg exiting), and on CI this is the only place to see it.
+  try {
+    const dir = path.join(temporary, 'logs')
+    const lines = fs.readdirSync(dir).filter((name) => name.endsWith('.log')).sort().reverse()
+      .flatMap((name) => fs.readFileSync(path.join(dir, name), 'utf8').split('\n'))
+      .filter((line) => /"lv":"(error|warn)"|"sc":"(media|ffmpeg)"/.test(line) && !/"ev":"(ice-error|transport-warning)"/.test(line))
+    console.error(`--- last ${Math.min(40, lines.length)} errors, warnings and media events from the windows' log ---`)
+    for (const line of lines.slice(-40)) console.error(line.slice(0, 600))
+  } catch (logError) {
+    console.error(`(no diagnostic log to show: ${logError.message})`)
+  }
+  app.exit(1)
+})

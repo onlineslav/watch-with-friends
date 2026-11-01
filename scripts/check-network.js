@@ -109,6 +109,13 @@ async function fixtures() {
       },
       getState: hostState, sampleConnection, flushLog, youtube, selfId, errors: [],
     };
+    // What opened and closed the playlist item menu, and the key/click events around it, for a
+    // failure to explain itself (functions declared in app.js can be wrapped from here).
+    __test.menuTrace = [];
+    const traceMenu = (name, fn) => (...args) => { __test.menuTrace.push(name + ' ' + (new Error().stack.split('\\n')[2] || '').trim().slice(0, 80) + ' open=' + document.getElementById('playlist-item-menu').matches(':popover-open')); return fn(...args); };
+    closePlaylistMenu = traceMenu('close', closePlaylistMenu);
+    togglePlaylistMenu = traceMenu('toggle', togglePlaylistMenu);
+    for (const type of ['keydown', 'keyup', 'click']) document.addEventListener(type, (e) => __test.menuTrace.push(type + ' ' + (e.code || '') + ' on ' + (e.target.className || e.target.tagName) + (e.defaultPrevented ? ' (prevented)' : '')), true);
     window.addEventListener('error', (e) => __test.errors.push(e.message));
     window.addEventListener('unhandledrejection', (e) => __test.errors.push(String(e.reason)));
   `
@@ -345,26 +352,53 @@ app.whenReady().then(async () => {
       assert.equal(await run(b, 'document.getElementById("playlist-item-menu").matches(":popover-open")'), false)
       assert.equal(await run(b, 'document.activeElement.classList.contains("playlist-options")'), true)
       const wasPaused = await run(a, '__test.getState().paused')
-      // Native key events only reach a focused page, and the three hidden windows trade focus.
-      b.webContents.focus()
-      b.webContents.sendInputEvent({type: 'keyDown', keyCode: 'Space'})
-      b.webContents.sendInputEvent({type: 'keyUp', keyCode: 'Space'})
-      await until(b, 'document.getElementById("playlist-item-menu").matches(":popover-open")')
+      // Real key presses, through the page's own input pipeline (so Space activates the focused
+      // button natively, which a synthetic KeyboardEvent can't). webContents.sendInputEvent goes
+      // through the OS window and sometimes never arrived at these hidden windows (traced: no
+      // keydown at all); the DevTools protocol delivers to the page whatever the window's focus.
+      // A press can also land while the list redraws under it (focus moves to the new row's
+      // button between keydown and keyup, so no click): press again, at most three times in all.
+      const press = async (win, key, code, keyCode) => {
+        if (!win.webContents.debugger.isAttached()) win.webContents.debugger.attach()
+        for (const type of ['keyDown', 'keyUp']) {
+          await win.webContents.debugger.sendCommand('Input.dispatchKeyEvent', {type, key, code, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode, ...(type === 'keyDown' && key.length === 1 ? {text: key} : {})})
+        }
+      }
+      const menuOpen = 'document.getElementById("playlist-item-menu").matches(":popover-open")'
+      for (let attempt = 1; ; attempt++) {
+        await press(b, ' ', 'Space', 32)
+        try {
+          await until(b, menuOpen, attempt < 3 ? 2000 : undefined)
+          break
+        } catch (error) {
+          if (attempt >= 3) {
+            console.error('menu trace: ' + await run(b, 'JSON.stringify(__test.menuTrace.slice(-30))'))
+            throw error
+          }
+          await run(b, `document.querySelector('#playlist-items .playlist-options')?.focus(); true`)
+        }
+      }
       assert.equal(await run(a, '__test.getState().paused'), wasPaused)
-      b.webContents.focus()
-      b.webContents.sendInputEvent({type: 'keyDown', keyCode: 'Escape'})
-      b.webContents.sendInputEvent({type: 'keyUp', keyCode: 'Escape'})
+      await press(b, 'Escape', 'Escape', 27)
       await until(b, '!document.getElementById("playlist-item-menu").matches(":popover-open")')
+      b.webContents.debugger.detach()
       const baseRatio = await run(b, 'devicePixelRatio')
       for (const zoom of [0.5, 1, 2]) {
+        // A zoom change resizes the page, and the app closes the item menu on resize (it would be
+        // left in the wrong place). Under load that resize can arrive after the menu reopens, so
+        // wait for the resize itself, not just the new zoom, before opening it.
+        await run(b, `window.__resized = false; addEventListener('resize', () => (window.__resized = true), {once: true}); true`)
         b.webContents.setZoomFactor(zoom)
-        // The new zoom reaches the page's layout a moment later; a fixed pause wasn't always enough.
-        await until(b, `Math.abs(devicePixelRatio - ${baseRatio * zoom}) < 0.01`)
+        await until(b, `window.__resized && Math.abs(devicePixelRatio - ${baseRatio * zoom}) < 0.01`)
+        await pause(100)
         await showDownloadMenu(b)
-        assert.equal(await run(b, `(() => {
+        const placement = await run(b, `(() => {
           const box = document.getElementById('playlist-item-menu').getBoundingClientRect();
-          return box.width > 0 && box.left >= 0 && box.top >= 0 && box.right <= innerWidth && box.bottom <= innerHeight;
-        })()`), true, `Download menu stays in the viewport at ${zoom * 100}% zoom`)
+          const anchor = document.activeElement?.closest?.('.playlist-item')?.getBoundingClientRect?.();
+          return JSON.stringify({fits: box.width > 0 && box.left >= 0 && box.top >= 0 && box.right <= innerWidth && box.bottom <= innerHeight,
+            box: [box.left, box.top, box.right, box.bottom].map(Math.round), viewport: [innerWidth, innerHeight], dpr: devicePixelRatio, anchor: anchor && [anchor.left, anchor.top, anchor.right, anchor.bottom].map(Math.round)});
+        })()`)
+        assert.equal(JSON.parse(placement).fits, true, `Download menu stays in the viewport at ${zoom * 100}% zoom: ${placement}`)
         await run(b, `document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape',bubbles:true}))`)
       }
       b.webContents.setZoomFactor(1)

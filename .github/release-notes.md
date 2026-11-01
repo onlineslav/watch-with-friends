@@ -1,15 +1,15 @@
-## What's new in 0.7.0
+## What's new in 0.7.1
 
-Window sharing that shows the whole app, and a much smoother app.
+Reliability fixes for watching together.
 
 Windows users and Mac users on 0.5.3 or later receive this release through the in-app updater. Mac users on 0.5.2 or earlier should install the DMG below once to enable future in-app updates.
 
-- **Share a whole app, plugins and pop-ups included (Windows).** Sharing a window now also shows that app's other windows, such as a DAW's plugin windows or a dialog, laid out the way they are on your screen, and nothing from any other app. A window covering the app no longer hides part of the share. Turn it off with "Include the app's other windows" in the share picker.
-- **Share a minimized window (Windows).** It starts right away; friends see a calm "is minimized" card until you restore it, and the same card if you minimize it while sharing.
-- **Change window without stopping.** Right-click your own share and choose **Change window…** to switch what you're sharing.
-- **Smoother all round.** The app no longer redraws itself 60 times a second while nothing changes, and the share picker no longer freezes the window every time it refreshes. Shares run at a steady frame rate and follow a window as it's resized.
-- **Sharper on weak connections.** Films and shares are now scaled down correctly when the connection struggles; 4K films are sent at 1080p instead of 4K.
-- **A quieter stop button.** Stop sharing is now a small button in the corner of your own share tile.
+- **Friends no longer sometimes get a black screen.** When someone started playing or sharing, a friend's connection could occasionally miss the video entirely until they left and rejoined. Connections now recover on their own.
+- **No more false "The host could not play this media."** Pausing straight after opening a file ended the session with that error; it no longer does.
+- **The playlist's ••• menu stays open.** It could close by itself, and keyboard focus could jump, whenever the playlist updated (for example when a friend's progress changed).
+- **A tidier diagnostic log.** A harmless network message that could repeat thousands of times per session (on computers with a VPN, for example) is now logged once, so the log keeps what matters when you send it for help.
+
+Also in 0.7.0: share a whole app with its plugin windows, share minimized windows, change window without stopping, and a much smoother app. See the 0.7.0 release for details.
 
 ## Download
 

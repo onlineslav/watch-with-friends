@@ -2715,6 +2715,12 @@ function renderPlaylist() {
   // Don't rebuild the rows under someone dragging one; the list catches up when they let go.
   if (ui.playlistItems.dataset.signature === signature || itemDrag) return paintPlaylistStatus(rows)
   ui.playlistItems.dataset.signature = signature
+  // A rebuild (someone's progress or availability changed) used to close an open item menu and
+  // drop keyboard focus, so a menu could vanish mid-use and a keypress land nowhere. Both come back
+  // on the same item's new row below.
+  const reopenMenu = playlistMenu && playlistItemMenu.matches(':popover-open') ? playlistMenu.id : null
+  const focusedRow = document.activeElement?.closest?.('.playlist-item')
+  const refocus = focusedRow && ui.playlistItems.contains(focusedRow) ? {id: focusedRow.dataset.id, className: document.activeElement.className} : null
   closePlaylistMenu()
   ui.playlistItems.replaceChildren(
     ...rows.map(({item, current, available}, index) => {
@@ -2762,6 +2768,13 @@ function renderPlaylist() {
       return row
     }),
   )
+  const newRow = (id) => [...ui.playlistItems.children].find((row) => row.dataset.id === id)
+  if (refocus) {
+    const target = [...(newRow(refocus.id)?.querySelectorAll('button') || [])].find((button) => button.className === refocus.className)
+    target?.focus()
+  }
+  const menuButton = reopenMenu && newRow(reopenMenu)?.querySelector('.playlist-options')
+  if (menuButton) togglePlaylistMenu(reopenMenu, menuButton)
   paintPlaylistStatus(rows)
 }
 

@@ -11,3 +11,4 @@
 - M1.1 verified (3c8609d, 7c26f5e; workflow-builder, 2 attempts; audit 2 MEDIUM + 1 LOW, all fixed). Worker deployed (version 7a1a52ac), 0.8.0 uploads checked. ~410k tokens incl. pre-mortem and audit.
 - M1.3 verified (74c20e0; workflow-builder, 1 attempt, ~180k tokens). Not yet tried on a real session.
 - M1.4 verified (72b4e3f; workflow-builder, 1 attempt, ~320k; pre-mortem 3 HIGH merged; audit found the bench sound and traced the share's −650ms to app-audio timestamps from 0 and the viewer's mono to a one-sided SDP patch: both moved to M1.5/M1.6). Aya (2026-11-03): no more questions, build everything, full sweep at the end.
+- M1.9 verified (56e0306, cf6aa73; workflow-builder, 2 attempts, ~490k; audit 2 MEDIUM + 3 LOW, 4 fixed). M1.5 built (3877b63, ~205k): film +42→+16.5ms, share fixed; whole-app worker on the page clock.

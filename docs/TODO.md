@@ -187,7 +187,7 @@ omit real device latency. Decided: no unmuted device probe (no-audible-tests); t
 muted context".
 
 ### M1.9 Session context and "something's wrong" marks [wire]
-Status: in progress
+Status: verified
 Added: Aya, 2026-11-03 ("I want everything that would be useful"). Built right after M1.4, before the next release,
 so Lenna's first live session has it.
 Story: When Lenna or I notice something bad, one key press marks the moment in both our logs, and the log already
@@ -229,7 +229,16 @@ a rate; never pick host-computer while the other link is full); MEDIUM `renderer
 the note box (needs `preventDefault`); LOW device labels can carry first names ("Lenna's AirPods") — Decided: strip
 the possessive prefix before logging; LOW fallback text says "neither link filled" when the viewer's edge RTT is
 missing. LOW (not fixing now): the "marked in everyone's log" toast shows even when a 0.8.0 peer drops it.
-Evidence:
+Evidence: 56e0306 + cf6aa73 (attempt 2 fixed both MEDIUM and both fixed LOWs). Orchestrator reruns: `npm test` 430/430;
+`npm run test:network` exit 0, 48 PASS (`checkContext`: X / button / note box, mark in all 3 logs under one id, flood
+capped at 6 per 10s, bad payloads dropped, Shift+X default-prevented with an empty note box, actions and Settings
+diffs logged); `npm run test:live` pass (mark highlighted through the real local Worker; edge pings with nobody
+watching, 0 extra frames); `test:logging` ok; `--report` on the fixture prints `Marks (2)` and `Likely bottleneck
+host-one's upload`. Builder: `test:live-rate` 3 viewers worst 1.07 kbps, host ≤1.46 kbps; sample 1.21–1.45ms host;
+`chrome://crash` → `crash/render-process-gone {"reason":"crashed"}`. Wire: 0.7.0/0.7.1/0.8.0 drop `mark` before any
+handler (`if (!action) return`, verified at the tags by builder and auditor; `test/mark-wire.test.mjs`); old hosts
+accept the optional `telemetry.at`. Decided (builder): mark key `X`, Shift+X focuses the note; edge pings 2s in a room,
+15s otherwise; `window/fullscreen`/`visibility` lines only smoke-tested.
 
 ### M1.10 Release 0.8.1 with live telemetry
 Status: todo

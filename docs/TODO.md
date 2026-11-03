@@ -286,7 +286,7 @@ Electron tests were running) is the likely cause; compare medians over 3 runs. D
 kept but documented as unreliable, `s.off` is the sync number. Waiting on: Aya's check with Lenna (below).
 
 ### M1.6 Audio quality end to end [wire] [feel]
-Status: in progress
+Status: needs Aya
 Story: Music and voices from a film or a share sound like the source, not like a phone call.
 Done when:
 - Benchmark and telemetry confirm stereo Opus at the configured bitrate for films (`AUDIO_MAX_BITRATE`) and shares
@@ -334,7 +334,17 @@ questions): the loss ladder keeps a 128 kbps floor (no 64k step), triggers only 
 (CELT-mode Opus has no in-band FEC, and Chromium doesn't share bandwidth between audio and video without a field
 trial); "keep audio quality" stays as a setting, documented as DSCP marking + encoder priority + no ladder cut.
 `npm test` runs only `test/*.test.{js,mjs}` (it was also running old copies under `work/compat/`).
-Evidence:
+Evidence: 9a0d3aa + d60c6b4 (attempt 2 applied the audit decisions). Orchestrator reruns: `npm test` 448/448 (now only
+`test/*.test.{js,mjs}`); `test:network` 49 PASS; `npm run test:compat` 8/8 against a v0.8.0 bundle (old host → new
+viewer stereo 0.501 incl. 2 republishes, glare settles 336–569ms; new host → old viewer gets sound, mono as before).
+Builder bench (3-run medians): viewer L/R separation 0 → 0.499 film and share, 0.50 after 2 republishes; audio
+256 kbps, concealment 0% clean; `--loss 5` with keep-audio on stays 256 kbps, concealment 4.7–5.1%, 0 ladder steps;
+`--link-kbps 500` keep-audio off steps once to the 128 kbps floor at ~26s; audio `setParameters` once per change.
+Transport: `test/transport.test.mjs` glare at 9 timings + ICE restart over an unanswered offer, stable in <1s, no
+resend. Decided (builder): loss injection by UDP relays in the bench (`scripts/bench-net.js`; the field trial did
+nothing in Electron 44); ladder ignores the first 30s of a connection and a bandwidth limit only counts under a 3 Mbps
+estimate. LOW: with keep-audio off, random loss can still look like congestion to libwebrtc and step to 128 kbps.
+Waiting on: Aya's check (music-heavy film with Lenna).
 
 ### M1.7 Smooth, sharp video under real conditions [feel]
 Status: todo
@@ -407,6 +417,9 @@ Evidence:
 4. **M1.10 live view:** after your app updates to 0.8.1 (it relaunches on its own when you're not in a room), tick
    "Send telemetry for development", open a room, then run `npm run diagnostics -- --live` here: your own lines appear
    within about 3s.
+5. **M1.6 stereo + M1.11 second film (after the next release):** host a music-heavy film with Lenna; ask whether it
+   sounds wide (left and right differ) and clean. Then open a second film, and a third, in the same session: she
+   should hear each one, not just see it.
 
 ## Later (filed from Aya's notes, not cards yet)
 

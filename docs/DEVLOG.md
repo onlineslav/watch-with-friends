@@ -14,3 +14,4 @@
 - M1.9 verified (56e0306, cf6aa73; workflow-builder, 2 attempts, ~490k; audit 2 MEDIUM + 3 LOW, 4 fixed). M1.5 built (3877b63, ~205k): film +42→+16.5ms, share fixed; whole-app worker on the page clock.
 - M1.5 needs Aya (bench: film −2.7ms, share +20.4ms medians over 3 runs; wide per-run spread noted).
 - M1.10 released 0.8.1 (tag → 20b3a54 after 3 CI fixes making the sample-cost check report-only on CI runners).
+- M1.6 needs Aya (9a0d3aa, d60c6b4; 2 attempts; viewers now stereo; v0.8.0 compat 8/8). M1.11 built (05fa480): second/third file audible again (was silent since ≤0.8.0).

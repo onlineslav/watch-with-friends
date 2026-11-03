@@ -24,7 +24,7 @@ Allowed to be rough:
 - Free-tier Cloudflare limits: if they're hit, live viewing stops for the day (no charge); the 15-minute archive
   upload keeps working.
 
-### M1.1 Live telemetry stream [must-work]
+### M1.1 Live telemetry stream [must-work] [wire]
 Status: in progress
 Story: While Lenna and I are watching, I run one command and see both our telemetry lines as they happen, about two
 seconds behind, so I can change something and see the effect right away.
@@ -39,11 +39,32 @@ Done when:
 - Dropped network: the app reconnects with backoff and never buffers more than ~1 minute of lines; the existing
   15-minute GitHub archive upload is unchanged and still sends everything.
 - Worker tests cover auth refusal, fan-out to two viewers, and an app reconnect.
+- (pre-mortem) Apps send lines only while at least one viewer is connected (the Worker pushes `{watching}`); idle
+  sockets answer pings via `setWebSocketAutoResponse` without waking the DO; a test asserts zero frames with zero
+  viewers.
+- (pre-mortem) Measured kbps per person over 60s with 1 and with 3 peers (`test:network`) is under 5 kbps
+  (compress or trim batches); the number is on this card.
+- (pre-mortem) Live lines are the redacted lines: a test logs `C:\Users\x\film.mkv` from the renderer and a fake
+  `/live` receives `…/film.mkv`, byte-identical to the file line.
+- (pre-mortem) The viewer strips C0/C1 control characters; the Worker caps app sockets per DO, frame size and
+  frames per second.
+- (pre-mortem) Backoff 1s→60s with jitter (≤4 tries/min), 429 backs off; a heartbeat finds a dead socket within 30s
+  (fake-clock test); buffer capped by bytes (~256 KB) as well as ~60s, with a "dropped N" marker.
+- (pre-mortem) The `gh` token travels in a header, never the URL, is never logged, and is cached by its hash; a
+  GitHub 403-rate-limit/5xx answers 503, not 401 or "allowed".
+- (pre-mortem) Turning the checkbox off mid-stream closes the socket within 1s.
+- (pre-mortem) After the change, a 0.8.0-format `POST /telemetry` and `/credentials` still succeed and the existing
+  `test/relay.test.mjs` passes; `wrangler.jsonc` uses `new_sqlite_classes`.
+- (pre-mortem) The viewer holds ~1s of lines before printing so two people's batches interleave in wall-clock order.
 Likely failures:
 - Durable Object WebSocket hibernation not used, so idle sockets cost requests all day.
 - Reconnect loop hammering the Worker when it's down (rate limit is 10/min per IP).
 - Lines logged before identity is known have no username.
 Decided: Cloudflare Durable Objects (free plan, SQLite-backed) hold the live sockets; GitHub stays the archive.
+Decided (Aya, 2026-11-02): nobody is on telemetry yet; make it as easy for development as possible. The existing
+checkbox covers live streaming too (no new opt-in). App sockets stay unauthenticated like `/telemetry` (caps and
+control-character stripping only; labels are the claimed username). The orchestrator deploys the Worker after the
+audit passes.
 Out of scope: a web dashboard.
 Gate: no
 Evidence:

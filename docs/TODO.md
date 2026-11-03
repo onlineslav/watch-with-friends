@@ -282,7 +282,7 @@ Electron tests were running) is the likely cause; compare medians over 3 runs. D
 kept but documented as unreliable, `s.off` is the sync number. Waiting on: Aya's check with Lenna (below).
 
 ### M1.6 Audio quality end to end [wire] [feel]
-Status: todo
+Status: in progress
 Story: Music and voices from a film or a share sound like the source, not like a phone call.
 Done when:
 - Benchmark and telemetry confirm stereo Opus at the configured bitrate for films (`AUDIO_MAX_BITRATE`) and shares

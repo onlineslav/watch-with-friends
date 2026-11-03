@@ -484,6 +484,14 @@ Evidence:
   (orchestrator, Aya's "easy for development"): allowed; host logs already carry viewers' reports.
 - M1.7 gets `[wire]` (ghost-attach changes which signals from other copies are honoured).
 
+### Full sweep (2026-11-03, on b3d8abe/1096b69)
+- `npm test` pass; `test:compat --tag=v0.8.0` 10/10 (glare 346ms); `npm run bench` (3 runs): film median +22ms (runs
+  22/24.9/18.2, p95 70.3, worst 105), share +34.8ms (34.8/21.4/52.2, p95 42.2) — both within ±40ms on the median;
+  `--variant=loop`: 7 repeats all heard (2/2 beeps, RMS 0.354), then a different film heard.
+- `test:network` failed only at the 2ms host-sample cost gate (3.24ms) while another project's vitest/tsc runs loaded
+  the machine; re-measure when quiet.
+- `test:compat --tag=v0.7.1` and `--tag=v0.8.2` hung in the harness (old-tree prepare), not in the app → fixing.
+
 ## Aya's checks
 
 1. **M1.5 film sync (with Lenna, after 0.8.1 installs):** both tick Settings → Having problems? → "Send telemetry for

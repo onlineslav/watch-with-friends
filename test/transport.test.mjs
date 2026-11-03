@@ -17,7 +17,17 @@ let offers = 0
 const fakeSdp = (type) => ['v=0', 'm=audio 9 UDP/TLS/RTP/SAVPF 111', 'a=rtpmap:111 opus/48000/2', 'a=fmtp:111 minptime=10;useinbandfec=1', `a=x-test:${type}:${++offers}`, ''].join('\r\n')
 class FakeConnection extends EventTarget {
   static slow = false // each call takes a turn of the event loop, so signals cross in transit
-  signalingState = 'stable'
+  #signalingState = 'stable'
+  get signalingState() { return this.#signalingState }
+  set signalingState(next) {
+    if (next === this.#signalingState) return
+    this.#signalingState = next
+    this.dispatchEvent(new Event('signalingstatechange'))
+  }
+  // What a description does to the transceivers; NegotiatingConnection below fills these in.
+  appliedLocalOffer() {}
+  rolledBack() {}
+  appliedRemoteAnswer() {}
   connectionState = 'connected'
   iceConnectionState = 'connected'
   iceGatheringState = 'complete'
@@ -51,6 +61,7 @@ class FakeConnection extends EventTarget {
     return this.queue(() => {
       if (description?.type === 'rollback') {
         if (this.signalingState === 'stable') throw this.wrong('rollback')
+        if (this.signalingState === 'have-local-offer') this.rolledBack()
         this.signalingState = 'stable'
         return
       }
@@ -59,6 +70,7 @@ class FakeConnection extends EventTarget {
       if (type === 'offer' && !['stable', 'have-local-offer'].includes(this.signalingState)) throw this.wrong('setLocalDescription(offer)')
       if (type === 'answer' && this.signalingState !== 'have-remote-offer') throw this.wrong('setLocalDescription(answer)')
       this.localDescription = {type, sdp: description?.sdp ?? fakeSdp(type)}
+      if (type === 'offer') this.appliedLocalOffer()
       this.signalingState = type === 'offer' ? 'have-local-offer' : 'stable'
     })
   }
@@ -66,6 +78,7 @@ class FakeConnection extends EventTarget {
     return this.queue(() => {
       if (description.type === 'answer') {
         if (this.signalingState !== 'have-local-offer') throw this.wrong('setRemoteDescription(answer)')
+        this.appliedRemoteAnswer()
         this.signalingState = 'stable'
       } else {
         if (!['stable', 'have-remote-offer'].includes(this.signalingState)) throw this.wrong('setRemoteDescription(offer)')
@@ -89,6 +102,98 @@ class FakeConnection extends EventTarget {
   close() { this.connectionState = 'closed' }
 }
 const settle = () => new Promise((resolve) => setImmediate(resolve))
+
+// Transceivers the way Chromium keeps them through negotiation (the M1.11 re-audit's glare case): a transceiver
+// gets its mid from the local offer that first carries its section, and loses it again if that offer is rolled
+// back; currentDirection comes with the answer; a stopped one is rejected by the next offer and only gone once
+// that is answered. Negotiation is needed while any transceiver has no section, is stopping, or wants a direction
+// other than the one negotiated. A stopping transceiver with no mid (stopped while its only offer was rolled back)
+// is in no offer, so nothing ever takes it away: negotiation is needed again after every round, as in Electron 44
+// (a two-connection probe counted 83 negotiationneeded events in 2s).
+class NegotiatingConnection extends FakeConnection {
+  needed = 0 // negotiationneeded events fired
+  nextMid = 1 // 0 is the data channel
+  #flag = false
+  #offered = null // [{transceiver, direction}] in the unanswered local offer
+  #stableLocal = null
+  constructor(...args) {
+    super(...args)
+    this.addEventListener('signalingstatechange', () => {
+      if (this.signalingState !== 'stable') return
+      this.#stableLocal = this.localDescription
+      this.#flag = false
+      this.checkNeeded()
+    })
+  }
+  addTransceiver(track, {direction = 'sendrecv', streams = []} = {}) {
+    const pc = this
+    const sender = {track, replaceTrack: async (next) => { sender.track = next }, setStreams() {}}
+    let wanted = direction
+    const transceiver = {
+      sender, receiver: {track: {kind: track.kind}}, streams, mid: null, currentDirection: null, negotiated: null, stopping: false, removed: false,
+      get direction() { return this.stopping ? 'stopped' : wanted },
+      set direction(next) {
+        if (this.stopping) throw new Error('InvalidStateError: the transceiver is stopped')
+        wanted = next
+        pc.checkNeeded()
+      },
+      stop() { this.stopping = true; pc.checkNeeded() },
+    }
+    this.transceivers.push(transceiver)
+    this.checkNeeded()
+    return transceiver
+  }
+  removeTrack(sender) {
+    const transceiver = this.getTransceivers().find((t) => t.sender === sender)
+    super.removeTrack(sender)
+    if (transceiver && !transceiver.stopping) transceiver.direction = {sendrecv: 'recvonly', sendonly: 'inactive'}[transceiver.direction] ?? transceiver.direction
+  }
+  getTransceivers() { return this.transceivers.filter((t) => !t.removed) }
+  isNeeded() { return this.getTransceivers().some((t) => t.stopping || t.mid == null || t.direction !== t.negotiated) }
+  checkNeeded() {
+    if (this.#flag || this.signalingState !== 'stable' || this.connectionState === 'closed' || !this.isNeeded()) return
+    this.#flag = true
+    setImmediate(() => {
+      if (this.signalingState !== 'stable' || this.connectionState === 'closed' || !this.isNeeded()) return
+      this.needed++
+      this.dispatchEvent(new Event('negotiationneeded'))
+      this.onnegotiationneeded?.()
+    })
+  }
+  appliedLocalOffer() {
+    this.#offered = []
+    for (const transceiver of this.getTransceivers()) {
+      if (transceiver.mid == null) {
+        if (transceiver.stopping) continue // no section to reject
+        transceiver.mid = String(this.nextMid++)
+        transceiver.midFromPendingOffer = true
+      }
+      this.#offered.push({transceiver, direction: transceiver.direction})
+    }
+  }
+  rolledBack() {
+    for (const {transceiver} of this.#offered || []) {
+      if (transceiver.midFromPendingOffer) transceiver.mid = null
+      transceiver.midFromPendingOffer = false
+    }
+    this.#offered = null
+    this.localDescription = this.#stableLocal
+  }
+  appliedRemoteAnswer() {
+    for (const {transceiver, direction} of this.#offered || []) {
+      transceiver.midFromPendingOffer = false
+      if (transceiver.stopping) {
+        transceiver.removed = true
+        transceiver.currentDirection = 'stopped'
+      } else {
+        // The other end of these tests sends nothing back.
+        transceiver.currentDirection = {sendrecv: 'sendonly', sendonly: 'sendonly', recvonly: 'inactive', inactive: 'inactive'}[direction]
+        transceiver.negotiated = direction
+      }
+    }
+    this.#offered = null
+  }
+}
 
 test('an offer whose answer never arrives is sent again, and a repeated answer is ignored', async (t) => {
   t.mock.timers.enable({apis: ['setTimeout']})
@@ -414,12 +519,17 @@ const turns = async (n) => { for (let i = 0; i < n; i++) await settle() }
 
 // Two real peers (an offerer and an answerer, as Trystero makes them) with a wire between them that
 // takes a turn of the event loop per signal and can be cut.
-function wiredPair() {
-  const a = createPeer(true, {rtcPolyfill: FakeConnection, trickleIce: true})
-  const b = createPeer(false, {rtcPolyfill: FakeConnection, trickleIce: true})
-  const log = {a: [], b: [], errors: [], cut: false}
+// Signals can be held (log.held = []) and let go later, in order, so two offers cross.
+function wiredPair(Connection = FakeConnection) {
+  const a = createPeer(true, {rtcPolyfill: Connection, trickleIce: true})
+  const b = createPeer(false, {rtcPolyfill: Connection, trickleIce: true})
+  const log = {a: [], b: [], errors: [], cut: false, held: null}
   const wire = (name, from, to) => from.setHandlers({
-    signal: (signal) => { log[name].push(signal); if (!log.cut) setImmediate(() => to.signal(signal)) },
+    signal: (signal) => {
+      log[name].push(signal)
+      if (log.held) log.held.push(() => to.signal(signal))
+      else if (!log.cut) setImmediate(() => to.signal(signal))
+    },
     error: (error) => log.errors.push(`${name}: ${error.message}`),
   })
   wire('a', a, b)
@@ -557,7 +667,7 @@ test('a detached transceiver that never got a section is reused by the next trac
   await settle()
   const first = {kind: 'audio', id: 'a-1'}
   peer.addTrack(first, {id: 's'})
-  pc.transceivers[0].mid = null
+  Object.assign(pc.transceivers[0], {mid: null, currentDirection: null})
   peer.removeTrack(first)
   const second = {kind: 'audio', id: 'a-2'}
   peer.addTrack(second, {id: 's2'})
@@ -577,7 +687,7 @@ test('a transceiver that never got a section is only detached, not stopped (stop
   await settle()
   const audio = {kind: 'audio', id: 'a-fresh'}
   peer.addTrack(audio, {id: 's'})
-  pc.transceivers[0].mid = null // added, and no offer has been made yet
+  Object.assign(pc.transceivers[0], {mid: null, currentDirection: null}) // added, and no offer has been made yet
   peer.removeTrack(audio)
   assert.equal(pc.transceivers[0].stopped, false)
   assert.equal(pc.detached.length, 1)
@@ -608,4 +718,128 @@ test('an offer that only ends media sections (all rejected, no codecs) is answer
   assert.equal(pair.log.a.filter((signal) => signal.type === 'answer').length, answersBefore + 1, 'an SDP with no media section is still ignored')
   assert.deepEqual(pair.log.errors, [])
   pair.a.destroy(); pair.b.destroy()
+})
+
+test('a transceiver whose offer is not answered yet is only detached (it may still lose its mid to a rollback)', async () => {
+  const peer = createPeer(true, {rtcPolyfill: FakeConnection, trickleIce: true})
+  const pc = peer.connection
+  await settle()
+  const audio = {kind: 'audio', id: 'a-offered'}
+  peer.addTrack(audio, {id: 's'})
+  pc.transceivers[0].currentDirection = null // in the local offer (so it has a mid), not answered
+  peer.removeTrack(audio)
+  assert.equal(pc.transceivers[0].stopped, false)
+  assert.equal(pc.detached.length, 1)
+  peer.destroy()
+})
+
+test('a transceiver detached before it was negotiated is stopped once it is, unless the other end now sends on it', async () => {
+  for (const [negotiated, stopped] of [['inactive', true], ['sendonly', true], ['recvonly', false], ['sendrecv', false]]) {
+    const peer = createPeer(true, {rtcPolyfill: FakeConnection, trickleIce: true})
+    const pc = peer.connection
+    await settle()
+    const audio = {kind: 'audio', id: `a-later-${negotiated}`}
+    peer.addTrack(audio, {id: 's'})
+    pc.transceivers[0].currentDirection = null // its offer is out, not answered
+    peer.removeTrack(audio)
+    assert.equal(pc.transceivers[0].stopped, false, 'detached, not stopped')
+    pc.signalingState = 'have-local-offer'
+    pc.signalingState = 'stable' // rolled back: still nothing negotiated, so still not stopped
+    assert.equal(pc.transceivers[0].stopped, false)
+    pc.signalingState = 'have-local-offer'
+    pc.transceivers[0].currentDirection = negotiated // offered again, and answered
+    pc.signalingState = 'stable'
+    // recvonly/sendrecv: Chromium gave the detached transceiver to the other end's next section of its kind (seen in
+    // the Electron probe), so it now carries the other end's sound; stopping it would end that.
+    assert.equal(pc.transceivers[0].stopped, stopped, `negotiated ${negotiated}: ${stopped ? 'stopped' : 'left alone'}`)
+    peer.destroy()
+  }
+})
+
+test('a room peer (a shared connection) takes off only tracks it was given one at a time: those of an added stream go with the stream', () => {
+  // Why renderer/app.js stops the senders of a film's audio clones itself (stopSendersOf): they reach the room with
+  // addStream, and every room peer is one of these proxies.
+  const manager = new SharedPeerManager()
+  const calls = []
+  const peer = {
+    created: 0, isDead: false, connection: {getSenders: () => []}, setHandlers() {}, sendData() {},
+    addStream: (stream) => calls.push(`addStream ${stream.id}`), removeStream: (stream) => calls.push(`removeStream ${stream.id}`),
+    addTrack: (track) => calls.push(`addTrack ${track.id}`), removeTrack: (track) => calls.push(`removeTrack ${track.id}`),
+  }
+  const shared = manager.register('app', 'peer', peer, 100)
+  const {proxy} = manager.bind('watch', Promise.resolve('watch'), shared, {onDetach() {}})
+  const clone = {id: 'clone'}
+  const stream = {id: 'film', getTracks: () => [clone]}
+  proxy.addStream(stream)
+  proxy.removeTrack(clone)
+  assert.deepEqual(calls, ['addStream film'], 'removeTrack found nothing to take off')
+  const solo = {id: 'solo'}
+  proxy.addTrack(solo, stream)
+  proxy.removeTrack(solo)
+  proxy.removeStream(stream)
+  assert.deepEqual(calls, ['addStream film', 'addTrack solo', 'removeTrack solo', 'removeStream film'])
+  manager.clear('app', 'peer', {destroyPeer: false})
+})
+
+// Every negotiation the pair still has to do, done: stable on both ends, and nothing more needed for a while.
+async function untilSettled(pair, ms = 2000) {
+  const start = Date.now()
+  while (Date.now() - start < ms) {
+    await untilStable(pair, ms)
+    const needed = pair.a.connection.needed + pair.b.connection.needed
+    await turns(60)
+    if (bothStable(pair) && pair.a.connection.needed + pair.b.connection.needed === needed) return
+  }
+  throw new Error(`negotiation never settled: negotiationneeded a ${pair.a.connection.needed}, b ${pair.b.connection.needed}`)
+}
+
+test('glare: a track taken off while its offer is out, then a colliding offer the polite end rolls back for, leaves negotiation settled and the next publish working', async (t) => {
+  // The re-audit's case: stopping a transceiver whose mid came from an unanswered offer, then a rollback, left it
+  // stopped with no mid for good: negotiation needed after every round, and every later film to that peer failed.
+  for (const publishAt of ['once settled', 'right after the rollback']) {
+    const pair = wiredPair(NegotiatingConnection)
+    t.after(() => { pair.a.destroy(); pair.b.destroy() }) // a failure must not leave them negotiating forever
+    await untilSettled(pair)
+    const [a, b] = [pair.a.connection, pair.b.connection]
+    const neededBefore = b.needed
+    pair.log.held = []
+    const first = {kind: 'audio', id: `b-film-1-${publishAt}`}
+    pair.b.addTrack(first, {id: 'b-1'}) // b is the polite end (not the initiator)
+    while (b.signalingState !== 'have-local-offer') await settle()
+    const offered = b.transceivers[0]
+    assert.ok(offered.mid != null && offered.currentDirection == null, 'the offer gave it a mid; nothing negotiated yet')
+    pair.b.removeTrack(first) // the film is gone before its offer was answered
+    assert.equal(offered.stopping, false, `${publishAt}: not stopped while the offer that gave it its mid can be rolled back`)
+    assert.equal(offered.sender.track, null, 'but detached')
+    pair.a.addTrack({kind: 'audio', id: 'a-film'}, {id: 'a-1'})
+    while (a.signalingState !== 'have-local-offer') await settle()
+    const crossing = pair.log.held
+    pair.log.held = null
+    crossing.forEach((deliver) => setImmediate(deliver)) // a ignores b's offer; b rolls back and answers a's
+    let second = null
+    if (publishAt === 'right after the rollback') {
+      while (b.signalingState === 'have-local-offer') await settle()
+      assert.equal(offered.mid, null, 'the rollback took its mid')
+      second = {kind: 'audio', id: 'b-film-2-early'}
+      assert.doesNotThrow(() => pair.b.addTrack(second, {id: 'b-2'}), 'the next film can be added')
+    }
+    await untilSettled(pair)
+    assert.ok(b.needed - neededBefore <= 6, `${publishAt}: negotiation was needed ${b.needed - neededBefore} times, not again and again`)
+    const settledAt = b.needed
+    await turns(200)
+    assert.equal(b.needed, settledAt, `${publishAt}: and not once more after it settled`)
+    assert.equal(b.getTransceivers().filter((t) => t.stopping).length, 0, 'no stopped transceiver is left behind')
+    if (!second) {
+      assert.ok(offered.removed, 'the detached transceiver got a section, was stopped once it was negotiated, and is gone')
+      second = {kind: 'audio', id: 'b-film-2'}
+      assert.doesNotThrow(() => pair.b.addTrack(second, {id: 'b-2'}), 'the next film can be added')
+      await untilSettled(pair)
+    }
+    const sending = b.getTransceivers().find((t) => t.sender.track === second)
+    assert.ok(sending, `${publishAt}: the next film has a sender`)
+    assert.equal(sending.currentDirection, 'sendonly', `${publishAt}: and it was negotiated`)
+    assert.ok(b.getTransceivers().length <= 2, `${publishAt}: ${b.getTransceivers().length} transceivers, nothing piling up`)
+    assert.deepEqual(pair.log.errors, [])
+    pair.a.destroy(); pair.b.destroy()
+  }
 })

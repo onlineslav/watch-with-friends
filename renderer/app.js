@@ -21,6 +21,7 @@ import {captureVideoFrames} from './frames.mjs'
 import {StreamPlayer} from './player.mjs'
 import {YouTubePlayer} from './youtube.mjs'
 import {parseYouTubeUrl, droppedYouTubeUrl} from '../shared/youtube.mjs'
+import {isStopped, stopSender} from '../shared/transceivers.mjs'
 import {roomConnection} from './connection.mjs'
 import {installErrorLogging, flushLog, logEvent, logError, logWarn, saveDiagnostics, setLogContext} from './log.mjs'
 import {FriendNetwork, presenceText} from './friends.mjs'
@@ -673,11 +674,11 @@ async function openRoom(code, joining) {
     logEvent('peer', 'join', {peer: peerId, username: peerIdentities.get(peerId) || null, peers: session.peers.size})
     toast('Participant connected')
     if (session.role === 'host' && !session.preview) {
-      if (session.stream) Promise.all(room.addStream(session.stream, {target: peerId, metadata: {claimedAt: session.claimedAt}})).then(tuneSenders, () => {})
+      if (session.stream) afterPublish(session.screen ? 'share' : 'film', room.addStream(session.stream, {target: peerId, metadata: {claimedAt: session.claimedAt}}), peerId)
       if (session.image) sendImage(peerId)
       broadcastState(peerId)
     } else if (session.screen?.alongside && session.stream) {
-      Promise.all(room.addStream(session.stream, {target: peerId, metadata: {claimedAt: Number(session.screen.id)}})).then(tuneSenders, () => {})
+      afterPublish('share', room.addStream(session.stream, {target: peerId, metadata: {claimedAt: Number(session.screen.id)}}), peerId)
     }
     if (session.screen) announceShare(peerId)
     render()
@@ -1326,7 +1327,8 @@ function showPicture(url) {
 // element's source changes, Chromium ends the capture's old tracks and adds new ones to the same stream:
 // the sink below follows that. The old clone's sender waits a few seconds and takes the new clone with
 // replaceTrack (one audio section, the viewer's receiver and its track stay, nothing renegotiated); only
-// if nothing takes over is the sender let go.
+// if nothing takes over is the sender let go. A peer whose sender refuses the new clone gets it on a sender
+// of its own; the others keep theirs.
 let elementCapture = null // {video, stream, sink}: the one capture of the host's <video>
 const RETIRED_CLONE_MS = 5000
 
@@ -1350,27 +1352,33 @@ function captureElement(video) {
   return (elementCapture = capture)
 }
 
-// Every connection's transceivers that send this track. A transceiver is STOPPED, not just detached:
-// pc.removeTrack() leaves it, with its codec list, as an m-section nothing ever reuses, and 7 films' worth of
-// them pushed the offer past what a signalling message may be (the connection to the viewers was closed).
-function sendTransceiversOf(track) {
-  return Object.values(session.room?.getPeers() || {}).flatMap((pc) => pc.getTransceivers().filter((t) => t.sender.track === track))
+// Every connection's live sender of this track: [{peerId, pc, sender}].
+function sendersOf(track) {
+  return Object.entries(session.room?.getPeers() || {}).flatMap(([peerId, pc]) => pc.getTransceivers()
+    .filter((t) => !isStopped(t) && t.sender.track === track)
+    .map((t) => ({peerId, pc, sender: t.sender})))
 }
 
-// The same rules as the patched peer's stopSender (scripts/patch-trystero.js): one that never got a section (no
-// mid) or that the other end sends on too (currentDirection sendrecv: a copy from before this reused its receiving
-// transceiver for its own share) is only detached; stopping it would leave a transceiver nothing can negotiate
-// away, or end the other end's picture.
+// Takes this track off every connection by hand. The room cannot: these tracks reach it with addStream, and a
+// room's removeTrack only finds tracks it was given one at a time (every room peer is a shared-peer.mjs proxy,
+// whose removeTrack looks only in the trackOwners that addTrack fills; transport.test.mjs checks this).
+// stopSender is the patched peer's own rule (shared/transceivers.mjs): the transceiver is STOPPED once its section
+// was negotiated, so the m-section goes away (pc.removeTrack() alone left one per film, and 7 films' worth pushed
+// the offer past what a signalling message may be); before that it is only detached and stopped once negotiated,
+// since stopping one whose only offer is then rolled back on glare left it stuck for good.
 function stopSendersOf(track) {
-  for (const pc of Object.values(session.room?.getPeers() || {})) {
-    for (const transceiver of pc.getTransceivers()) {
-      if (transceiver.sender.track !== track) continue
-      try {
-        if (transceiver.mid != null && transceiver.currentDirection !== 'sendrecv') transceiver.stop()
-        else pc.removeTrack(transceiver.sender)
-      } catch {}
+  for (const {pc, sender} of sendersOf(track)) stopSender(pc, sender)
+}
+
+// Each peer's publish is a promise of its own. A failure used to be swallowed (`() => {}`), and that is how the
+// M1.11 glare bug stopped every later film to a peer without leaving a trace: each one is logged now.
+function afterPublish(what, promises, peer = null) {
+  return Promise.allSettled(promises).then((results) => {
+    for (const result of results) {
+      if (result.status === 'rejected') logWarn('media', 'publish-failed', {what, peer, message: errorMessage(result.reason)})
     }
-  }
+    if (results.some((result) => result.status === 'fulfilled')) return tuneSenders()
+  })
 }
 
 function publishStream() {
@@ -1396,8 +1404,8 @@ function publishStream() {
     clearTimeout(retired.get(clone))
     retired.delete(clone)
     if (live(clone)) {
-      // The room only lets go of tracks it was given one by one (addTrack), and these came with the stream
-      // (addStream): its removeTrack finds nothing for them, so the transceiver is stopped here as well.
+      // A clone that came with the stream (addStream) is unknown to the room's removeTrack, and one sent on its
+      // own (addTrack, below) is known to it: the room forgets the second kind, stopSendersOf ends both.
       session.room?.removeTrack(clone)
       stopSendersOf(clone)
       stream.removeTrack(clone)
@@ -1425,7 +1433,7 @@ function publishStream() {
   }
   const send = (clone) => {
     stream.addTrack(clone)
-    Promise.all(session.room.addTrack(clone, stream, {metadata: {claimedAt: session.claimedAt}})).then(tuneSenders, () => {})
+    afterPublish(`film-${clone.kind}`, session.room.addTrack(clone, stream, {metadata: {claimedAt: session.claimedAt}}))
   }
   for (const track of capture.stream.getTracks()) {
     const clone = adopt(track)
@@ -1437,7 +1445,7 @@ function publishStream() {
       const clone = adopt(track)
       if (!clone) return
       const old = [...retired.keys()].find((c) => c.kind === clone.kind)
-      const senders = old ? sendTransceiversOf(old).map((t) => t.sender) : []
+      const senders = old ? sendersOf(old) : []
       if (!old || !senders.length) {
         for (const stale of [...retired.keys()]) release(stale)
         return send(clone)
@@ -1447,15 +1455,21 @@ function publishStream() {
       retired.delete(old)
       stream.removeTrack(old)
       stream.addTrack(clone)
-      Promise.all(senders.map((sender) => sender.replaceTrack(clone))).then(() => old.stop(), () => {
-        stopSendersOf(old)
+      Promise.allSettled(senders.map(({sender}) => sender.replaceTrack(clone))).then((results) => {
+        // Only the peers whose sender refused the new clone get it on a sender of its own; the rest have it already.
+        results.forEach((result, i) => {
+          if (result.status !== 'rejected') return
+          const {peerId, pc, sender} = senders[i]
+          logWarn('media', 'replace-track-failed', {kind: clone.kind, peer: peerId, message: errorMessage(result.reason)})
+          stopSender(pc, sender)
+          if (live(clone)) afterPublish(`film-${clone.kind}`, session.room.addTrack(clone, stream, {target: peerId, metadata: {claimedAt: session.claimedAt}}), peerId)
+        })
         old.stop()
-        if (live(clone)) Promise.all(session.room.addTrack(clone, stream, {metadata: {claimedAt: session.claimedAt}})).then(tuneSenders, () => {})
       })
     },
     remove: retire,
   }
-  if (session.peers.size) Promise.all(session.room.addStream(stream, {metadata: {claimedAt: session.claimedAt}})).then(tuneSenders, () => {})
+  if (session.peers.size) afterPublish('film', session.room.addStream(stream, {metadata: {claimedAt: session.claimedAt}}))
 }
 
 function unpublishStream() {
@@ -1464,9 +1478,10 @@ function unpublishStream() {
   session.stream = null
   if (elementCapture) elementCapture.sink = null
   try {
-    session.room?.removeStream(stream) // stops the transceivers of every track that came with it (patched peer.mjs)
+    session.room?.removeStream(stream) // takes off every track now in it, through the patched peer's stopSender
   } catch {}
-  // The room remembers tracks it was given one by one until the room is left; forget these now.
+  // The room remembers tracks it was given one at a time (a clone sent on its own) until the room is left; forget
+  // these now. For the ones that came with the stream this finds nothing, which is fine: removeStream took them.
   for (const track of stream.getTracks()) try { session.room?.removeTrack(track) } catch {}
   // Only what was published: the clones and the frame generator. The capture itself is kept (see captureElement).
   stream.getTracks().forEach((track) => track.stop())
@@ -1486,7 +1501,7 @@ function publishShareStream(stream, claimedAt) {
     stream.removeTrack(track)
   }
   stream.getTracks().forEach((track) => track.addEventListener('ended', () => removeTrack(track), {once: true}))
-  if (session.peers.size) Promise.all(session.room.addStream(stream, {metadata: {claimedAt}})).then(tuneSenders, () => {})
+  if (session.peers.size) afterPublish('share', session.room.addStream(stream, {metadata: {claimedAt}}))
 }
 
 // A video track's size. Generated tracks (frames.mjs for films, app-share-track.mjs for a

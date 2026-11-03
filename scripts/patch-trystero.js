@@ -21,6 +21,7 @@ function patch(name, edits) {
 }
 fs.copyFileSync(path.join(root, 'shared/receive-budget.mjs'), path.join(core, 'dist/receive-budget.mjs'))
 fs.copyFileSync(path.join(root, 'shared/opus-sdp.mjs'), path.join(core, 'dist/opus-sdp.mjs'))
+fs.copyFileSync(path.join(root, 'shared/transceivers.mjs'), path.join(core, 'dist/transceivers.mjs'))
 patch('handshake.mjs', [
   ['state.pendingHandshakePayloads.push(payload);', `if (state.pendingHandshakePayloads.length >= 8) {
       failPeerHandshake(id, state.peer, mkErr("too many pending handshake messages"));
@@ -342,21 +343,22 @@ if (!opusPeer.includes(opusMarker)) {
 // 44: about 10 KB of offer per file, over the 64 KiB a signalling message may have at the 7th film, where the
 // receive budget closes the connection to the viewer; a reused connection carries the growth from room to room).
 // transceiver.stop() lets the section be rejected and then recycled: 5 sections and under 20 KB after 25 files.
-// Four things go with it:
+// What goes with it:
 //  - removeStream/removeTrack stop the transceiver (the other end's receiver track ends instead of going mute),
 //    unless the other end is sending on it too (currentDirection sendrecv: a copy from before this reused its
 //    receiving transceiver for its own share, which native addTrack does), when it is only detached; and
 //    unless it never got a section (no mid: added and taken off before any offer), when it is also only
 //    detached, because a stopped transceiver nothing can negotiate away keeps negotiation "needed" for good.
+//    (v3 below narrows when stopping is safe: only once the section was negotiated.)
 //  - addTrack/addStream make their own transceiver (addTransceiver) instead of letting addTrack pick one of the
 //    receiving transceivers the other end made: stopping our film must not kill the share the other end put on
 //    the very same section. A detached transceiver that never got a section is reused first.
-//  - An offer that only ends sections (a host stopping its film, nothing yet in its place) has every section
-//    rejected, so no codec lines at all: the guard in signal() that drops a data-channel-era SDP "without
-//    media" looked for a=rtpmap and threw such an offer, and its answer, away, leaving the stopper in
-//    have-local-offer for good. It now looks for a media section (m=audio / m=video), rejected or not. (A copy
-//    from before this still ignores such an offer until the next one that has codecs; the end just reaches it
-//    later.)
+//  - The guard in signal() that drops a data-channel-era SDP "without media" looked for a=rtpmap; it now looks
+//    for a media section (m=audio / m=video). In Electron 44 that changes nothing for a real offer: one that
+//    only ends sections (every section rejected, port 0) still lists its codecs, and so does its answer
+//    (checked with two RTCPeerConnections). What had no codec lines was the fake connection in
+//    test/transport.test.mjs. The section test is kept as the plainer rule; a copy from before this accepts
+//    those offers as well.
 const stopMarker = '// watch-with-friends stop transceivers v2\n'
 let stopPeer = fs.readFileSync(peerPath, 'utf8')
 if (!stopPeer.includes(stopMarker)) {
@@ -395,4 +397,54 @@ if (!stopPeer.includes(stopMarker)) {
     stopPeer = stopPeer.replace(before, () => after)
   }
   fs.writeFileSync(peerPath, stopPeer + stopMarker)
+}
+
+// Stop a transceiver only once its section was negotiated (M1.11 re-audit, confirmed with two connections in
+// Electron 44). A transceiver gets its mid from the local offer that first carries it, before any answer. v2
+// stopped it as soon as it had a mid; when that offer was then rolled back (the polite end, when the other end's
+// offer collides with it), it was left stopped and without a mid for good: in no offer, so nothing takes it away,
+// and negotiation was "needed" after every round (83 times in 2s in the probe, each a full offer and answer;
+// 280 offers in a 5s run), and addSender's idle search did not skip stopped transceivers (setting a stopped one's
+// direction throws InvalidStateError, which aborts addStream for every track after it). The rules now live in shared/transceivers.mjs (copied beside peer.mjs
+// above), which renderer/app.js uses too for the senders it takes off itself: stop right away only when
+// currentDirection is sendonly or inactive (negotiated, and the other end does not send on it), otherwise detach
+// and, if never negotiated, stop it once it is; never reuse a stopped transceiver. Applied on top of v2, so a
+// fresh install (v2 then v3) and an install already at v2 end up byte-identical.
+const stopV3Marker = '// watch-with-friends stop transceivers v3\n'
+let stopV3Peer = fs.readFileSync(peerPath, 'utf8')
+if (!stopV3Peer.includes(stopV3Marker)) {
+  const edits = [
+    ['import { preferStereoOpus } from "./opus-sdp.mjs";',
+     'import { preferStereoOpus } from "./opus-sdp.mjs";\nimport { addSender as addSenderOn, stopSender as stopSenderOn } from "./transceivers.mjs";'],
+    [[
+      '\tconst stopSender = (sender) => {',
+      '\t\tconst transceiver = pc.getTransceivers().find((t) => t.sender === sender);',
+      '\t\ttry {',
+      '\t\t\tif (transceiver && transceiver.mid != null && transceiver.currentDirection !== "sendrecv") transceiver.stop();',
+      '\t\t\telse pc.removeTrack(sender);',
+      '\t\t} catch {',
+      '\t\t\ttry { pc.removeTrack(sender); } catch {}',
+      '\t\t}',
+      '\t};',
+      '\tconst addSender = (track, stream) => {',
+      '\t\tconst idle = pc.getTransceivers().find((t) => t.mid == null && t.sender.track === null && t.receiver.track.kind === track.kind);',
+      '\t\tif (idle) {',
+      '\t\t\tidle.sender.replaceTrack(track).catch(() => {});',
+      '\t\t\tidle.sender.setStreams(stream);',
+      '\t\t\tidle.direction = "sendrecv";',
+      '\t\t\treturn idle.sender;',
+      '\t\t}',
+      '\t\treturn pc.addTransceiver(track, { direction: "sendrecv", streams: [stream] }).sender;',
+      '\t};',
+    ].join('\n'),
+    [
+      '\tconst stopSender = (sender) => stopSenderOn(pc, sender);',
+      '\tconst addSender = (track, stream) => addSenderOn(pc, track, stream);',
+    ].join('\n')],
+  ]
+  for (const [before, after] of edits) {
+    if (stopV3Peer.split(before).length !== 2) throw new Error('Trystero stop-transceiver v3 patch context changed: peer.mjs: ' + before.slice(0, 60))
+    stopV3Peer = stopV3Peer.replace(before, () => after)
+  }
+  fs.writeFileSync(peerPath, stopV3Peer + stopV3Marker)
 }

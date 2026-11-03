@@ -22,7 +22,7 @@ jobs:
             command: npm run dist:mac -- --x64 --publish never
             artifact: mac-intel
             arch: x64
-            cost_limit: '6'
+            cost_limit: report
     runs-on: ${{ matrix.os }}
     env:
       TURN_CONFIG: ${{ secrets.TURN_CONFIG }}

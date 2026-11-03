@@ -163,15 +163,20 @@ function viewerMetrics(lines) {
   const samples = sum(audio.map((d) => d.a.smp))
   out.concealed = samples > 0 ? Math.min(100, (100 * sum(audio.map((d) => d.a.conc))) / samples) : null
 
-  // A/V offset, positive = the sound is behind the picture. `s.av` (the difference of the two tracks'
-  // estimated playout clocks) when logged; otherwise the audio path's delay (jitter buffer + media
-  // playout + Web Audio output latency) minus the video's jitter buffer.
+  // A/V offset, positive = the sound is behind the picture. `s.off` (the viewer's own estimate: audio jitter
+  // buffer + Web Audio output + base latency - video jitter buffer - decode, soundLateMs in telemetry.mjs) is
+  // the sync number: it sees a lip-sync hold on the picture, which `s.av` (the difference of the two tracks'
+  // estimated playout clocks) cannot. Older logs fall back to `s.av` (0.8.1 has av but no off), then to
+  // the same sum worked out here from the fields that were logged.
   const offsets = []
   const methods = new Set()
   for (const d of p) {
-    if (finite(d.s?.av)) { offsets.push(d.s.av); methods.add('av') }
-    else if (finite(d.s?.aJb) && finite(d.s?.vJb)) {
-      offsets.push(d.s.aJb + (finite(d.s.aPlay) ? d.s.aPlay : 0) + (finite(d.s.out) ? d.s.out : 0) - d.s.vJb)
+    const s = d.s
+    if (finite(s?.off)) { offsets.push(s.off); methods.add('off') }
+    else if (finite(s?.av)) { offsets.push(s.av); methods.add('av') }
+    else if (finite(s?.aJb) && finite(s?.vJb)) {
+      const or0 = (x) => (finite(x) ? x : 0)
+      offsets.push(s.aJb + or0(s.out) + or0(s.base) - (s.vJb + or0(d.v?.dec)))
       methods.add('delay')
     }
   }
@@ -483,8 +488,9 @@ function formatGroup(score) {
   }
   if (used.size) {
     out.push('')
-    out.push('  A/V offset: positive = sound behind the picture; an estimate. [av] = difference of the two tracks\' estimated playout clocks (s.av);')
-    out.push('  [delay] = audio jitter buffer + playout + Web Audio output latency, minus video jitter buffer. Audio target = Settings\' audio bitrate.')
+    out.push('  A/V offset: positive = sound behind the picture; an estimate. [off] = the viewer\'s own sound-late figure (s.off: audio jitter buffer + Web Audio output + base,')
+    out.push('  minus video jitter buffer + decode); [av] = difference of the two tracks\' estimated playout clocks (s.av, older logs, blind to a lip-sync hold);')
+    out.push('  [delay] = the s.off sum worked out from the logged fields (oldest logs). Audio target = Settings\' audio bitrate.')
   }
   return out.join('\n')
 }

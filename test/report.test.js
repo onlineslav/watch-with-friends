@@ -109,14 +109,22 @@ test('metrics: frozen share from freeze durations, concealment as a share of sam
   assert.equal(m.concealed, 0.25) // 480 of 192000 samples
 })
 
-test('A/V offset: s.av when logged, else the audio path delay minus the video jitter buffer', () => {
+test('A/V offset: s.off first, then s.av, then the same sum from the logged fields', () => {
+  // A log with both fields uses s.off (av cannot see a lip-sync hold: here the picture is held ~700 ms).
+  const both = report.viewerMetrics([{s: {off: -632.2, av: 15, aJb: 30, vJb: 697.2}}, {s: {off: -630, av: 20}}])
+  assert.deepEqual([both.av.ms, both.av.method], [-631.1, 'off'])
+  // 0.8.1: av but no off.
   const ept = report.viewerMetrics([{s: {av: 40, aJb: 100, vJb: 10}}, {s: {av: 60}}])
   assert.deepEqual([ept.av.ms, ept.av.method], [50, 'av'])
-  const delay = report.viewerMetrics([{s: {aJb: 60, aPlay: 15, out: 30, vJb: 20}}])
-  assert.deepEqual([delay.av.ms, delay.av.method], [85, 'delay'])
+  // Neither: the s.off formula, with decode and base taken from where they are logged.
+  const delay = report.viewerMetrics([{s: {aJb: 60, aPlay: 15, out: 30, base: 10, vJb: 20}, v: {dec: 4}}])
+  assert.deepEqual([delay.av.ms, delay.av.method], [76, 'delay'])
   const noOutput = report.viewerMetrics([{s: {aJb: 60, vJb: 20}}])
   assert.equal(noOutput.av.ms, 40)
   assert.equal(report.viewerMetrics([{s: {aJb: 60}}]).av, null, 'one track alone says nothing about the offset')
+  // Mixed logs name every method that fed the median.
+  const mixed = report.viewerMetrics([{s: {off: 10}}, {s: {av: 30}}, {s: {aJb: 50, vJb: 20}}])
+  assert.deepEqual([mixed.av.ms, mixed.av.method], [30, 'av+delay+off'])
 })
 
 test('host metrics: quality decisions and bitrate changes', () => {

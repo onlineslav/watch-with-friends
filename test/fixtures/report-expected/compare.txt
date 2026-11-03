@@ -8,7 +8,7 @@ RTT typical / worst           36 ms / 214 ms  66 ms / 244 ms   worse
 Loss avg / worst              1.21% / 8.50%   0.97% / 8.50%    better
 Frozen                        ~4.5%           1.1%             better
 Audio concealed               –               0.63%            –
-A/V offset                    –               +77 ms           –
+A/V offset                    –               +78 ms           –
 Video received                2.14 Mbps       2.14 Mbps        –
 Video target                  2.29 Mbps       2.29 Mbps        –
 Video recv/target             93%             93%              same

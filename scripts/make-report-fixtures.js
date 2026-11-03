@@ -62,9 +62,12 @@ function session({day, t0, version, modern, rttExtra = 0, samples}) {
       sender: {fps: 30, height: 1080, limit: 'none'}, epoch: 1, mediaKind: 'video', receivedBitrateBps: play ? bitrate - 150_000 : 0, receiveIntervalMs: 2000, audioReceivedBitrateBps: play ? 110_000 + (i % 3) * 5000 : 0, playback: {playing: play, loading: !play, buffering: false, time: i * 2, readyState: 4}}
     if (modern) {
       vs.a = {lost: 0, rx: 100, jit: 2, conc: trouble ? 4800 : 96, sil: 0, smp: 96000, ins: 0, rem: 0, jb: 60, lvl: 0.1}
-      if (i % 2) vs.s = {aJb: 60, vJb: 20, aPlay: 15, out: 30, base: 10}
-      else vs.s = {aEpt: 1000, vEpt: 1040 + i, av: 40 + i, aJb: 60, vJb: 20, aPlay: 15, out: 30, base: 10}
       vs.v = {dec: 2 + (i % 3) * 0.4, pli: 0, nack: 0, fir: 0, frz: freezes ? 600 : 0, pau: 0}
+      // `off` as the app logs it (soundLateMs): audio jitter buffer + out + base - (video jitter buffer + decode). It sits
+      // beside `av` on every other sample, so the report has to prefer it; av here disagrees on purpose.
+      const off = Math.round((60 + 30 + 10 - (20 + vs.v.dec)) * 10) / 10
+      if (i % 2) vs.s = {aJb: 60, vJb: 20, aPlay: 15, out: 30, base: 10, off}
+      else vs.s = {aEpt: 1000, vEpt: 1040 + i, av: 40 + i, aJb: 60, vJb: 20, aPlay: 15, out: 30, base: 10, off}
       vs.set = {pri: 'balanced', ab: 256000, af: 1}
       vs.ow = {hv: near ? 150 + 10 * (i - 9) : 14 + (i % 3)}
     }

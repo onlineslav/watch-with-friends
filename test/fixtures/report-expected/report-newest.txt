@@ -26,7 +26,7 @@ Room FIXT-ROOM   2026-10-01 20:00:00 to 20:01:02 UTC (1m 02s), 3 people
     Loss              average 0.97%, worst 8.5% (video, per 2s)
     Frozen            1.1% of playing time
     Audio concealed   0.63%
-    A/V offset        +77 ms   [av+delay]
+    A/V offset        +78 ms   [off]
     Video bitrate     received 2.14 Mbps / target 2.29 Mbps
     Audio bitrate     received 115 kbps / target 256 kbps
     Encode / decode   encode 3.8 ms / 4.5 ms (typical / worst), decode 2.4 ms / 2.8 ms
@@ -52,5 +52,6 @@ Room FIXT-ROOM   2026-10-01 20:00:00 to 20:01:02 UTC (1m 02s), 3 people
   Edge RTT = round trip to the Cloudflare edge over the telemetry socket (builds with M1.9); a link full of video makes its own edge RTT climb.
   One-way delay comes from the room clock offset and assumes both directions equal, so only a rise means something. The bottleneck line compares troubled samples (loss, freezes, encoder held back) with calm ones.
 
-  A/V offset: positive = sound behind the picture; an estimate. [av] = difference of the two tracks' estimated playout clocks (s.av);
-  [delay] = audio jitter buffer + playout + Web Audio output latency, minus video jitter buffer. Audio target = Settings' audio bitrate.
+  A/V offset: positive = sound behind the picture; an estimate. [off] = the viewer's own sound-late figure (s.off: audio jitter buffer + Web Audio output + base,
+  minus video jitter buffer + decode); [av] = difference of the two tracks' estimated playout clocks (s.av, older logs, blind to a lip-sync hold);
+  [delay] = the s.off sum worked out from the logged fields (oldest logs). Audio target = Settings' audio bitrate.

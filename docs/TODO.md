@@ -25,7 +25,7 @@ Allowed to be rough:
   upload keeps working.
 
 ### M1.1 Live telemetry stream [must-work]
-Status: todo
+Status: in progress
 Story: While Lenna and I are watching, I run one command and see both our telemetry lines as they happen, about two
 seconds behind, so I can change something and see the effect right away.
 Done when:
@@ -49,7 +49,7 @@ Gate: no
 Evidence:
 
 ### M1.2 Comprehensive measurements
-Status: todo
+Status: in progress
 Story: When something goes wrong, the log already says whether it was the network, the computer, the encoder or the
 audio path, so nobody has to reproduce it to find out.
 Done when (each as fields on the existing 2s samples or a once-per-session event, documented in CLAUDE.md):
@@ -164,3 +164,12 @@ Done when:
 - Aya and Lenna confirm the difference.
 Gate: no
 Evidence:
+
+## Later (filed from Aya's notes, not cards yet)
+
+- Screen-share annotations drawn over the sharer's real screen (an overlay window), not only in the app.
+- Download subtitles automatically from online sources, like Plex.
+- Hide the controls when the mouse isn't over them, not only when the window loses focus.
+- Text chat in the room.
+- The sharer sees how much delay each viewer has.
+- A Y2K-inspired theme with modern usability.

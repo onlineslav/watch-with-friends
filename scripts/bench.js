@@ -6,8 +6,10 @@
 //   share  a sharer shares a "window" that draws the same schedule, its sound coming from the clip's own PCM
 //          through the real app-audio path (main/app-audio.js -> renderer/app-audio.mjs -> the share
 //          stream) from a stand-in helper; only the OS capture call is skipped, because it makes sound
-//   republish  (only with --variant=republish) a host opens the clip, then opens it again twice, each time a
+//   republish  (only with --variant=republish) a host opens the clip, then publishes it again twice, each time a
 //          new audio section on the same connection; the viewer's stereo separation is read after each
+//   reopen     (only with --variant=reopen) a host opens the clip, then opens a second and a third file (copies of
+//          it); the viewer must hear the beeps of each (RMS >= 0.1) and decode them in stereo
 //
 // Nothing is audible: every window is muted and the output gain feeds only a tap that reaches the
 // destination through a gain of zero. Real renderer code over local discovery, like check-network.js.
@@ -80,7 +82,7 @@ const degraded = options.loss > 0 || options.linkKbps > 0 // not a sync run: the
 assert.ok(options.loss >= 0 && options.loss < 100 && options.linkKbps >= 0, '--loss is a percent, --link-kbps a number')
 assert.ok(['on', 'off'].includes(options.audioLadder) && ['on', 'off'].includes(options.audioFirst), '--audio-ladder and --audio-first are on or off')
 const variants = options.variant === 'all' ? ['film', 'share'] : [options.variant]
-assert.ok(variants.every((v) => ['film', 'share', 'republish'].includes(v)), '--variant is film, share, republish or all')
+assert.ok(variants.every((v) => ['film', 'share', 'republish', 'reopen'].includes(v)), '--variant is film, share, republish, reopen or all')
 
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'synced-bench-'))
 app.setPath('userData', path.join(temporary, 'profile'))
@@ -434,11 +436,11 @@ async function runFilm(env, runIndex) {
 // section in the offer (the way a returning peer's newer claim republishes it), and the first section
 // in the SDP is the stale one. The viewer's L/R separation is read after each.
 //
-// Not the same as opening another file: hostFile() a second time sends no audio to the viewer at all in
-// this harness (the host's own Web Audio tap hears it, its captureStream audio track has no signal; found
-// with M1.6, also true of v0.8.0 and v0.8.1, not looked into further).
-async function runRepublish(env, runIndex) {
-  const {host, viewer} = await connectedPair(`rep${runIndex}`, 'rephost', 'repviewer')
+// mode 'reopen' opens another file each time instead (hostFile): before M1.11 that sent the viewer no audio
+// at all (the host's own Web Audio tap heard it, its captureStream audio track had no signal), on v0.8.0
+// and v0.8.1 alike. Both modes read the beeps too, not only the bed tone.
+async function runRepublish(env, runIndex, mode = 'republish') {
+  const {host, viewer} = await connectedPair(`${mode.slice(0, 5)}${runIndex}`, 'rephost', 'repviewer')
   try {
     await applySendOptions(host)
     await Promise.all([run(host, '__bench.installTap()'), run(viewer, '__bench.installTap()')])
@@ -447,18 +449,27 @@ async function runRepublish(env, runIndex) {
     const stages = []
     for (let publish = 1; publish <= 3; publish++) {
       const before = await frames()
-      await run(host, publish === 1 ? `__test.hostFile(${JSON.stringify(env.clip)})` : '__test.publishStream(); true')
+      let file = env.clip
+      if (mode === 'reopen' && publish > 1) {
+        file = env.clip.replace(/\.mkv$/, `-${publish}.mkv`)
+        fs.copyFileSync(env.clip, file) // another file, not the same one again
+      }
+      await run(host, publish === 1 || mode === 'reopen' ? `__test.hostFile(${JSON.stringify(file)})` : '__test.publishStream(); true')
       await until(viewer, `document.getElementById("remote-video").getVideoPlaybackQuality().totalVideoFrames > ${before + 60}`, 45000, `the viewer receives publish ${publish}`)
       await pause(3000)
-      await run(viewer, '__bench.collect().then(() => true)') // the reading restarts here
-      await pause(5000)
+      const beepsBefore = JSON.parse(await run(viewer, '__bench.collect().then(JSON.stringify)')).levels.length // the stereo reading restarts here
+      await pause(6500)
       const data = JSON.parse(await run(viewer, '__bench.collect().then(JSON.stringify)'))
+      const beeps = data.levels.slice(beepsBefore).map((l) => l.rms)
       const rtp = await rtpSnapshot(viewer)
-      stages.push({publish, separation: lib.round(data.stereo.side / Math.max(1e-12, data.stereo.side + data.stereo.mid), 3), energy: data.stereo, audioSections: await run(viewer, audioSections), receiveFmtp: rtp.audioIn?.codec?.sdpFmtpLine ?? null})
+      stages.push({publish, beeps: beeps.length, beepRms: lib.round(lib.median(beeps), 3), separation: lib.round(data.stereo.side / Math.max(1e-12, data.stereo.side + data.stereo.mid), 3), energy: data.stereo, audioSections: await run(viewer, audioSections), receiveFmtp: rtp.audioIn?.codec?.sdpFmtpLine ?? null})
     }
     const errors = [...await run(host, '__test.errors'), ...await run(viewer, '__test.errors')]
-    const problems = stages.filter((s) => !(s.separation >= 0.4)).map((s) => `after publish ${s.publish} the viewer's L/R separation is ${s.separation}, under 0.4: the audio decodes as mono (or is silent: energy ${s.energy.mid})`)
-    return {variant: 'republish', stages, pageErrors: errors, problems}
+    const problems = [
+      ...stages.filter((s) => !(s.separation >= 0.4)).map((s) => `after publish ${s.publish} the viewer's L/R separation is ${s.separation}, under 0.4: the audio decodes as mono (or is silent: energy ${s.energy.mid})`),
+      ...stages.filter((s) => !(s.beepRms >= 0.1)).map((s) => `after publish ${s.publish} the viewer heard ${s.beeps} beep(s), median RMS ${s.beepRms}, under 0.1: no sound arrived`),
+    ]
+    return {variant: mode, stages, pageErrors: errors, problems}
   } finally {
     host.destroy()
     viewer.destroy()
@@ -530,7 +541,8 @@ const spread = (values) => (values.length ? lib.round(Math.max(...values) - Math
 function summarizeRepublish(allRuns) {
   const runs = allRuns.filter((r) => !r.failed)
   const at = (n) => runs.map((r) => r.stages[n]?.separation).filter(Number.isFinite)
-  return {runs: runs.length, failedRuns: allRuns.length - runs.length, separation: [1, 2, 3].map((publish) => ({publish, perRun: at(publish - 1), median: lib.round(lib.median(at(publish - 1)), 3)}))}
+  const rms = (n) => runs.map((r) => r.stages[n]?.beepRms).filter(Number.isFinite)
+  return {runs: runs.length, failedRuns: allRuns.length - runs.length, separation: [1, 2, 3].map((publish) => ({publish, perRun: at(publish - 1), median: lib.round(lib.median(at(publish - 1)), 3), beepRms: {perRun: rms(publish - 1), median: lib.round(lib.median(rms(publish - 1)), 3)}}))}
 }
 
 function summarizeVariant(allRuns) {
@@ -562,9 +574,10 @@ function printReport(report) {
   console.log(`\n=== Benchmark ${report.version} ${report.date}${report.options.quick ? ' (quick: not a result)' : ''} [${mode}] ===`)
   for (const [variant, runs] of Object.entries(report.variants)) {
     const s = report.summary[variant]
-    if (variant === 'republish') {
-      console.log(`\n--- republish: ${runs.length} run(s) ---`)
+    if (variant === 'republish' || variant === 'reopen') {
+      console.log(`\n--- ${variant}: ${runs.length} run(s) ---`)
       console.log(`  viewer L/R separation after publish 1, 2, 3 (0.5 is stereo, 0 is mono): ${s.separation.map((x) => `${x.median} (${x.perRun.join(', ')})`).join('  |  ')}`)
+      console.log(`  viewer beep RMS after publish 1, 2, 3 (1kHz beep at 0.5 peak reads 0.35; silence 0): ${s.separation.map((x) => `${x.beepRms.median} (${x.beepRms.perRun.join(', ')})`).join('  |  ')}`)
       runs.forEach((r, i) => {
         if (r.failed) return console.log(`  run ${i + 1}: FAILED ${r.failed}`)
         console.log(`  run ${i + 1}: ${r.stages.map((x) => `#${x.publish} sep ${x.separation}, ${x.audioSections} audio section(s)`).join('; ')}; receive fmtp '${r.stages.at(-1).receiveFmtp}'`)
@@ -619,7 +632,7 @@ app.whenReady().then(async () => {
       for (let i = 1; i <= options.runs; i++) {
         console.log(`${variant} run ${i}/${options.runs} ...`)
         try {
-          variantsOut[variant].push(await (variant === 'film' ? runFilm(env, i) : variant === 'republish' ? runRepublish(env, i) : runShare(env, i)))
+          variantsOut[variant].push(await (variant === 'film' ? runFilm(env, i) : variant === 'republish' || variant === 'reopen' ? runRepublish(env, i, variant) : runShare(env, i)))
         } catch (error) {
           console.error(error)
           variantsOut[variant].push({variant, failed: String(error.message || error), problems: [`the run failed: ${error.message}`]})
@@ -638,7 +651,7 @@ app.whenReady().then(async () => {
       },
       mode: {loss: options.loss, linkKbps: options.linkKbps, audioLadder: options.audioLadder, audioFirst: options.audioFirst, tree: options.tree ? path.basename(options.tree) : null, network: network && {kind: 'UDP relays (scripts/bench-net.js)', stats: network.stats}},
       variants: variantsOut,
-      summary: Object.fromEntries(Object.entries(variantsOut).map(([k, runs]) => [k, k === 'republish' ? summarizeRepublish(runs) : summarizeVariant(runs)])),
+      summary: Object.fromEntries(Object.entries(variantsOut).map(([k, runs]) => [k, k === 'republish' || k === 'reopen' ? summarizeRepublish(runs) : summarizeVariant(runs)])),
     }
     const dir = path.join(root, 'work', 'bench')
     fs.mkdirSync(dir, {recursive: true})

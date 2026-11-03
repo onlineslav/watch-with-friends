@@ -799,6 +799,18 @@ app.whenReady().then(async () => {
     await until(a, '__test.session.role === "viewer" && document.getElementById("remote-video").readyState >= 2')
     await until(b, '__test.session.peerStreams.get(__test.session.hostId)?.claimedAt === __test.session.remote.claimedAt')
     console.log('PASS: Host takeover attaches the stream for the new media revision')
+    // M1.11: every file after the first used to reach viewers with picture and no sound (a second captureStream()
+    // of the same element lost its audio to the first). Each viewer must hear the new host's file, not the last.
+    const heardFrom = (host, claimBefore) => `(() => { const s = __test.session; const tracks = document.getElementById('remote-video').srcObject?.getAudioTracks() || []; return s.role === 'viewer' && s.remote?.claimedAt > ${claimBefore} && s.peerStreams.get(s.hostId)?.claimedAt === s.remote.claimedAt && tracks.some((t) => t.readyState === 'live' && !t.muted) && __test.audioLevel() > 0.01 })()`
+    await Promise.all([a, b].map((win) => until(win, heardFrom(c, 0), 45000, 'viewers hear the takeover file')))
+    for (const [index, name] of ['second', 'third'].entries()) {
+      const copy = path.join(temporary, `${name}-file.mp4`)
+      fs.copyFileSync(video, copy)
+      const claimBefore = await run(a, '__test.session.remote.claimedAt')
+      await run(c, `__test.hostFile(${JSON.stringify(copy)})`)
+      await Promise.all([a, b].map((win) => until(win, heardFrom(c, claimBefore), 45000, `viewers hear the ${name} file`)))
+    }
+    console.log('PASS: A second and a third file opened by the host are audible to both viewers each time')
     await run(c, `__test.hostFile(${JSON.stringify(path.join(temporary, 'missing.mp4'))})`)
     await Promise.all([a, b].map((win) => until(win, 'Boolean(__test.session.remote?.error) && document.getElementById("spinner").hidden')))
     console.log('PASS: A failed host file reaches both viewers as a terminal error')
@@ -930,6 +942,7 @@ app.whenReady().then(async () => {
     console.log('PASS: Saved room cards hide codes and show live occupants, including non-friends, without joining the room')
     await run(a, '__test.control("seek", 29); __test.control("play")')
     await until(c, `__test.session.role === 'host' && __test.session.playing?.id === ${JSON.stringify(playlistIds[2])} && document.getElementById('local-video').readyState >= 3`)
+    await until(a, `(() => { const s = __test.session; const tracks = document.getElementById('remote-video').srcObject?.getAudioTracks() || []; return s.role === 'viewer' && s.peerStreams.get(s.hostId)?.claimedAt === s.remote?.claimedAt && tracks.some((t) => t.readyState === 'live' && !t.muted) && __test.audioLevel() > 0.01 })()`, 45000, 'the viewer hears the item the playlist advanced to')
     console.log('PASS: Ending playback skips an offline owner’s item and starts the next available owner’s media')
     await run(a, `__test.playItem(${JSON.stringify(playlistIds[0])})`)
     await until(a, '__test.session.role === "host" && !document.getElementById("local-video").paused')

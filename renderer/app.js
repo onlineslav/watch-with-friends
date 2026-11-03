@@ -1317,40 +1317,85 @@ function showPicture(url) {
 // Video comes from captureVideoFrames (true source frame rate); captureStream supplies audio,
 // and video too if the frame APIs are unavailable. Audio files get no video track: one that never
 // receives a frame can hold the viewer's <video> below HAVE_CURRENT_DATA, so it never plays.
+//
+// The element is captured ONCE, and what is published are clones of that capture's tracks. Calling
+// video.captureStream() again on every new file (it used to run on each loadedmetadata) left the first
+// capture's listeners alive: they took over the element's audio copy callback from the second capture and
+// stopped its track, so every file after the first reached viewers with picture and no sound (M1.11).
+// Stopping a clone ends only that clone; the capture, and the element's audio into it, stay. When the
+// element's source changes, Chromium ends the capture's old tracks and adds new ones to the same stream:
+// the sink below follows that, publishing a clone of each new track and dropping the clone of each old one.
+let elementCapture = null // {video, stream, sink}: the one capture of the host's <video>
+
+function captureElement(video) {
+  if (elementCapture?.video === video) return elementCapture
+  const capture = {video, stream: video.captureStream(), sink: null}
+  capture.stream.addEventListener('addtrack', ({track}) => capture.sink?.add(track))
+  capture.stream.addEventListener('removetrack', ({track}) => capture.sink?.remove(track))
+  return (elementCapture = capture)
+}
+
 function publishStream() {
   if (session.preview) return
   unpublishStream()
   const video = ui.localVideo
-  const captured = video.captureStream()
+  const capture = captureElement(video)
   const frames = player.media?.video ? captureVideoFrames(video) : null
   const usable = (track) => !(frames && track.kind === 'video')
-  for (const track of captured.getTracks()) if (!usable(track)) track.stop()
 
-  const stream = new MediaStream([...(frames ? [frames] : []), ...captured.getTracks().filter(usable)])
+  const stream = new MediaStream(frames ? [frames] : [])
   // Films should drop resolution before frame rate when the connection or CPU struggles.
   stream.getVideoTracks().forEach((track) => (track.contentHint = 'motion'))
   session.stream = stream
-  session.captured = captured
+  session.captured = capture.stream
 
   // Capture can end/replace tracks without changing the MediaSource. Retaining an
   // old audio sender leaves a silent track alongside its replacement on viewers.
-  const removeTrack = (track) => {
-    if (session.stream !== stream || !stream.getTracks().includes(track)) return
-    session.room.removeTrack(track)
-    stream.removeTrack(track)
+  const clones = new Map() // capture track -> the clone published in its place
+  const drop = (source) => {
+    const clone = clones.get(source)
+    if (!clone) return
+    clones.delete(source)
+    if (session.stream === stream && stream.getTracks().includes(clone)) {
+      session.room?.removeTrack(clone)
+      // The room only lets go of tracks it was given one by one (addTrack); these came with the stream
+      // (addStream), so its removeTrack finds nothing to remove. Release the sender here, or the viewer keeps
+      // a silent track beside the new one, and plays whichever it finds first.
+      for (const pc of Object.values(session.room?.getPeers() || {})) {
+        const sender = pc.getSenders().find((s) => s.track === clone)
+        if (sender) try { pc.removeTrack(sender) } catch {}
+      }
+      stream.removeTrack(clone)
+    }
+    clone.stop()
   }
-  const watchTrack = (track) => track.addEventListener('ended', () => removeTrack(track), {once: true})
-  captured.getTracks().filter(usable).forEach(watchTrack)
-  captured.addEventListener('removetrack', ({track}) => removeTrack(track))
-  captured.addEventListener('addtrack', ({track}) => {
-    if (session.stream !== stream || !usable(track)) return track.stop()
-    if (track.readyState === 'ended') return
-    if (track.kind === 'video') track.contentHint = 'motion'
-    for (const old of stream.getTracks()) if (old.readyState === 'ended') removeTrack(old)
-    stream.addTrack(track)
-    watchTrack(track)
-    Promise.all(session.room.addTrack(track, stream, {metadata: {claimedAt: session.claimedAt}})).then(tuneSenders, () => {})
-  })
+  const adopt = (source) => {
+    if (clones.has(source) || source.readyState === 'ended') return null
+    if (!usable(source)) {
+      source.stop() // the frames above carry the picture; the capture's own video is not needed
+      return null
+    }
+    const clone = source.clone()
+    if (clone.kind === 'video') clone.contentHint = 'motion'
+    clones.set(source, clone)
+    source.addEventListener('ended', () => drop(source), {once: true})
+    return clone
+  }
+  for (const track of capture.stream.getTracks()) {
+    const clone = adopt(track)
+    if (clone) stream.addTrack(clone)
+  }
+  capture.sink = {
+    add(track) {
+      if (session.stream !== stream) return
+      const clone = adopt(track)
+      if (!clone) return
+      for (const old of stream.getTracks()) if (old.readyState === 'ended') drop([...clones].find(([, c]) => c === old)?.[0])
+      stream.addTrack(clone)
+      Promise.all(session.room.addTrack(clone, stream, {metadata: {claimedAt: session.claimedAt}})).then(tuneSenders, () => {})
+    },
+    remove: drop,
+  }
   if (session.peers.size) Promise.all(session.room.addStream(stream, {metadata: {claimedAt: session.claimedAt}})).then(tuneSenders, () => {})
 }
 
@@ -1358,11 +1403,12 @@ function unpublishStream() {
   const stream = session.stream
   if (!stream) return
   session.stream = null
+  if (elementCapture) elementCapture.sink = null
   try {
     session.room?.removeStream(stream)
   } catch {}
+  // Only what was published: the clones and the frame generator. The capture itself is kept (see captureElement).
   stream.getTracks().forEach((track) => track.stop())
-  session.captured?.getTracks().forEach((track) => track.stop())
   session.captured = null
 }
 

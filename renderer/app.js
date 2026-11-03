@@ -816,12 +816,17 @@ async function leaveRoom() {
   return leavingRoom
 }
 
-function setRole(role) {
+// Every role change goes through here, so the log context (stamped on every line) never goes stale.
+function noteRole(role) {
   if (session.role !== role) {
     logEvent('room', 'role', {role, host: session.hostId, claimedAt: session.claimedAt})
     setLogContext({role})
   }
   session.role = role
+}
+
+function setRole(role) {
+  noteRole(role)
   ui.stage.dataset.role = role
   render()
 }
@@ -2090,7 +2095,7 @@ function receiveState(value, peerId) {
     setRole('idle')
     return
   }
-  session.role = 'viewer'
+  noteRole('viewer')
   ui.stage.dataset.role = 'viewer'
   if (stopRemovedPlayback()) return
   if (state.youtubeId && !state.ended) {
@@ -2869,7 +2874,7 @@ function stopRemovedPlayback() {
   session.remote = null
   session.hostId = null
   session.mediaError = null
-  session.role = 'idle'
+  noteRole('idle')
   detachRemoteStream()
   stopHosting()
   // Only the host advances; viewers follow its replacement claim.

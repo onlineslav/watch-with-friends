@@ -43,7 +43,7 @@ function setup(role = 'host') {
     youtube: {close: () => {}},
     isHost: () => session.role === 'host', player: {close: () => calls.closed++},
     detachRemoteStream: () => calls.detached++, unpublishStream: () => calls.unpublished++, clearHostImage: () => {}, clearShare: () => {},
-    setRole: (role) => { session.role = role }, render: () => {}, saveRoom: () => {}, shareAvailability: () => {},
+    setRole: (role) => { session.role = role }, noteRole: (role) => { session.role = role }, render: () => {}, saveRoom: () => {}, shareAvailability: () => {},
     broadcastState: () => {}, checkpointPlayback: () => {}, toast: () => {}, cleanState: (state) => state,
     acceptsState: () => true, sameClaim: () => true, nextSteady: () => ({}), viewerTime: () => 0, stateIsIdle,
     performance, ui: {stage: {dataset: {}}}, attachRemoteStream: () => assert.fail('Removed media must not attach'),

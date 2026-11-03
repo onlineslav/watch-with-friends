@@ -172,6 +172,43 @@ Decided (orchestrator, 2026-11-03, under Aya's "easy for development" rule; over
 Gate: no
 Evidence:
 
+### M1.9 Session context and "something's wrong" marks [wire]
+Status: todo
+Added: Aya, 2026-11-03 ("I want everything that would be useful"). Built right after M1.4, before the next release,
+so Lenna's first live session has it.
+Story: When Lenna or I notice something bad, one key press marks the moment in both our logs, and the log already
+says what was going on around it: our audio devices, what we were doing, whether anything crashed.
+Done when:
+- A mark: a hotkey and a small control in the room (Settings shows the key) logs `mark/note` with an optional short
+  note, locally and on every peer in the room (a new room action, validated in `protocol.mjs`, rate-limited). Older
+  copies ignore it without errors. `--report` lists each mark with the numbers from the 10s around it, and
+  `--live` highlights it.
+- Audio output device per person, once per session and on change: kind (built-in, wired, Bluetooth, HDMI, virtual,
+  unknown; from the device label and `enumerateDevices`), label, sample rate, `outputLatency`/`baseLatency`.
+- Crashes: `render-process-gone`, `child-process-gone` (GPU, utility), unresponsive/responsive windows, and WebRTC
+  connection-state changes and ICE restarts, each with its reason.
+- Actions and window state: play, pause, seek, volume, mute, fullscreen, minimized/hidden/focused, sleep/wake
+  (`powerMonitor`), and Settings changes, each as a small event (no per-frame or per-sample cost).
+- Source facts once per file opened: container, codecs, resolution, fps, HDR, passthrough or transcode and why,
+  the encoder chosen (nvenc/qsv/amf/videotoolbox/libx264).
+- All events go through the existing redaction (no paths, no IPs), stay under the 4000-byte line cap, and add no
+  rAF loop or per-sample IPC; documented in CLAUDE.md; unit tests for the new pure parts (device-kind
+  classification, mark validation, report mark windows).
+Likely failures:
+- Device labels are empty until media permission is granted: fall back to `unknown`, never fail.
+- A mark sent during a host change or to a peer on 0.8.0 must not break the room.
+Out of scope: Wi-Fi signal strength, join-timing breakdown, Chromium audio underrun counts (later, if needed).
+Gate: no
+Evidence:
+
+### M1.10 Release 0.8.1 with live telemetry
+Status: todo
+Added: Aya, 2026-11-03 (approved "build them right after M1.4, before the release").
+Done when: M1.1–M1.4 and M1.9 are verified; a 0.8.1 release is cut the usual way (CI builds both platforms,
+auto-update picks it up); after install, `npm run diagnostics -- --live` shows Aya's own lines.
+Gate: no
+Evidence:
+
 ### M1.5 Audio in sync with the picture [feel]
 Status: todo
 Story: When I host, my friends hear the sound exactly when they see it, for films and screen shares.

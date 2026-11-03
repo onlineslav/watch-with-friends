@@ -347,7 +347,7 @@ estimate. LOW: with keep-audio off, random loss can still look like congestion t
 Waiting on: Aya's check (music-heavy film with Lenna).
 
 ### M1.7 Smooth, sharp video under real conditions [feel]
-Status: todo
+Status: in progress
 Story: The picture stays smooth and as sharp as the connection allows, and recovers quickly after a hiccup.
 Done when:
 - Bench numbers for fps and frame-interval jitter at 24, 30 and 60fps films and a 60fps share, before and after.

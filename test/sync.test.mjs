@@ -178,58 +178,81 @@ test('a long run of cuts down to the floor does not pin recovery there', () => {
 
 // ---------- audio steps (M1.6) ----------
 
-const report = (lossPct, at) => ({receiver: {lossPct}, receiverAt: at})
-function audioFeed(state, losses, startAt = 1) {
-  const steps = []
-  losses.forEach((lossPct, i) => {
-    state = chooseAudioStep(state, report(lossPct, startAt + i), 2000)
-    steps.push(state.step)
-  })
-  return {state, steps}
+const tick = (state, reading, count = 1) => {
+  for (let i = 0; i < count; i++) state = chooseAudioStep(state, reading, 2000)
+  return state
 }
+const limited = {limit: 'bandwidth', capacity: 2_000_000}
+const squeezed = {limit: 'none', capacity: 900_000}
+const clear = {limit: 'none', capacity: 8_000_000}
+const warm = (state = null) => tick(state, clear, 15) // 30s: past the start-up window, where nothing counts
 
-test('audio steps down 256 -> 128 -> 64 kbps at above 2% and above 5% loss, and not at or below 2%', () => {
-  assert.deepEqual([0, 1, 2, 3].map((step) => audioCapBps(step, 256_000)), [256_000, 128_000, 64_000, 64_000])
-  assert.deepEqual(audioFeed(null, [0, 1, 2]).steps, [0, 0, 0], 'up to 2% is left alone')
-  assert.deepEqual(audioFeed(null, [2.5]).steps, [1])
-  assert.deepEqual(audioFeed(null, [5.1]).steps, [2])
-  assert.deepEqual(audioFeed(null, [3, 6]).steps, [1, 2])
-  // The cap never goes above what is configured: a share set to 96 kbps stays at 96, and still drops to 64.
-  assert.deepEqual([0, 1, 2].map((step) => audioCapBps(step, 96_000)), [96_000, 96_000, 64_000])
-  assert.deepEqual([0, 1, 2].map((step) => audioCapBps(step, 510_000)), [510_000, 128_000, 64_000])
+test('the audio ceiling has one step, a 128 kbps floor, and never goes below the configured cap', () => {
+  assert.deepEqual([0, 1, 2].map((step) => audioCapBps(step, 256_000)), [256_000, 128_000, 128_000])
+  assert.deepEqual([0, 1].map((step) => audioCapBps(step, 96_000)), [96_000, 96_000], 'a lower setting is left alone')
+  assert.deepEqual([0, 1].map((step) => audioCapBps(step, 510_000)), [510_000, 128_000])
 })
 
-test('at 5% loss the audio steps down within 10 seconds (one report every 2s)', () => {
-  const losses = [4.6, 5.3, 4.8, 5.2, 4.9]
-  const {steps} = audioFeed(null, losses)
-  assert.deepEqual(steps, [1, 2, 2, 2, 2], 'the first report above 2% takes the first step, the first above 5% the second, and it stays down while the loss lasts')
+test('random loss alone never lowers the audio: only congestion does', () => {
+  // Reports of heavy loss on a link that is not congested (the sender is not bandwidth-limited and the
+  // estimate is high) change nothing, however long they last.
+  let state = tick(null, clear, 60)
+  assert.equal(state.step, 0)
+  assert.equal(chooseAudioStep(state, {limit: 'cpu', capacity: 5_000_000}).step, 0, 'a cpu limit is not the link')
+  assert.equal(chooseAudioStep(null, {}).step, 0, 'no readings at all')
 })
 
-test('audio steps back up one at a time after 30 seconds of clean reports, and only fresh reports count', () => {
-  let {state} = audioFeed(null, [7])
-  assert.equal(state.step, 2)
-  const calm = (count, from) => audioFeed(state, Array(count).fill(0), from)
-  let run = calm(14, 10) // 28s
-  assert.equal(run.state.step, 2, 'not yet')
-  state = run.state
-  run = calm(1, 30)
-  assert.equal(run.state.step, 1, 'one step after 30s')
-  state = run.state
-  run = calm(14, 40)
-  assert.equal(run.state.step, 1)
-  state = run.state
-  run = calm(1, 60)
-  assert.equal(run.state.step, 0, 'then the next, 30s later')
-  // A stale (repeated) report is not calm.
-  state = chooseAudioStep(null, report(7, 1), 2000)
-  for (let i = 0; i < 40; i++) state = chooseAudioStep(state, report(0, 1), 2000) // the same report, again and again
-  assert.equal(state.step, 2)
-  // Loss that is above 2% but already as low as it asks for resets the clock.
-  state = chooseAudioStep(null, report(7, 1), 2000)
-  state = audioFeed(state, Array(10).fill(0), 2).state
-  state = chooseAudioStep(state, report(3, 12), 2000)
-  assert.equal(state.step, 2)
-  assert.equal(state.calmMs, 0)
-  // No receiver report at all (a viewer that has not reported): nothing changes.
-  assert.equal(chooseAudioStep(state, {receiver: null, receiverAt: null}, 2000).step, 2)
+test('nothing counts in the first 30s: a connection ramping up looks bandwidth-limited on any link', () => {
+  const state = tick(null, limited, 14) // 28s of "bandwidth limited" and a 900 kbps estimate
+  assert.equal(state.step, 0)
+  assert.equal(tick(null, squeezed, 14).step, 0)
+  assert.equal(tick(state, limited).step, 1, 'the first reading after the window, with the 4s already counted, takes the step')
+})
+
+test('a sender limited by bandwidth takes the step after ~4s, a low estimate after ~10s', () => {
+  let state = tick(warm(), limited)
+  assert.equal(state.step, 0, 'one reading is not enough')
+  state = tick(state, limited)
+  assert.equal(state.step, 1)
+  assert.equal(state.decision, 'bandwidth-limited')
+  let low = tick(warm(), squeezed, 4)
+  assert.equal(low.step, 0, '8s under 1.5 Mbps: the estimate may still be climbing')
+  low = tick(low, squeezed)
+  assert.equal(low.step, 1)
+  assert.equal(low.decision, 'low-estimate')
+  // A start-up estimate that climbs past 1.5 Mbps before 10s never counts.
+  let ramp = tick(null, {limit: 'none', capacity: 300_000}, 3)
+  ramp = tick(ramp, {limit: 'none', capacity: 4_000_000}, 20)
+  assert.equal(ramp.step, 0)
+})
+
+test('the audio goes back up after 30s with neither condition, and a flicker does not reset the climb', () => {
+  let state = tick(warm(), limited, 2)
+  assert.equal(state.step, 1)
+  state = tick(state, clear, 14)
+  assert.equal(state.step, 1, '28s: not yet')
+  state = tick(state, clear)
+  assert.equal(state.step, 0)
+  assert.equal(state.decision, 'recovery')
+  // Congestion again during the wait restarts it.
+  state = tick(warm(), limited, 2)
+  state = tick(state, clear, 10)
+  state = tick(state, limited, 2)
+  state = tick(state, clear, 14)
+  assert.equal(state.step, 1)
+})
+
+test('a bandwidth limit with a plentiful estimate is an encoder wanting more, not congestion', () => {
+  assert.equal(tick(warm(), {limit: 'bandwidth', capacity: 6_000_000}, 20).step, 0)
+  assert.equal(tick(warm(), {limit: 'bandwidth', capacity: 2_000_000}, 2).step, 1)
+  assert.equal(tick(warm(), {limit: 'bandwidth'}, 2).step, 1, 'no estimate known: the limit counts')
+})
+
+test('with "keep audio quality" on the ladder is never used', () => {
+  const state = tick(null, {...limited, enabled: false}, 30)
+  assert.equal(state.step, 0)
+  assert.equal(state.decision, 'off')
+  // Turning it on while a step is taken puts the audio straight back.
+  const stepped = tick(warm(), limited, 2)
+  assert.equal(chooseAudioStep(stepped, {...limited, enabled: false}).step, 0)
 })

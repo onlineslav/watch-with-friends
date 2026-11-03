@@ -105,8 +105,8 @@ const APP_ID = 'synced-video-player-7c1e4b-v2'
 const STATE_INTERVAL_MS = 1000
 const VIDEO_MAX_BITRATE = 10_000_000
 const AUDIO_MAX_BITRATE = 256_000
-// Each viewer's audio ceiling steps down with the loss it reports (chooseAudioStep in sync.mjs). `enabled`
-// is false only when the bench compares against a fixed cap.
+// Each viewer's audio ceiling steps down to a 128 kbps floor under congestion (chooseAudioStep in sync.mjs),
+// only with "keep audio quality" off. `enabled` is false only when the bench compares against a fixed cap.
 const audioLadder = {enabled: true}
 // Browsers default a new audio capture toward mono plus voice-call processing (echo
 // cancellation, noise suppression, auto-gain) unless told otherwise — exactly wrong for sharing
@@ -1412,7 +1412,7 @@ async function tuneSenders() {
         const encoding = params.encodings[0]
         // A screen share's audio uses the configurable Settings bitrate (up to Opus's own
         // practical ceiling); file/image hosting keeps the fixed default, unaffected.
-        const audioStep = audioLadder.enabled ? person(peerId).audio?.step ?? 0 : 0
+        const audioStep = audioLadder.enabled && !shareSettings.audioFirst ? person(peerId).audio?.step ?? 0 : 0
         const audioBitrate = audioCapBps(audioStep, current.screen ? shareAudioBitrate(shareSettings.audioBitrate) : AUDIO_MAX_BITRATE)
         const maxBitrate = track.kind === 'video' ? quality?.bitrate || 4_000_000 : audioBitrate
         const settings = trackSize(track)
@@ -1685,9 +1685,10 @@ async function sampleConnection() {
           ...dimensions,
         })
         const audioBefore = p.audio
-        p.audio = chooseAudioStep(p.audio, {receiver: p.receiver, receiverAt: p.receiverAt}, TELEMETRY_INTERVAL_MS)
+        // Only under real congestion, and never with "keep audio quality" on (the default): see chooseAudioStep.
+        p.audio = chooseAudioStep(p.audio, {limit: stats.outbound?.limit, capacity: stats.capacity, enabled: !shareSettings.audioFirst && audioLadder.enabled}, TELEMETRY_INTERVAL_MS)
         if (p.audio.step !== (audioBefore?.step ?? 0)) {
-          logWarn('telemetry', 'audio-step-change', {peer: id, from: audioBefore?.step ?? 0, to: p.audio.step, reason: p.audio.decision, lossPct: p.audio.lossPct, capBps: audioCapBps(p.audio.step, current.screen ? shareAudioBitrate(shareSettings.audioBitrate) : AUDIO_MAX_BITRATE)})
+          logWarn('telemetry', 'audio-step-change', {peer: id, from: audioBefore?.step ?? 0, to: p.audio.step, reason: p.audio.decision, limit: p.audio.limit, estimateBps: p.audio.capacity, capBps: audioCapBps(p.audio.step, current.screen ? shareAudioBitrate(shareSettings.audioBitrate) : AUDIO_MAX_BITRATE)})
         }
         if (current.stream) logSendQuality(id, stats, before, p, {
           mediaKind: audioOnly ? 'audio' : 'video',

@@ -114,42 +114,56 @@ export function aggregateLinks(links) {
   return links.reduce((worst, next) => score(next) > score(worst) ? next : worst)
 }
 
-// Audio gives way by bitrate before it drops out (M1.6). Each viewer has its own audio ceiling, set
-// from the loss that viewer reports (the same report chooseSendQuality reads): step 0 is the
-// configured cap (AUDIO_MAX_BITRATE for films, Settings' choice for a share), step 1 is 128 kbps above
-// 2% loss, step 2 is 64 kbps above 5%. A smaller stream costs the link less, so the picture and the
-// retransmissions keep room, and Opus's forward error correction has less to carry. One step back up
-// after 30 seconds of clean reports. A report that did not arrive is not calm: only fresh ones count.
-// No RED (a second copy of every packet): Opus's in-band FEC is on in the SDP and costs nothing extra.
-export const AUDIO_STEP_CAPS_BPS = [Infinity, 128_000, 64_000]
-export const AUDIO_STEP_LOSS_PCT = [2, 5]
+// Audio gives way by bitrate when the link is congested (M1.6). Each viewer has its own audio ceiling:
+// step 0 is the configured cap (AUDIO_MAX_BITRATE for films, Settings' bitrate for a share), step 1 is a
+// 128 kbps floor. Never lower: below 128 kbps stereo music sounds like a phone call, and a smaller stream
+// does not make random loss less likely (the bench at 5% loss measured the same concealment at 64 kbps as at
+// 256: CELT-mode Opus has no in-band FEC to spend the bits on).
+//
+// The trigger is congestion, not raw loss: the sender's own encoder says it is limited by bandwidth
+// (qualityLimitationReason 'bandwidth') for ~4s, or the bandwidth estimate (availableOutgoingBitrate) stays
+// under 1.5 Mbps for ~10s (a bandwidth limit only counts while the estimate is under 3 Mbps or unknown). Neither means anything in the first 30s: a new connection's estimate starts near
+// 300 kbps and the encoder is "bandwidth limited" while it climbs, on any link (the bench's clean loopback
+// took the step at 2s without this). One step back up after 30s with neither. Skipped altogether
+// ("enabled" false) while "keep audio quality" is on, which is the default: that setting means the picture
+// gives way, never the sound.
+export const AUDIO_FLOOR_BPS = 128_000
+export const AUDIO_STEP_CAPS_BPS = [Infinity, AUDIO_FLOOR_BPS]
+export const AUDIO_CONGESTED_BPS = 1_500_000
+export const AUDIO_PLENTY_BPS = 3_000_000
+export const AUDIO_LIMITED_MS = 4000
+export const AUDIO_LOW_ESTIMATE_MS = 10_000
 export const AUDIO_RECOVER_MS = 30_000
+export const AUDIO_WARMUP_MS = 30_000
 
-export function chooseAudioStep(previous, {receiver = null, receiverAt = null} = {}, intervalMs = 2000) {
+export function chooseAudioStep(previous, {limit = null, capacity = null, enabled = true} = {}, intervalMs = 2000) {
+  if (!enabled) return {step: 0, calmMs: 0, limitedMs: 0, lowMs: 0, ageMs: 0, decision: 'off', limit: null, capacity: null}
+  const ageMs = (previous?.ageMs ?? 0) + intervalMs
+  // A sender "limited by bandwidth" with a 6 Mbps estimate is a video encoder reaching for more than it needs,
+  // not a link where 256 kbps of sound matters: the clean loopback bench read this way at 26s.
+  const limited = limit === 'bandwidth' && !(Number.isFinite(capacity) && capacity >= AUDIO_PLENTY_BPS)
+  const low = Number.isFinite(capacity) && capacity > 0 && capacity < AUDIO_CONGESTED_BPS
   let step = previous?.step ?? 0
   let calmMs = previous?.calmMs ?? 0
+  const limitedMs = limited ? (previous?.limitedMs ?? 0) + intervalMs : 0
+  const lowMs = low ? (previous?.lowMs ?? 0) + intervalMs : 0
   let decision = 'holding'
-  const fresh = receiver != null && receiverAt != null && receiverAt !== previous?.receiverAt
-  if (fresh) {
-    const loss = receiver.lossPct
-    const wanted = loss > AUDIO_STEP_LOSS_PCT[1] ? 2 : loss > AUDIO_STEP_LOSS_PCT[0] ? 1 : 0
-    if (wanted > step) {
-      step = wanted
+  if (ageMs >= AUDIO_WARMUP_MS && (limitedMs >= AUDIO_LIMITED_MS || lowMs >= AUDIO_LOW_ESTIMATE_MS)) {
+    calmMs = 0
+    if (step < 1) {
+      step = 1
+      decision = limitedMs >= AUDIO_LIMITED_MS ? 'bandwidth-limited' : 'low-estimate'
+    }
+  } else if (step > 0 && !limited && !low) {
+    calmMs += intervalMs
+    decision = 'calm'
+    if (calmMs >= AUDIO_RECOVER_MS) {
+      step = 0
       calmMs = 0
-      decision = 'loss'
-    } else if (loss > AUDIO_STEP_LOSS_PCT[0]) {
-      calmMs = 0 // still lossy, already as low as the loss asks: stay
-    } else if (step > 0) {
-      calmMs += intervalMs
-      decision = 'calm'
-      if (calmMs >= AUDIO_RECOVER_MS) {
-        step -= 1
-        calmMs = 0
-        decision = 'recovery'
-      }
+      decision = 'recovery'
     }
   }
-  return {step, calmMs, receiverAt: fresh ? receiverAt : previous?.receiverAt ?? null, decision, lossPct: fresh ? receiver.lossPct : previous?.lossPct ?? null}
+  return {step, calmMs, limitedMs, lowMs, ageMs, decision, limit, capacity: Number.isFinite(capacity) ? Math.round(capacity) : null}
 }
 
-export const audioCapBps = (step, configuredBps) => Math.min(configuredBps, AUDIO_STEP_CAPS_BPS[step] ?? AUDIO_STEP_CAPS_BPS.at(-1))
+export const audioCapBps = (step, configuredBps) => Math.min(configuredBps, AUDIO_STEP_CAPS_BPS[step] ?? AUDIO_FLOOR_BPS)

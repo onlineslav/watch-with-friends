@@ -11,7 +11,7 @@
     "pretest": "node scripts/patch-trystero.js",
     "bundle": "esbuild renderer/app.js --bundle --format=iife --target=chrome130 --outfile=renderer/bundle.js && esbuild renderer/app-share-worker.mjs --bundle --format=iife --target=chrome130 --outfile=renderer/app-share-worker.js",
     "start": "npm run bundle && node scripts/electron.js .",
-    "test": "node --test",
+    "test": "node --test \"test/*.test.js\" \"test/*.test.mjs\"",
     "test:startup": "npm run bundle && node scripts/electron.js scripts/check-startup.js && node scripts/check-profiles.js",
     "test:youtube": "node scripts/electron.js scripts/check-youtube.js",
     "test:logging": "npm run bundle && node scripts/electron.js scripts/check-logging.js",

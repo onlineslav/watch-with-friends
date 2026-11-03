@@ -320,7 +320,7 @@ function hostTelemetryOf(selfId) {
   const samples = mine.filter((e) => e.ev === 'host-sample')
   const reported = samples.filter((e) => e.receiver)
   const origin = reported[0]?.m ?? null
-  const steps = mine.filter((e) => e.ev === 'audio-step-change').map((e) => ({atS: origin == null ? null : lib.round((e.m - origin) / 1000, 1), from: e.from, to: e.to, lossPct: lib.round(e.lossPct, 1), capKbps: Number.isFinite(e.capBps) ? e.capBps / 1000 : null}))
+  const steps = mine.filter((e) => e.ev === 'audio-step-change').map((e) => ({atS: origin == null ? null : lib.round((e.m - origin) / 1000, 1), from: e.from, to: e.to, reason: e.reason, limit: e.limit, estimateKbps: Number.isFinite(e.estimateBps) ? Math.round(e.estimateBps / 1000) : null, capKbps: Number.isFinite(e.capBps) ? e.capBps / 1000 : null}))
   const col = (key) => samples.map((e) => e[key]).filter(Number.isFinite)
   const applied = mine.filter((e) => e.ev === 'send-parameters-applied')
   return {
@@ -374,9 +374,15 @@ function validity({viewer, transport, schedule, variant, quick, extra}) {
   if (!degraded && !extra?.noAudio && !(viewer.levelRms >= 0.1)) problems.push(`the received beep's RMS ${viewer.levelRms} is under 0.1: the audio arrived silent or not at all`)
   if (!degraded && !extra?.noAudio && viewer.matched < 3) problems.push('fewer than 3 flash/beep pairs: no offset can be reported')
   if (options.loss > 0 && !(transport.audio.packetsLost > 0)) problems.push(`--loss ${options.loss} was asked for but no audio packet was lost: the relays are not in the path`)
-  if (options.loss >= 5 && options.audioLadder === 'on' && !options.tree && extra?.hostRead) {
-    const first = extra.hostRead.firstStepS
-    if (!(first != null && first <= 10)) problems.push(`at ${options.loss}% loss the audio did not step down within 10s of the first receiver report (first step: ${first})`)
+  // Random loss is not congestion: the audio keeps at least the 128 kbps floor (and, with "keep audio quality" on, its full cap).
+  if (options.loss > 0 && !options.linkKbps && !options.tree && extra?.hostRead) {
+    const sentKbps = extra.hostRead.audioSentKbpsMedian
+    if (!(sentKbps >= 120)) problems.push(`at ${options.loss}% random loss the sent audio is ${sentKbps} kbps, under the 128 kbps floor`)
+    if (options.audioFirst === 'on' && extra.hostRead.audioSteps.length) problems.push('the audio ladder stepped on random loss with "keep audio quality" on')
+  }
+  // A real bottleneck below 1.5 Mbps with "keep audio quality" off: the ladder takes its step.
+  if (options.linkKbps > 0 && options.linkKbps < 1500 && options.audioFirst === 'off' && options.audioLadder === 'on' && !options.tree && !options.quick && extra?.hostRead && !(extra.hostRead.firstStepS != null)) {
+    problems.push(`on a ${options.linkKbps} kbps link with "keep audio quality" off the audio never stepped down`)
   }
   // (A release from before M1.6 logs one failed setParameters per run; that is data about it, not a broken harness.)
   if (extra?.hostRead && !options.tree && extra.hostRead.setParameters.failed > 0) problems.push(`${extra.hostRead.setParameters.failed} setParameters call(s) failed`)

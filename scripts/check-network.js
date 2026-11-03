@@ -108,6 +108,118 @@ async function checkFields(windows) {
   console.log('PASS: Samples carry audio health, A/V sync inputs, codec cost, machine load, host pipeline, link facts and settings, inside the line cap')
 }
 
+// M1.9: the context the log gains. A mark pressed by one person is logged by everyone in the room under one
+// id, a copy that does not know an action ignores it, the rate limit holds, and the one-way delays, the audio
+// device and the playback actions are in the real log. Reads the real log file.
+async function checkContext(windows, host, viewer, other) {
+  const entries = () => { diagnostics.flush(); return fs.readFileSync(diagnostics.filePath(), 'utf8').trim().split('\n').map(parseLine).filter(Boolean) }
+  const flush = () => Promise.all(windows.map((win) => run(win, '__test.flushLog()')))
+  const waitFor = async (what, find) => {
+    let found
+    for (let i = 0; i < 40 && !(found = find(entries())); i++) { await pause(500); await flush() }
+    assert.ok(found, `Timed out waiting for ${what}`)
+    return found
+  }
+  const [hostSelf, viewerSelf, otherSelf] = await Promise.all([host, viewer, other].map((win) => run(win, '__test.selfId')))
+
+  // One key press: the marker logs it as its own, everyone else as a peer's, all under one id.
+  const id = await run(viewer, '__test.markMoment("")')
+  assert.match(id, /^[a-z0-9]{6,16}$/)
+  await waitFor('the mark in all three logs', (all) => [hostSelf, viewerSelf, otherSelf].every((self) => all.some((e) => e.sc === 'mark' && e.ev === 'note' && e.id === id && e.self === self)))
+  const marks = entries().filter((e) => e.sc === 'mark' && e.id === id)
+  assert.deepEqual(marks.map((e) => e.src).sort(), ['peer', 'peer', 'self'])
+  const own = marks.find((e) => e.src === 'self')
+  assert.equal(own.self, viewerSelf)
+  assert.equal(own.by, await run(viewer, '__test.identity.username'))
+  assert.ok(marks.filter((e) => e.src === 'peer').every((e) => e.peer === viewerSelf && e.by === own.by), 'peers name who pressed it')
+  // The same id again carries a note to everyone.
+  assert.equal(await run(viewer, `__test.markMoment("audio crackles", ${JSON.stringify(id)})`), id)
+  await waitFor('the note in all three logs', (all) => [hostSelf, viewerSelf, otherSelf].every((self) => all.some((e) => e.sc === 'mark' && e.id === id && e.self === self && e.note === 'audio crackles')))
+  console.log('PASS: A mark reaches every log under one id, then a note is added to it')
+
+  // The same thing the way a person does it: the key, the button, the note box, and Settings naming the key.
+  const mineIds = () => new Set(entries().filter((e) => e.sc === 'mark' && e.src === 'self' && e.self === viewerSelf).map((e) => e.id))
+  assert.equal(await run(viewer, 'document.getElementById("mark-key").textContent'), 'X', 'Settings shows the key')
+  const known = mineIds().size
+  await run(viewer, `document.body.dispatchEvent(new KeyboardEvent('keydown', {code: 'KeyX', ctrlKey: true, bubbles: true}))`)
+  await flush()
+  assert.equal(mineIds().size, known, 'Ctrl+X is not the mark key')
+  await run(viewer, `document.body.dispatchEvent(new KeyboardEvent('keydown', {code: 'KeyX', bubbles: true}))`)
+  await waitFor('the key press in the log', () => mineIds().size === known + 1)
+  assert.equal(await run(viewer, 'document.getElementById("mark-note").hidden'), false, 'the note box opens')
+  await run(viewer, `(() => { document.getElementById('mark-note-input').value = 'video froze'; document.getElementById('mark-note').requestSubmit() })()`)
+  await waitFor('the typed note in all three logs', (all) => [hostSelf, viewerSelf, otherSelf].every((self) => all.some((e) => e.sc === 'mark' && e.self === self && e.note === 'video froze')))
+  assert.equal(await run(viewer, 'document.getElementById("mark-note").hidden'), true, 'and closes')
+  assert.equal(mineIds().size, known + 1, 'a note is the same mark')
+  await run(viewer, `document.getElementById('mark').click()`)
+  await waitFor('the button press in the log', () => mineIds().size === known + 2)
+  console.log('PASS: The mark key, the button and the note box work; Settings names the key')
+
+  // Mute, volume (one line per drag, not per step) and a Settings change are one small line each.
+  await run(viewer, `document.getElementById('mute').click()`)
+  await run(viewer, `document.getElementById('mute').click()`)
+  for (const volume of ['0.7', '0.6', '0.5']) await run(viewer, `(() => { const v = document.getElementById('volume'); v.value = '${volume}'; v.dispatchEvent(new Event('input')) })()`)
+  await pause(1000)
+  await run(viewer, `(() => { const v = document.getElementById('volume'); v.value = '1'; v.dispatchEvent(new Event('input')) })()`) // the later steps listen for sound
+  await run(viewer, `(() => { const select = document.getElementById('share-framerate'); select.value = '60'; select.dispatchEvent(new Event('change')) })()`)
+  await run(viewer, `(() => { const select = document.getElementById('share-framerate'); select.value = '30'; select.dispatchEvent(new Event('change')) })()`)
+  const changes = await waitFor('mute, volume and settings lines', (all) => {
+    const mine = all.filter((e) => e.self === viewerSelf)
+    const volume = mine.filter((e) => e.sc === 'action' && e.ev === 'volume')
+    const mutes = mine.filter((e) => e.sc === 'action' && e.ev === 'mute')
+    const settings = mine.filter((e) => e.sc === 'settings' && e.ev === 'change')
+    return mutes.length >= 2 && volume.length >= 2 && settings.length >= 2 ? {mutes, volume, settings} : null
+  })
+  assert.deepEqual(changes.mutes.slice(0, 2).map((e) => e.muted), [true, false])
+  assert.equal(changes.volume.filter((e) => e.v === 0.5).length, 1, 'a drag from 0.7 to 0.5 is one line, at 0.5')
+  assert.ok(!changes.volume.some((e) => e.v === 0.7 || e.v === 0.6), 'and not one per step')
+  assert.deepEqual(changes.settings.slice(-2).map((e) => e.share.frameRate), [[30, 60], [60, 30]])
+  console.log('PASS: Mute, volume and Settings changes are logged once each')
+
+  // Rate limit, bad payloads, and an action nobody here registered (what a copy from before marks looks like to us).
+  const sent = []
+  for (let i = 0; i < 12; i++) sent.push(await run(other, '__test.markMoment("")'))
+  assert.ok(sent.filter(Boolean).length <= 6 && sent.some((x) => x === null), `at most 6 marks in a window: ${sent.filter(Boolean).length} went out`)
+  await run(other, `__test.session.markAction.send({id: 'BAD ID', note: 'x'}).catch(() => {})`)
+  await run(other, `__test.session.markAction.send('not an object').catch(() => {})`)
+  await run(host, `__test.session.room.makeAction('future-thing').send({x: 1}).catch(() => {})`)
+  await pause(1500)
+  await flush()
+  const all = entries()
+  const otherMarks = all.filter((e) => e.sc === 'mark' && e.ev === 'note' && e.self === otherSelf && e.src === 'self')
+  assert.ok(otherMarks.length <= 6, `${otherMarks.length} marks logged by the one who flooded`)
+  const received = all.filter((e) => e.sc === 'mark' && e.ev === 'note' && e.self === hostSelf && e.peer === otherSelf)
+  assert.ok(received.length <= 6, `${received.length} of them shown to the host`)
+  assert.ok(!all.some((e) => e.sc === 'mark' && /BAD/.test(JSON.stringify(e))), 'a bad id is dropped by the receiver')
+  for (const win of [host, viewer, other]) assert.deepEqual(await run(win, '__test.errors'), [], 'no copy threw on a bad mark or an unknown action')
+  assert.equal(await run(host, '__test.session.peers.size'), 2, 'and the room is intact')
+  console.log(`PASS: Marks are rate limited (${otherMarks.length} of 12 sent), bad ones and unknown actions are ignored without errors`)
+
+  // The numbers that tell which direction is slow, from the room's clock offset.
+  const owViewer = await waitFor('host-to-viewer delay in a viewer-sample', (log) => log.filter((e) => e.ev === 'viewer-sample' && e.ow && Number.isFinite(e.ow.hv)).at(-1))
+  const owHost = await waitFor('viewer-to-host delay in a host-sample', (log) => log.filter((e) => e.ev === 'host-sample' && e.ow && Number.isFinite(e.ow.vh)).at(-1))
+  assert.ok(owViewer.ow.hv > -50 && owViewer.ow.hv < 2000, `host to viewer ${owViewer.ow.hv} ms on loopback`)
+  assert.ok(owHost.ow.vh > -50 && owHost.ow.vh < 2000, `viewer to host ${owHost.ow.vh} ms on loopback`)
+  console.log(`MEASURE one-way delay on loopback: host to viewer ${owViewer.ow.hv} ms, viewer to host ${owHost.ow.vh} ms; viewer-sample ${Buffer.byteLength(JSON.stringify(owViewer))} B, host-sample ${Buffer.byteLength(JSON.stringify(owHost))} B`)
+
+  // Where the sound goes, once on entering the room, and the playback actions the earlier steps took.
+  const devices = await waitFor('an audio/device line from every window', (log) => {
+    const lines = log.filter((e) => e.sc === 'audio' && e.ev === 'device' && e.why === 'room')
+    return [hostSelf, viewerSelf, otherSelf].every((self) => lines.some((e) => e.self === self)) ? lines : null
+  })
+  assert.ok(devices.every((e) => ['builtin', 'wired', 'bluetooth', 'hdmi', 'virtual', 'unknown'].includes(e.kind) && Number.isFinite(e.sr)), 'a known kind and a sample rate')
+  console.log(`MEASURE audio/device ${Buffer.byteLength(JSON.stringify(devices[0]))} B: ${JSON.stringify(devices[0])}`)
+  const actions = entries().filter((e) => e.sc === 'action')
+  assert.ok(actions.some((e) => e.ev === 'pause' && e.via === 'viewer' && e.self === viewerSelf), 'the viewer logged pressing pause')
+  assert.ok(actions.some((e) => e.ev === 'pause' && e.via === 'remote' && e.from === viewerSelf && e.self === hostSelf), 'the host logged the command it was sent')
+  assert.ok(actions.some((e) => e.ev === 'seek' && e.v === 10 && e.via === 'viewer'), 'a seek carries where to, in seconds')
+  assert.ok(entries().some((e) => e.sc === 'network' && e.ev === 'peer-state' && e.change && e.change.on), 'connection-state lines say which state moved')
+  const longest = Math.max(...entries().filter((e) => ['mark', 'action', 'audio'].includes(e.sc)).map((e) => Buffer.byteLength(JSON.stringify(e))))
+  assert.ok(longest < 4000, `the longest new line is ${longest} bytes`)
+  assert.ok(entries().every((e) => !JSON.stringify(e).match(/NaN|Infinity|undefined/)), 'no NaN in any line')
+  console.log(`PASS: One-way delays, the audio device and the playback actions are in the log (longest new line ${longest} B)`)
+}
+
 async function checkCost(host, viewer, baseline) {
   // Cost on the main thread: Chromium's own task time over 40 back-to-back samples, against 40 bare
   // getStats() calls, then the new parsing alone on a real report. Host (two viewers) and viewer.
@@ -175,7 +287,8 @@ async function checkLiveRate(windows, video) {
     }
     mine.forEach((list, index) => senders[index].push(list))
   })
-  senders.forEach((sender) => sender.configure({enabled: true, from: 'tester#abcd-1234'}))
+  // In a room the app pings its socket every 2 s for the edge round trip (M1.9); the rate includes those pings.
+  senders.forEach((sender) => { sender.configure({enabled: true, from: 'tester#abcd-1234'}); sender.setFast(true) })
   await pause(200)
   for (const socket of FakeWebSocket.instances) { socket.open(); socket.receive(JSON.stringify({watching: true})) }
   assert.equal(FakeWebSocket.instances.length, windows.length)
@@ -230,7 +343,7 @@ async function fixtures() {
   const source = fs.readFileSync(path.join(root, 'renderer/app.js'), 'utf8') + `
     window.__test = {
       get session() { return session }, get identity() { return identity },
-      friendNetwork, enterRoom, leaveRoom, hostFile, startShare, stopShare, shareSettings, tileViews, control, receiveImage, shownImage, selectSubtitle,
+      friendNetwork, enterRoom, leaveRoom, hostFile, startShare, stopShare, shareSettings, tileViews, control, receiveImage, shownImage, selectSubtitle, markMoment, logAudioDevice,
       primeDiscovery: (kind) => joinRoom({...network.config(), appId: APP_ID}, kind + ':startup-probe'),
       addToPlaylist, playItem, playNext, playable, orderedItems, moveInPlaylist, removeFromPlaylist, refreshAvailability, setPlaylistOpen,
       get history() { return roomHistory },
@@ -649,6 +762,7 @@ app.whenReady().then(async () => {
     await run(b, '__test.control("play")')
     await until(a, '!document.getElementById("local-video").paused')
     console.log('PASS: Viewer pause, seek and resume reach the host and other viewer')
+    await checkContext(windows, a, b, c)
     for (const track of [1, 0, 1, 0]) {
       await run(b, '__test.control("pause")')
       await until(a, 'document.getElementById("local-video").paused')

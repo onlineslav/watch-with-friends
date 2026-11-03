@@ -36,6 +36,28 @@ export function cleanTelemetry(value) {
   return result
 }
 
+// A mark: one person's "something is wrong right now", sent to everyone in the room so each log can
+// say what was going on at that moment (M1.9). `id` names the mark; the same id again is the same mark
+// with a note added, so a one-key-press mark can be explained a moment later. This is a room action
+// of its own ('mark'): copies from before M1.9 never register it, and Trystero drops a message for an
+// action nobody registered before any handler sees it, so for them it does not exist.
+export const MARK_NOTE_MAX = 80
+export const MARK_LIMIT = 6 // marks and note edits one person may send, and one may show, per MARK_WINDOW_MS
+export const MARK_WINDOW_MS = 10_000
+const MARK_ID = /^[a-z0-9]{6,16}$/
+const NOTE_CONTROLS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g
+
+export function cleanMark(value) {
+  if (!isRecord(value) || typeof value.id !== 'string' || !MARK_ID.test(value.id)) return null
+  if (value.note !== undefined && typeof value.note !== 'string') return null
+  const note = typeof value.note === 'string' ? value.note.replace(NOTE_CONTROLS, ' ').replace(/\s+/g, ' ').trim().slice(0, MARK_NOTE_MAX) : ''
+  return {id: value.id, note}
+}
+
+export function newMarkId(random = Math.random, now = Date.now) {
+  return `${now().toString(36).slice(-5)}${Math.floor(random() * 36 ** 4).toString(36).padStart(4, '0')}`
+}
+
 export function cleanSender(value) {
   return isRecord(value) && finite(value.fps, 0, 240) && finite(value.height, 0, 16384) && ['none', 'cpu', 'bandwidth', 'other'].includes(value.limit)
     ? {fps: value.fps, height: value.height, limit: value.limit} : null

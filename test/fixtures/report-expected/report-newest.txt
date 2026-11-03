@@ -17,6 +17,9 @@ Room FIXT-ROOM   2026-10-01 20:00:00 to 20:01:02 UTC (1m 02s), 3 people
     CPU peak          viewer –
     Quality decisions no bitrate changes; target 1.69 Mbps-4.00 Mbps
       per sample      settling 24, inactive 2, loss 2, freezes 1, recovery 1
+    Edge RTT          host 26 ms typical / 245 ms worst
+    One-way delay     –
+    Likely bottleneck host-one#0000-0000's upload (host)   [6 troubled samples; host edge RTT 26 -> 225 ms while troubled (+199); viewer's own link not measured; encoder held back by bandwidth in 60% of the troubled samples]
 
   viewer-two#0000-0000 watching host-one#0000-0000   [viewer's log + host's log; 28 playing samples = 56s]
     RTT               typical 66 ms, worst 244 ms
@@ -31,6 +34,23 @@ Room FIXT-ROOM   2026-10-01 20:00:00 to 20:01:02 UTC (1m 02s), 3 people
     CPU peak          viewer 51% of one core (renderer 25, gpu 20, main 4, other 2)
     Quality decisions 2 bitrate changes (1 up, 1 down); down loss x1, up recovery x1; target 1.69 Mbps-4.00 Mbps
       per sample      settling 24, inactive 2, loss 2, freezes 1, recovery 1
+    Edge RTT          host 26 ms typical / 245 ms worst; viewer 31 ms typical / 31 ms worst
+    One-way delay     host to viewer +15 ms typical / +190 ms worst; viewer to host +16 ms typical / +19 ms worst
+    Likely bottleneck host-one#0000-0000's upload (host)   [6 troubled samples; host edge RTT 26 -> 225 ms while troubled (+199); viewer edge RTT 31 -> 31 ms while troubled (+1); host-to-viewer delay +155 ms; encoder held back by bandwidth in 60% of the troubled samples]
+
+  Marks (2): someone pressed the mark key. Numbers are from 5s either side of the moment.
+    20:00:24 UTC  by viewer-two#0000-0000: "audio crackles"   [id k3x9f2a1; also in host-one#0000-0000's log; at 22s into the media]
+      viewer-three#0000-0000 watching host-one#0000-0000 (5 samples): RTT worst 264 ms, loss worst 8.6%, frozen 20.0%, video – / target 2.25 Mbps, audio concealed –, decode –, edge RTT host 225 ms / viewer –, delay host to viewer –, viewer to host –
+      viewer-two#0000-0000 watching host-one#0000-0000 (5 samples): RTT worst 244 ms, loss worst 8.5%, frozen 6.0%, video 2.10 Mbps / target 2.25 Mbps, audio concealed 3.04%, decode 2.8 ms, edge RTT host 225 ms / viewer 31 ms, delay host to viewer +170 ms, viewer to host +19 ms
+      20:00:24 viewer-two#0000-0000 window/state {"s":"minimized"}
+      20:00:25 host-one#0000-0000 crash/child-process-gone {"reason":"crashed","exitCode":-1073741819,"type":"Utility","name":"Audio Service"}
+      20:00:30 host-one#0000-0000 action/pause {"role":"host","via":"host"}
+    20:00:46 UTC  by host-one#0000-0000   [id m7q1z8b4; also in viewer-two#0000-0000's log; at 44s into the media]
+      viewer-three#0000-0000 watching host-one#0000-0000 (5 samples): RTT worst 88 ms, loss worst 0.5%, frozen 0.0%, video – / target 2.29 Mbps, audio concealed –, decode –, edge RTT host 26 ms / viewer –, delay host to viewer –, viewer to host –
+      viewer-two#0000-0000 watching host-one#0000-0000 (5 samples): RTT worst 68 ms, loss worst 0.4%, frozen 0.0%, video 2.14 Mbps / target 2.29 Mbps, audio concealed 0.10%, decode 2.8 ms, edge RTT host 26 ms / viewer 30 ms, delay host to viewer +15 ms, viewer to host +15 ms
+
+  Edge RTT = round trip to the Cloudflare edge over the telemetry socket (builds with M1.9); a link full of video makes its own edge RTT climb.
+  One-way delay comes from the room clock offset and assumes both directions equal, so only a rise means something. The bottleneck line compares troubled samples (loss, freezes, encoder held back) with calm ones.
 
   A/V offset: positive = sound behind the picture; an estimate. [av] = difference of the two tracks' estimated playout clocks (s.av);
   [delay] = audio jitter buffer + playout + Web Audio output latency, minus video jitter buffer. Audio target = Settings' audio bitrate.

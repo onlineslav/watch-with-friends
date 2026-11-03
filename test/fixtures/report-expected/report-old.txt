@@ -17,6 +17,9 @@ Room FIXT-ROOM   2026-09-20 19:00:00 to 19:00:50 UTC (50s), 3 people
     CPU peak          viewer –
     Quality decisions no bitrate changes; target 1.69 Mbps-4.00 Mbps
       per sample      settling 18, inactive 2, loss 2, freezes 1, recovery 1
+    Edge RTT          –
+    One-way delay     –
+    Likely bottleneck unclear   [3 troubled samples; no edge round trips in these logs (telemetry off, or a build from before 0.8.1)]
 
   viewer-two#0000-0000 watching host-one#0000-0000   [viewer's log + host's log; 22 playing samples = 44s]
     RTT               typical 36 ms, worst 214 ms
@@ -31,3 +34,6 @@ Room FIXT-ROOM   2026-09-20 19:00:00 to 19:00:50 UTC (50s), 3 people
     CPU peak          viewer –
     Quality decisions 2 bitrate changes (1 up, 1 down); down loss x1, up recovery x1; target 1.69 Mbps-4.00 Mbps
       per sample      settling 18, inactive 2, loss 2, freezes 1, recovery 1
+    Edge RTT          –
+    One-way delay     –
+    Likely bottleneck unclear   [3 troubled samples; no edge round trips in these logs (telemetry off, or a build from before 0.8.1)]

@@ -19,7 +19,7 @@ export function createNetwork({getIceServers, PeerConnection, now = Date.now, re
     for (const pc of peers) {
       try {
         pc.setConfiguration({...pc.getConfiguration(), iceServers: iceFor(pc.getConfiguration())})
-        pc.restartIce() // refresh pooled offers as well as live TURN allocations
+        pc.restartIce('config-change') // refresh pooled offers as well as live TURN allocations
       } catch {}
     }
   }
@@ -29,8 +29,10 @@ export function createNetwork({getIceServers, PeerConnection, now = Date.now, re
       super({...config, iceServers: iceFor(config)})
       peers.add(this)
       const connection = ++nextConnectionId
+      this.connectionId = connection
       let previous = ''
-      const trace = () => {
+      let last = null
+      const trace = (event) => {
         const state = {connection, connectionState: this.connectionState, iceState: this.iceConnectionState,
           gatheringState: this.iceGatheringState, signalingState: this.signalingState,
           remoteDescription: Boolean(this.remoteDescription),
@@ -38,7 +40,12 @@ export function createNetwork({getIceServers, PeerConnection, now = Date.now, re
         const signature = JSON.stringify(state)
         if (signature === previous) return
         previous = signature
-        record('peer-state', state)
+        // Why this line exists (M1.9): which of the four states moved, and from what, so "disconnected after
+        // connected" reads straight off the line instead of from comparing two of them.
+        const moved = last && event?.type ? { connectionstatechange: ['connectionState', 'conn'], iceconnectionstatechange: ['iceState', 'ice'], icegatheringstatechange: ['gatheringState', 'gather'], signalingstatechange: ['signalingState', 'sig'] }[event.type] : null
+        const change = moved ? { on: moved[1], from: last[moved[0]], to: state[moved[0]] } : null
+        last = state
+        record('peer-state', change ? { ...state, change } : state)
       }
       for (const event of ['connectionstatechange', 'iceconnectionstatechange', 'icegatheringstatechange', 'signalingstatechange']) this.addEventListener(event, trace)
       this.addEventListener('icecandidateerror', (event) => {
@@ -55,6 +62,13 @@ export function createNetwork({getIceServers, PeerConnection, now = Date.now, re
       this.addEventListener('connectionstatechange', () => {
         if (this.connectionState === 'closed') peers.delete(this)
       })
+    }
+    // An ICE restart renegotiates the path while keeping the connection: the log says who asked and why
+    // (a changed relay configuration, the network coming back, or Trystero's own recovery), because the
+    // brief stall that follows looks like a network fault otherwise.
+    restartIce(reason = 'transport') {
+      record('ice-restart', { connection: this.connectionId, reason, connectionState: this.connectionState, iceState: this.iceConnectionState })
+      return super.restartIce()
     }
     close() { peers.delete(this); return super.close() }
   }
@@ -89,7 +103,7 @@ export function createNetwork({getIceServers, PeerConnection, now = Date.now, re
   network.reconnect = async () => {
     await network.refresh()
     for (const pc of peers) if (['disconnected', 'failed'].includes(pc.connectionState) || ['disconnected', 'failed'].includes(pc.iceConnectionState)) {
-      try { pc.restartIce() } catch {}
+      try { pc.restartIce('reconnect') } catch {}
     }
   }
   network.stop = () => { disposed = true; clearTimeout(timer) }

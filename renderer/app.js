@@ -1,9 +1,9 @@
 import {joinRoom, selfId} from 'trystero'
-import {PROTOCOL, MAX_PEERS, HOST_TIMEOUT_MS, isRevision, nextRevision, sameClaim, newerClaim, acceptsState, cleanState, cleanTelemetry, cleanCues, validCommand, SubtitleCatalog, messageLimiter, sessionHandler, stateIsIdle} from './protocol.mjs'
+import {PROTOCOL, MAX_PEERS, HOST_TIMEOUT_MS, isRevision, nextRevision, sameClaim, newerClaim, acceptsState, cleanState, cleanTelemetry, cleanCues, validCommand, SubtitleCatalog, messageLimiter, sessionHandler, stateIsIdle, cleanMark, newMarkId, MARK_LIMIT, MARK_WINDOW_MS} from './protocol.mjs'
 import {createNetwork} from './network.mjs'
 import {RoomDownloads} from './downloads.mjs'
 import {authenticateRoomPeer} from './room-auth.mjs'
-import {estimatedMediaTime, updateClock, chooseSendQuality, aggregateLinks} from './sync.mjs'
+import {estimatedMediaTime, updateClock, chooseSendQuality, aggregateLinks, hostToViewerMs, toHostClock, viewerToHostMs} from './sync.mjs'
 import {describeUpdate} from './update.mjs'
 import {
   errorMessage,
@@ -94,7 +94,8 @@ import {
   omitNull,
   round,
 } from './telemetry.mjs'
-import {LongTaskTally, watchLongTasks, frameSpacing, freshMachine, settingsTag} from './machine.mjs'
+import {LongTaskTally, DelayTally, watchLongTasks, frameSpacing, freshMachine, settingsTag} from './machine.mjs'
+import {describeAudioOutput, audioDeviceKey, diffSettings, MARK_KEY, MARK_KEY_LABEL} from './context.mjs'
 
 const APP_ID = 'synced-video-player-7c1e4b-v2'
 const STATE_INTERVAL_MS = 1000
@@ -202,6 +203,10 @@ const ui = {
   reactions: $('reactions'),
   reactionsToggle: $('reactions-toggle'),
   reactionFeed: $('reaction-feed'),
+  mark: $('mark'),
+  markNote: $('mark-note'),
+  markNoteInput: $('mark-note-input'),
+  markKey: $('mark-key'),
   confetti: $('confetti'),
   create: $('create'),
   joinForm: $('join-form'),
@@ -331,6 +336,9 @@ const blankSession = () => ({
   imageTransfers: new Map(),
   imageRetryAt: 0,
   receiveLimits: messageLimiter(),
+  markAction: null,
+  markLimits: messageLimiter(MARK_LIMIT, MARK_WINDOW_MS), // marks sent and shown, per person
+  hvDelays: new DelayTally(), // host-to-viewer one-way delay since the last sample (M1.9)
   clock: null,
   sampling: false,
   frameDelayMs: null,
@@ -566,6 +574,7 @@ async function openRoom(code, joining) {
     profileAction: room.makeAction('profile'),
     boardAction: room.makeAction('board'),
     reactAction: room.makeAction('react'),
+    markAction: room.makeAction('mark'),
     imageAction: room.makeAction('image'),
     playlistAction: room.makeAction('playlist'),
     shareAction: room.makeAction('share'),
@@ -617,6 +626,7 @@ async function openRoom(code, joining) {
     if (peerId === session.hostId && metadata?.id === session.remote?.image?.id) session.imageProgress = {id: metadata.id, percent}
   })
   session.reactAction.onMessage = limited('react', (message, {peerId}) => receiveReaction(message?.kind, peerId))
+  session.markAction.onMessage = guard((message, {peerId}) => receiveMark(message, peerId))
   session.shareAction.onMessage = limited('share', (message, {peerId}) => {
     const share = cleanPeerShare(message)
     if (share === undefined) return
@@ -707,13 +717,20 @@ async function openRoom(code, joining) {
   }
 
   session.stateAction.onMessage = limited('state', (state, {peerId}) => receiveState(state, peerId))
-  session.commandAction.onMessage = limited('command', (message) => {
-    if (session.role === 'host' && !session.preview && sameClaim(message, {hostId: selfId, claimedAt: session.claimedAt})) applyCommand(message.cmd, message.value)
+  session.commandAction.onMessage = limited('command', (message, {peerId}) => {
+    if (session.role === 'host' && !session.preview && sameClaim(message, {hostId: selfId, claimedAt: session.claimedAt})) {
+      if (LOGGED_COMMANDS.has(message.cmd)) logAction(message.cmd, {v: actionValue(message.cmd, message.value), via: 'remote', from: peerId}) // a hostile peer picks no event names
+      applyCommand(message.cmd, message.value)
+    }
   })
   session.telemetryAction.onMessage = limited('telemetry', (message, {peerId}) => {
     if (!isHost() || !sameClaim(message, {hostId: selfId, claimedAt: session.claimedAt})) return
     const receiver = cleanTelemetry(message.receiver)
     if (receiver) { person(peerId).receiver = receiver; person(peerId).receiverAt = performance.now() }
+    // The viewer stamps its report with the host's clock as it reckons it (M1.9); how late it arrives is
+    // the viewer-to-host one-way delay. Copies from before this lack the stamp and add nothing.
+    const toHost = viewerToHostMs(message.at, performance.now())
+    if (toHost !== null) (person(peerId).vhDelays ||= new DelayTally()).add(toHost)
   })
   session.imageRequest = room.makeAction('get-image')
   session.imageRequest.onMessage = limited('get-image', (message, {peerId}) => {
@@ -725,6 +742,7 @@ async function openRoom(code, joining) {
 
   setLogContext({room: code, self: selfId})
   logEvent('room', 'entered', {joining, persistent: connection.persistent, hasTurn: connection.hasTurn, saved: Boolean(saved)})
+  logAudioDevice('room')
   window.api.setInRoom(true)
   ui.code.textContent = formatRoomCode(code)
   ui.home.hidden = ui.settings.hidden = true
@@ -1654,7 +1672,7 @@ async function sampleConnection() {
           feedbackFresh: Boolean(p.receiver && p.receiverAt !== before?.receiverAt),
           playback,
           source: {width: dimensions.width ?? null, height: dimensions.height ?? null},
-          ...omitNull({e: deltas.get(id)?.e, set: currentSettingsTag()}),
+          ...omitNull({e: deltas.get(id)?.e, ow: omitNull({vh: p.vhDelays?.take()}), set: currentSettingsTag()}),
         })
       }
     }
@@ -1722,9 +1740,11 @@ async function sampleConnection() {
         readyState: ui.remoteVideo.readyState,
       },
       ...viewerDetail(deltas.get(peerId)),
+      ...omitNull({ow: omitNull({hv: session.hvDelays.take()})}),
       set: currentSettingsTag(),
     })
-    session.telemetryAction.send({receiver, hostId: session.hostId, claimedAt: session.remote.claimedAt}, {target: session.hostId, signal: session.lifetime.signal}).catch(() => {})
+    const at = session.clock && performance.now() - session.clock.at < 60_000 ? toHostClock(performance.now(), session.clock.offset) : null
+    session.telemetryAction.send({receiver, hostId: session.hostId, claimedAt: session.remote.claimedAt, ...(at !== null && {at})}, {target: session.hostId, signal: session.lifetime.signal}).catch(() => {})
   } else {
     session.link = base
   }
@@ -1849,6 +1869,7 @@ function receiveState(value, peerId) {
   if (changed) {
     detachRemoteStream()
     session.clock = null
+    session.hvDelays = new DelayTally()
     session.lastInbound = null
     session.lastInboundRtp = null
     session.lastAudioInboundRtp = null
@@ -1863,6 +1884,7 @@ function receiveState(value, peerId) {
   session.hostId = state.hostId
   session.loop = state.loop
   session.remote = {...state, receivedAt: now}
+  if (session.clock && now - session.clock.at < 60_000) session.hvDelays.add(hostToViewerMs(state.sentAt, now, session.clock.offset))
   checkpointPlayback(state)
   saveRoom()
   for (const [id, receiver] of Object.entries(state.viewers)) if (session.peers.has(id)) person(id).receiver = receiver
@@ -3013,6 +3035,72 @@ function sampleTabTone() {
   if (ui.playlistTab.dataset.tone !== tabTone) ui.playlistTab.dataset.tone = tabTone
 }
 
+// ---------- Marks (M1.9) ----------
+// "Something is wrong right now": one key press writes `mark/note` into this log and into everyone
+// else's in the room, so a session report can show the numbers from the seconds around it. A mark made
+// with one key press can be explained a moment later (same id, with a note). Nothing is shown to anyone
+// but a short toast, and nothing acts on it.
+
+const MARK_NOTE_SHOWN_MS = 10_000
+let lastMarkId = null
+let markNoteTimer = null
+
+const markContext = () => ({pos: round(currentTime(), 1), playing: isPlaying()})
+
+function markMoment(note = '', id = null) {
+  if (!session.room || session.closed || !session.markAction || !session.markLimits('self')) return null
+  const mark = cleanMark({id: id || newMarkId(), note})
+  if (!mark) return null
+  logEvent('mark', 'note', {id: mark.id, src: 'self', by: identity?.username || null, ...(mark.note && {note: mark.note}), ...markContext()})
+  session.markAction.send(mark).catch(() => {})
+  return mark.id
+}
+
+// A peer's mark. Their copy of the log has the same id, so the report can put the two together.
+function receiveMark(message, peerId) {
+  const mark = cleanMark(message)
+  if (!mark || !session.peers.has(peerId) || !session.markLimits(peerId)) return
+  logEvent('mark', 'note', {id: mark.id, src: 'peer', by: session.identities.get(peerId) || null, peer: peerId, ...(mark.note && {note: mark.note}), ...markContext()})
+  if (!mark.note) toast(`${person(peerId).name || 'Someone'} marked a bad moment`)
+}
+
+function showMarkNote(open, focus = false) {
+  clearTimeout(markNoteTimer)
+  ui.markNote.hidden = !open
+  if (!open) return
+  ui.markNoteInput.value = ''
+  if (focus) ui.markNoteInput.focus()
+  markNoteTimer = setTimeout(() => showMarkNote(false), MARK_NOTE_SHOWN_MS)
+}
+
+function markFromUser({withNote = false} = {}) {
+  const id = markMoment()
+  if (!id) return toast('A few marks every ten seconds is the limit.', true)
+  lastMarkId = id
+  wakeChrome() // the note box lives in the controls
+  toast(session.peers.size ? "Marked in everyone's log" : 'Marked in your log')
+  showMarkNote(true, withNote)
+}
+
+ui.markKey.textContent = MARK_KEY_LABEL
+ui.mark.addEventListener('click', () => markFromUser())
+ui.markNote.addEventListener('submit', (event) => {
+  event.preventDefault()
+  if (lastMarkId && ui.markNoteInput.value.trim()) markMoment(ui.markNoteInput.value, lastMarkId)
+  showMarkNote(false)
+  ui.markNoteInput.blur()
+})
+ui.markNoteInput.addEventListener('input', () => {
+  clearTimeout(markNoteTimer)
+  markNoteTimer = setTimeout(() => showMarkNote(false), MARK_NOTE_SHOWN_MS)
+})
+ui.markNoteInput.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape') return
+  event.stopPropagation()
+  showMarkNote(false)
+  ui.markNoteInput.blur()
+})
+
 // ---------- Reactions ----------
 // Air horn, golf clap, quack and confetti: everyone in the room sees who sent one and hears it.
 
@@ -3178,6 +3266,7 @@ const isPlaying = () => (isHost() ? hostPlaying() : Boolean(session.remote?.play
 function control(cmd, value) {
   if (session.preview && cmd === 'play') activatePreview()
   if (isHost() ? (session.image || session.screen) : (session.remote?.image || session.remote?.screen)) return // nothing to play
+  logAction(cmd, {v: actionValue(cmd, value), via: isHost() ? 'host' : 'viewer'})
   if (isHost()) return applyCommand(cmd, value)
   const r = session.remote
   if (session.role !== 'viewer' || !r || r.ended || performance.now() - r.receivedAt > HOST_TIMEOUT_MS) return
@@ -3192,6 +3281,14 @@ function control(cmd, value) {
   else if (cmd === 'audio') r.audioSelected = value
   else if (cmd === 'subtitle') r.subtitleSelected = value
   render()
+}
+
+// What a person did, one small line each (M1.9): play, pause, seek, loop, track changes, volume, mute.
+// Written when it happens, never on a timer, so it costs nothing between actions.
+const LOGGED_COMMANDS = new Set(['play', 'pause', 'seek', 'loop', 'audio', 'subtitle'])
+const actionValue = (cmd, value) => (cmd === 'seek' ? round(Number(value), 1) : cmd === 'loop' ? Boolean(value) : cmd === 'audio' ? String(value).slice(0, 8) : cmd === 'subtitle' ? Boolean(value) : undefined)
+function logAction(name, data = {}) {
+  if (session.room && !session.closed) logEvent('action', name, data)
 }
 
 const togglePlay = () => control(isPlaying() ? 'pause' : 'play')
@@ -3915,6 +4012,9 @@ function showSettings(open, {save = false} = {}) {
     settingsSnapshot = null
     if (save) {
       if (ui.profileName.value !== myName) setMyName(ui.profileName.value) // typed, but the box never lost focus
+      const saved = diffSettings({zoom: before.zoom, telemetry: before.telemetry, name: before.name}, {zoom, telemetry: ui.sendTelemetry.checked, name: myName}, ['zoom', 'telemetry', 'name'])
+      if (saved.name) saved.name = true // that it changed, not what it says
+      if (Object.keys(saved).length) logEvent('settings', 'save', saved)
       if (before.share.audioDeviceId !== shareSettings.audioDeviceId && session.screen) restartShare()
     } else {
       if (zoom !== before.zoom) applyZoom(before.zoom)
@@ -4090,6 +4190,8 @@ const AUDIO_SOURCE_HELP = {
 function updateShareSettings(next, {restart = true} = {}) {
   const before = shareSettings
   shareSettings = {...shareSettings, ...next}
+  const changed = diffSettings(before, shareSettings, ['resolution', 'frameRate', 'priority', 'audioDeviceId', 'audioBitrate', 'audioFirst'])
+  if (Object.keys(changed).length) logEvent('settings', 'change', {share: changed, sharing: Boolean(session.screen)})
   saveShareSettings()
   syncShareControls()
   if (before.audioFirst !== shareSettings.audioFirst) tuneSenders() // films too, not just shares
@@ -4532,8 +4634,13 @@ function routeRemoteAudio(stream) {
   remoteAudio.connect(out)
 }
 
-function setVolume(volume) {
+let volumeLogTimer = null
+function setVolume(volume, {log = true} = {}) {
   youtube.setVolume(volume)
+  if (log && session.room) {
+    clearTimeout(volumeLogTimer)
+    volumeLogTimer = setTimeout(() => logAction('volume', {v: round(volume, 2)}), 600) // a drag is one line, not fifty
+  }
   const gain = audioOutput().gain
   gain.setTargetAtTime(volume, audio.currentTime, 0.015) // a short ramp, so muting doesn't click
   ui.volume.value = String(volume)
@@ -4560,10 +4667,11 @@ function toggleMute() {
   const volume = Number(ui.volume.value)
   if (volume > 0) {
     rememberVolume(volume)
-    setVolume(0)
+    setVolume(0, {log: false})
   } else {
-    setVolume(unmutedVolume)
+    setVolume(unmutedVolume, {log: false})
   }
+  logAction('mute', {muted: volume > 0})
 }
 
 // The percentage shows above the knob while dragging, and briefly after keyboard or wheel changes.
@@ -4693,6 +4801,8 @@ document.addEventListener('keydown', (event) => {
     setPlaylistOpen(!playlistOpen())
   } else if (event.code === 'KeyM') {
     toggleMute()
+  } else if (event.code === MARK_KEY) {
+    if (!event.repeat && !event.ctrlKey && !event.metaKey && !event.altKey) markFromUser({withNote: event.shiftKey})
   } else {
     const kind = Object.keys(REACTIONS).find((k) => REACTIONS[k].key === event.code || REACTIONS[k].key === `Digit${event.key}`)
     if (kind && !event.repeat) react(kind)
@@ -4751,6 +4861,7 @@ const chromeInUse = () =>
       tabDrag ||
       itemDrag ||
       !ui.reactions.hidden ||
+      !ui.markNote.hidden ||
       ui.room.querySelector('.topbar:hover, .controls:hover, .sidebar:hover, .board-tools:hover, .playlist:hover, .friends-drawer:hover, .friends-drawer:focus-within, select:focus, input:focus'),
   )
 function wakeChrome() {
@@ -4809,6 +4920,31 @@ window.addEventListener('beforeunload', () => {
   roomPresence.stop()
   network.stop()
 })
+
+// Where the sound goes (M1.9): once on entering a room and when the set of devices changes. The
+// device name decides the kind; the browser hides names until it has media permission, and then the
+// kind is "unknown" rather than an error.
+let lastAudioDevice = null
+async function logAudioDevice(why) {
+  let devices = []
+  try { devices = await navigator.mediaDevices.enumerateDevices() } catch {}
+  try { audio ??= new AudioContext() } catch {}
+  const info = describeAudioOutput(devices, audio)
+  const key = audioDeviceKey(info)
+  if (why === 'change' && key === lastAudioDevice) return
+  lastAudioDevice = key
+  logEvent('audio', 'device', {why, ...omitNull(info)})
+}
+let deviceChangeTimer = null
+navigator.mediaDevices?.addEventListener?.('devicechange', () => {
+  clearTimeout(deviceChangeTimer)
+  deviceChangeTimer = setTimeout(() => { if (session.room && !session.closed) logAudioDevice('change') }, 500)
+})
+
+// Window state the page can see and main cannot: fullscreen (an element, not the OS window) and
+// whether the page is hidden (minimized, or covered).
+document.addEventListener('fullscreenchange', () => { if (session.room) logEvent('window', 'fullscreen', {on: Boolean(document.fullscreenElement)}) })
+document.addEventListener('visibilitychange', () => { if (session.room) logEvent('window', 'visibility', {s: document.visibilityState}) })
 
 setInterval(render, 250)
 setInterval(sendStroke, 50)

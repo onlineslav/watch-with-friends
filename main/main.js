@@ -11,6 +11,7 @@ const shareSources = require('./share-sources')
 const {loadIceServers} = require('./turn')
 const diagnostics = require('./diagnostics')
 const {createLiveSender} = require('./live')
+const context = require('./context')
 const updater = require('./updater')
 const {focusWindow} = require('./startup')
 const {watchZoom, zoomFactor} = require('./zoom')
@@ -66,11 +67,12 @@ const turnConfigPath = () =>
 // Development telemetry (main/diagnostics.js). Created on first use so registerIpc works without
 // start(), as the logging check uses it.
 let uploader = null
+let liveSender = null
 const telemetry = () => (uploader ??= diagnostics.createUploader({
   log,
   settingsFile: path.join(app.getPath('userData'), 'telemetry.json'),
   endpoint: () => diagnostics.loadEndpoint(turnConfigPath()),
-  live: createLiveSender({endpoint: () => diagnostics.loadEndpoint(turnConfigPath()), record: log.record}),
+  live: (liveSender = createLiveSender({endpoint: () => diagnostics.loadEndpoint(turnConfigPath()), mono: () => performance.now(), record: log.record})),
 }))
 
 function createWindow() {
@@ -90,6 +92,7 @@ function createWindow() {
     },
   })
   watchTransportWarnings(win.webContents)
+  context.watchWindow({win, record: log.record})
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'))
   watchZoom(win.webContents)
   return win
@@ -149,7 +152,7 @@ function setMachineSampling(contents, active) {
   }
   if (existing) return
   const sampler = machine.createSampler({
-    deps: {getMetrics: () => app.getAppMetrics(), systemMemory: () => process.getSystemMemoryInfo(), power: machinePower},
+    deps: {getMetrics: () => app.getAppMetrics(), systemMemory: () => process.getSystemMemoryInfo(), power: machinePower, edgeRtt: () => liveSender?.edgeRtt() ?? null},
     send: (reading) => { if (!contents.isDestroyed()) contents.send('machine:sample', reading) },
   })
   machineSamplers.set(contents.id, sampler)
@@ -288,8 +291,9 @@ function registerIpc() {
   })
   ipcMain.handle('session:start', async (_event, options) => {
     try {
-      const started = await media.startSession(options)
+      const {facts, ...started} = await media.startSession(options)
       log.record('ffmpeg', 'start', {...started, start: options?.start, forceTranscode: options?.forceTranscode})
+      if (facts) log.record('media', 'source', facts)
       return started
     } catch (error) {
       log.record('ffmpeg', 'start-failed', {message: error?.message, start: options?.start}, 'error')
@@ -324,6 +328,7 @@ function registerIpc() {
   ipcMain.on('app:in-room', (event, inRoom) => {
     updater.setInRoom(inRoom)
     setMachineSampling(event.sender, Boolean(inRoom))
+    liveSender?.setFast(Boolean(inRoom)) // the edge round trip is read on the room's 2-second sample
     if (!inRoom) {
       telemetry().upload()
       const store = downloadStores.get(event.sender.id)
@@ -381,6 +386,8 @@ function start() {
     // app.getPath('logs') is only meaningful once the app name is settled, so the file opens here.
     log.start({dir: app.getPath('logs'), info: systemInfo()})
     watchStalls()
+    context.watchApp({app, record: log.record})
+    context.watchPower({powerMonitor, record: log.record, flush: log.flush})
     powerMonitor.on('speed-limit-change', (details) => { cpuSpeedLimit = Number.isFinite(details?.limit) ? details.limit : null })
     registerYouTube()
     registerIpc()

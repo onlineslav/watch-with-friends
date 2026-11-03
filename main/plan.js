@@ -26,12 +26,19 @@ function trackLabel(stream, n, extra) {
   return parts.length ? parts.join(' · ') : `Track ${n + 1}`
 }
 
+// ffprobe writes a frame rate as "24000/1001", and "0/0" for a stream that has none.
+function frameRate(text) {
+  const [n, d] = String(text || '').split('/').map(Number)
+  const fps = d ? n / d : n
+  return Number.isFinite(fps) && fps > 0 ? Math.round(fps * 1000) / 1000 : null
+}
+
 function summarizeProbe(probe, externalSubtitlePaths = []) {
   const streams = probe.streams || []
   const video = streams.find((s) => s.codec_type === 'video' && !s.disposition?.attached_pic)
 
-  const audio = streams
-    .filter((s) => s.codec_type === 'audio')
+  const audioStreams = streams.filter((s) => s.codec_type === 'audio')
+  const audio = audioStreams
     .map((s, n) => ({
       index: s.index,
       label: trackLabel(s, n, `${s.codec_name}${s.channels > 2 ? ` ${s.channels}ch` : ''}`),
@@ -59,6 +66,7 @@ function summarizeProbe(probe, externalSubtitlePaths = []) {
     duration: Number(probe.format?.duration) || 0,
     startTime: Number(probe.format?.start_time) || 0,
     title: probe.format?.tags?.title || null,
+    container: probe.format?.format_name ? String(probe.format.format_name) : null,
     video: video
       ? {
           index: video.index,
@@ -67,9 +75,12 @@ function summarizeProbe(probe, externalSubtitlePaths = []) {
           width: video.width,
           height: video.height,
           transfer: video.color_transfer || null,
+          fps: frameRate(video.avg_frame_rate) ?? frameRate(video.r_frame_rate),
         }
       : null,
     audio,
+    // What each audio stream is, beside `audio` (whose shape the room state is built from).
+    audioInfo: audioStreams.map((s) => ({index: s.index, codec: s.codec_name || null, channels: s.channels ?? null})),
     subtitles,
   }
 }
@@ -204,6 +215,47 @@ function planSession({
   }
 }
 
+// Why a video stream has to be re-encoded rather than passed through, in the words the log uses.
+// Empty means it passes through (or there is no video).
+function transcodeReasons(media, {subtitle = null, forceTranscode = false, support = {}} = {}) {
+  const video = media.video
+  if (!video) return []
+  const why = []
+  if (forceTranscode) why.push('retry') // Chromium failed to decode the passthrough stream
+  if (subtitle) why.push('burn-in') // subtitles are drawn into the picture
+  const eightBit = video.pixFmt === 'yuv420p' || (video.codec === 'h264' && video.pixFmt === 'yuvj420p')
+  if (!eightBit) why.push('pixel-format') // 10-bit, 4:2:2, 4:4:4: captureStream sends black for these
+  if (!['h264', 'hevc', 'av1', 'vp9'].includes(video.codec)) why.push('codec')
+  else if (eightBit && !support[video.codec]) why.push('no-decoder') // this Chromium cannot play it in a MediaSource
+  return why
+}
+
+// One small object describing the file a host just opened and what is done with it: logged once per
+// file (main/main.js, `media/source`), so a bad picture can be traced to the source or to the way it
+// was converted. Short keys because it travels over the live stream too.
+function sourceFacts(media, plan, {audioIndex = null, subtitle = null, forceTranscode = false, support = {}, canTonemap = false} = {}) {
+  const video = media.video
+  const audioInfo = (media.audioInfo || []).find((a) => a.index === audioIndex)
+  const hdr = Boolean(video && HDR_TRANSFERS.has(video.transfer))
+  const facts = {
+    c: media.container ?? null,
+    dur: Number.isFinite(media.duration) && media.duration > 0 ? Math.round(media.duration) : null,
+    mode: !video ? 'audio' : plan.transcoding ? 'transcode' : 'copy',
+  }
+  if (video) {
+    facts.v = {codec: video.codec ?? null, pix: video.pixFmt ?? null, w: video.width ?? null, h: video.height ?? null, fps: video.fps ?? null, hdr: hdr ? 1 : 0}
+    if (plan.transcoding) {
+      facts.why = transcodeReasons(media, {subtitle, forceTranscode, support})
+      facts.enc = plan.encoder
+      if (hdr) facts.tm = canTonemap ? 1 : 0 // tone-mapped to SDR, or sent as it is
+    }
+  }
+  if (audioInfo) facts.a = {codec: audioInfo.codec, ch: audioInfo.channels}
+  facts.af = plan.mime.includes('flac') ? 'flac' : plan.mime.includes('mp4a') ? 'aac' : null
+  if (subtitle) facts.sub = subtitle.image ? 'image' : 'text'
+  return facts
+}
+
 // Text subtitles are converted to WebVTT and drawn by each person's app, so everyone can pick
 // their own track. Image subtitles can only be burned into the stream (planSession).
 function subtitleExtractArgs(filePath, subtitle, charenc = null) {
@@ -286,6 +338,8 @@ module.exports = {
   parseProgress,
   parseWebVtt,
   planSession,
+  sourceFacts,
   subtitleExtractArgs,
   summarizeProbe,
+  transcodeReasons,
 }

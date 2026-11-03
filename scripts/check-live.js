@@ -165,6 +165,10 @@ app.whenReady().then(async () => {
     console.log(`MEASURE the reader printed:\n${rows.slice(-4).join('\n')}`)
     assert.ok(!/telemetry\//.test(printed), 'the scope filter hid every other scope')
     console.log('PASS: npm run diagnostics -- --live e2e shows the labelled lines, filtered by scope')
+    // A mark (M1.9) goes through the same filter that hid everything but e2e, and is highlighted.
+    await run(`window.api.logEvents([{at: Date.now(), mono: 200, level: 'info', scope: 'mark', event: 'note', data: {id: 'e2emark1', src: 'self', by: ${JSON.stringify(USER)}, note: 'audio crackles'}}])`)
+    await until(() => />>> MARK by e2e#aaaa-bbbb "audio crackles" <<</.test(printed), `the viewer to highlight the mark:\n${printed}`, 10000)
+    console.log('PASS: a mark is highlighted in --live even though the scope filter excludes its scope')
     viewer.kill()
 
     // 5. Checkbox off: the socket closes at once and the reader is told.
@@ -185,6 +189,25 @@ app.whenReady().then(async () => {
     assert.equal(live.status().frames, framesBefore, 'no frames while nobody is watching')
     assert.equal(live.status().held, 0, 'and nothing held')
     console.log('PASS: with the last reader gone the Worker tells the app, and zero frames are sent')
+
+    // 6b. The edge round trip (M1.9): in a room the socket is pinged every 2 s, watched or not, and the
+    // Worker's auto-response gives the app its round trip to the edge.
+    assert.equal(live.status().watching, false, 'nobody is watching')
+    live.setFast(true)
+    await until(() => live.edgeRtt() !== null, 'an edge round trip with nobody watching', 6000)
+    const first = live.edgeRtt()
+    const frames = live.status().frames
+    const bytes = live.status().wireBytes
+    const readings = []
+    for (let i = 0; i < 7; i++) { await pause(1000); readings.push(live.edgeRtt()) }
+    const pings = (live.status().wireBytes - bytes) / 10 // each ping is 10 bytes on the wire (see main/live.js)
+    assert.ok(first >= 0 && first < 1000, `a sane round trip to a local Worker (${first} ms)`)
+    assert.ok(pings >= 3 && pings <= 4, `one ping every 2 seconds (${pings} in 7 s)`)
+    assert.ok(readings.every((reading) => reading !== null && reading >= 0 && reading < 1000), `a fresh reading at every look (${readings.join(', ')})`)
+    assert.equal(live.status().frames, frames, 'and still no frames: only pings went out')
+    console.log(`MEASURE edge RTT to the local Worker with nobody watching, once a second for 7 s: ${readings.join(', ')} ms (${pings} pings)`)
+    console.log('PASS: the app measures its round trip to the edge every 2 s without anybody watching')
+    live.setFast(false)
 
     // 7. The Worker restarts (a deploy, a crash): the app finds out and comes back.
     const second = rawReader(mine)

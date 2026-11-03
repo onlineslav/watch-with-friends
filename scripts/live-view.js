@@ -11,6 +11,7 @@
 //   --live                      everything
 //   --live telemetry            one scope (the "sc" field); several: telemetry clock
 //   --live telemetry/host-sample  scope/event
+//   (marks, mark/note, always show whatever the filter: they are the moments to look at)
 //   --from aya                  only people whose username starts with this
 //   --url https://...           another Worker (or DIAGNOSTICS_LIVE_URL); http://localhost:8787 for wrangler dev
 //   --no-color
@@ -44,7 +45,7 @@ function parseArgs(args, env = {}) {
 }
 
 // `telemetry` matches every event of that scope, `telemetry/host-sample` one event.
-const wanted = (line, scopes) => !scopes.length || scopes.some((scope) => (scope.includes('/') ? scope === `${line.sc}/${line.ev}` : scope === line.sc))
+const wanted = (line, scopes) => !scopes.length || isMark(line) || scopes.some((scope) => (scope.includes('/') ? scope === `${line.sc}/${line.ev}` : scope === line.sc))
 
 // Lines wait here, kept in order of their own timestamps. A line qualifies once it is `lagMs` old by
 // its own clock or has been held `holdMs`; everything ahead of the last qualifying line is released
@@ -102,6 +103,10 @@ const clock = (at) => {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`
 }
 
+// A mark ("something is wrong now", M1.9) must stand out in a stream of 2-second samples: a banner in
+// front of the line, bold red where there is colour, and the note first so it reads at a glance.
+const isMark = (line) => line?.sc === 'mark' && line?.ev === 'note'
+
 function formatLine({label, line, text, at}, {color = false, width = 24, colorOf = () => 0} = {}) {
   // Everything from the wire is stripped after it has been parsed and serialized again, and before any
   // colour is added: a C1 or bidi character written as a JSON unicode escape only becomes a real
@@ -113,6 +118,12 @@ function formatLine({label, line, text, at}, {color = false, width = 24, colorOf
   const {t, m, lv, sc, ev, ...rest} = line
   const level = lv && lv !== 'info' ? ` ${String(lv).toUpperCase()}` : ''
   const body = Object.keys(rest).length ? ` ${JSON.stringify(rest)}` : ''
+  if (isMark(line)) {
+    const note = typeof rest.note === 'string' && rest.note ? ` "${rest.note}"` : ''
+    const who = typeof rest.by === 'string' && rest.by ? ` by ${rest.by}` : ''
+    const banner = stripControl(`>>> MARK${who}${note} <<<  ${sc}/${ev}${level}${body}`)
+    return `${clock(at)} ${tag} ${color ? `\u001b[1;91m${banner}\u001b[0m` : banner}`
+  }
   return `${clock(at)} ${tag} ${stripControl(`${sc}/${ev}${level}${body}`)}`
 }
 
@@ -229,4 +240,4 @@ function listen(options, token, {WebSocketImpl, hold, err, out, color, colorOf})
   })
 }
 
-module.exports = {DEFAULT_URL, HOLD_MS, LAG_MS, authorize, createHold, formatLine, httpUrl, linesFromFrame, parseArgs, run, wanted, wsUrl}
+module.exports = {DEFAULT_URL, HOLD_MS, LAG_MS, authorize, createHold, formatLine, isMark, httpUrl, linesFromFrame, parseArgs, run, wanted, wsUrl}

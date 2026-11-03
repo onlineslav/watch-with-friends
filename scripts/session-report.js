@@ -16,10 +16,15 @@
 
 const fs = require('node:fs')
 const path = require('node:path')
+const {diagnoseBottleneck} = require('./bottleneck')
 
 const SAMPLE_S = 2 // seconds between samples (TELEMETRY_INTERVAL_MS in the app)
 const SESSION_GAP_MS = 180_000 // silence in one room longer than this ends a session (a crash leaves no leave line)
 const PAIR_SLACK_MS = 15_000 // two people's sessions in one room count as one when their clocks overlap this closely
+const MARK_HALF_MS = 5000 // a mark reports the numbers from this far either side of it (the 10 seconds around it)
+const NEARBY_MS = 10_000 // and lists what happened this close to it
+const NEARBY_MAX = 8
+const CONTEXT_SCOPES = new Set(['action', 'window', 'crash', 'power', 'audio', 'settings', 'media'])
 const DASH = '–'
 const DAY = /^\d{4}-\d{2}-\d{2}$/
 
@@ -95,10 +100,15 @@ function buildSessions(entries) {
   }
   for (const e of sorted) {
     const room = e.d.room
-    if (!room) continue
+    // Lines from the main process (a crash, the window being minimized, the computer sleeping, the file's
+    // facts) carry no room code. They belong to the visit they happened inside.
+    if (!room) {
+      if (current && CONTEXT_SCOPES.has(e.d.sc) && e.at - current.end <= SESSION_GAP_MS) current.context.push(e)
+      continue
+    }
     const entered = e.d.sc === 'room' && e.d.ev === 'entered'
     if (current && (current.room !== room || e.at - current.end > SESSION_GAP_MS || (entered && current.entries.some((x) => x.d.sc !== 'room')))) finish()
-    if (!current) current = {user: e.user, folder: e.folder, room, start: e.at, end: e.at, entries: []}
+    if (!current) current = {user: e.user, folder: e.folder, room, start: e.at, end: e.at, entries: [], context: []}
     current.entries.push(e)
     current.end = Math.max(current.end, e.at)
     if (e.d.sc === 'room' && e.d.ev === 'leave') finish()
@@ -132,6 +142,8 @@ function groupSessions(sessions) {
 // ---------- the measurements ----------
 
 const playing = (d) => (d.playback ? d.playback.playing !== false : true)
+const atOf = (d) => Date.parse(d.t)
+const within = (lines, at, half) => lines.filter((d) => Math.abs(atOf(d) - at) <= half)
 
 // What a viewer experienced, from its viewer-sample lines (or, with no log of its own, from what the
 // host logged of the viewer's reports). Anything the lines lack stays null.
@@ -252,8 +264,14 @@ function scoreGroup(group) {
     }
   }
   const nameOf = (id) => names.get(id) || String(id).slice(0, 8)
-  const machineOf = (s, role) => cpuMetrics(s.entries.filter((e) => e.d.ev === 'machine-sample' && (!e.d.role || e.d.role === role)).map((e) => e.d))
+  const machineLines = (s, role) => s.entries.filter((e) => e.d.ev === 'machine-sample' && (!e.d.role || e.d.role === role)).map((e) => e.d)
+  const machineOf = (s, role) => cpuMetrics(machineLines(s, role))
   const hostIds = new Set([...pairs.values()].map((x) => x.host))
+  // The marks people pressed (M1.9). Every person in the room logs the same id, so one mark seen by three
+  // people is one mark: the time is the marker's own clock, the note the last one written.
+  const marks = collectMarks(sessions)
+  const edgeOf = (s, role) => (s ? machineLines(s, role).filter((d) => finite(d.er)).map((d) => ({at: atOf(d), er: d.er})) : [])
+  const busyOf = (s, role) => (s ? machineLines(s, role).map((d) => ({at: atOf(d), ltMs: d.lt && typeof d.lt === 'object' ? d.lt.ms : d.lt === 0 ? 0 : null})) : [])
   const people = sessions.map((s) => {
     const id = s.self || s.user
     return {user: s.user, version: s.version, hosting: hostIds.has(id), cpuHost: machineOf(s, 'host'), cpuViewer: machineOf(s, 'viewer')}
@@ -266,15 +284,72 @@ function scoreGroup(group) {
     const host = hostMetrics(x.hostLines, x.changes)
     // The host's own round-trip reading fills in when the viewer's is missing.
     if (viewer.rtt.median == null && x.hostLines.length) viewer.rtt = {median: median(x.hostLines.filter(playing).map((d) => d.rttMs)), worst: maxOf(x.hostLines.filter(playing).map((d) => d.rttMs))}
+    // Whose link or computer is the bottleneck, from the series each side logged (scripts/bottleneck.js).
+    const hostPlaying = x.hostLines.filter(playing)
+    const viewerPlaying = (own ? x.viewerLines : x.hostLines).filter(playing)
+    const hostEdge = edgeOf(x.hostSession, 'host')
+    const viewerEdge = edgeOf(x.viewerSession, 'viewer')
+    const hv = own ? x.viewerLines.filter((d) => finite(d.ow?.hv)).map((d) => ({at: atOf(d), ms: d.ow.hv})) : []
+    const vh = hostPlaying.filter((d) => finite(d.ow?.vh)).map((d) => ({at: atOf(d), ms: d.ow.vh}))
+    const bottleneck = diagnoseBottleneck({
+      viewer: viewerPlaying.map((d) => (own
+        ? {at: atOf(d), loss: d.lossPct, freezes: d.freezes, frz: d.v?.frz, dec: d.v?.dec}
+        : {at: atOf(d), loss: d.receiver?.lossPct, freezes: d.receiver?.freezes})),
+      host: hostPlaying.map((d) => ({at: atOf(d), bw: d.e?.bw, cpu: d.e?.cpu, enc: d.e?.enc})),
+      hostEdge, viewerEdge, hv, vh,
+      hostBusy: busyOf(x.hostSession, 'host'), viewerBusy: busyOf(x.viewerSession, 'viewer'),
+    })
+    const series = {hostEdge: summary(hostEdge.map((p) => p.er)), viewerEdge: summary(viewerEdge.map((p) => p.er)), hv: summary(hv.map((p) => p.ms)), vh: summary(vh.map((p) => p.ms))}
     return {
       hostName: nameOf(x.host), viewerName: nameOf(x.viewer),
       hostVersion: x.hostSession?.version || null, viewerVersion: x.viewerSession?.version || null,
       sources: {viewerLog: own, hostLog: x.hostLines.length > 0},
-      viewer, host,
+      viewer, host, bottleneck, series,
       viewerCpu: x.viewerSession ? machineOf(x.viewerSession, 'viewer') : null,
+      raw: {viewerLines: own ? x.viewerLines : [], hostLines: x.hostLines, hostEdge, viewerEdge, hv, vh},
     }
   }).sort((a, b) => (a.hostName < b.hostName ? -1 : a.hostName > b.hostName ? 1 : a.viewerName < b.viewerName ? -1 : a.viewerName > b.viewerName ? 1 : 0))
-  return {room: group.room, start: group.start, end: group.end, people, rows}
+  const nearby = sessions.flatMap((s) => [...s.entries.filter((e) => CONTEXT_SCOPES.has(e.d.sc)), ...s.context])
+  for (const mark of marks) {
+    mark.rows = rows.map((r) => {
+      const viewerLines = within(r.raw.viewerLines, mark.at, MARK_HALF_MS)
+      const hostLines = within(r.raw.hostLines, mark.at, MARK_HALF_MS)
+      const stand = hostLines.map((d) => ({rttMs: d.rttMs, lossPct: d.receiver?.lossPct, freezes: d.receiver?.freezes, playback: d.playback}))
+      const edge = (list) => median(list.filter((p) => Math.abs(p.at - mark.at) <= MARK_HALF_MS).map((p) => p.er))
+      const delay = (list) => median(list.filter((p) => Math.abs(p.at - mark.at) <= MARK_HALF_MS).map((p) => p.ms))
+      return {
+        hostName: r.hostName, viewerName: r.viewerName, samples: Math.max(viewerLines.length, hostLines.length),
+        viewer: viewerMetrics(viewerLines.length ? viewerLines : stand), host: hostMetrics(hostLines),
+        hostEdge: edge(r.raw.hostEdge), viewerEdge: edge(r.raw.viewerEdge), hv: delay(r.raw.hv), vh: delay(r.raw.vh),
+      }
+    })
+    mark.nearby = nearby.filter((e) => Math.abs(e.at - mark.at) <= NEARBY_MS).sort((a, b) => a.at - b.at).slice(0, NEARBY_MAX)
+  }
+  return {room: group.room, start: group.start, end: group.end, people, rows, marks}
+}
+
+// median / worst of a list, or null when there is nothing
+function summary(list) {
+  const a = nums(list)
+  return a.length ? {median: median(a), worst: Math.max(...a), n: a.length} : null
+}
+
+function collectMarks(sessions) {
+  const byId = new Map()
+  for (const s of sessions) {
+    for (const {d, at} of s.entries) {
+      if (d.sc !== 'mark' || d.ev !== 'note' || typeof d.id !== 'string') continue
+      const m = byId.get(d.id) || {id: d.id, at, selfAt: null, by: null, note: null, noteAt: -Infinity, seenBy: [], pos: null}
+      byId.set(d.id, m)
+      m.at = Math.min(m.at, at)
+      if (d.src === 'self') { m.selfAt = m.selfAt === null ? at : Math.min(m.selfAt, at); m.by = s.user }
+      else if (!m.by && typeof d.by === 'string') m.by = d.by
+      if (typeof d.note === 'string' && d.note && at >= m.noteAt) { m.note = d.note; m.noteAt = at }
+      if (!m.seenBy.includes(s.user)) m.seenBy.push(s.user)
+      if (finite(d.pos) && m.pos === null) m.pos = d.pos
+    }
+  }
+  return [...byId.values()].map((m) => ({...m, at: m.selfAt ?? m.at})).sort((a, b) => a.at - b.at || (a.id < b.id ? -1 : 1))
 }
 
 // ---------- printing ----------
@@ -311,6 +386,59 @@ function decisionsText(h) {
   return parts.length ? parts.join('; ') : DASH
 }
 
+function edgeText(series) {
+  const one = (name, v) => (v ? `${name} ${ms(v.median)} typical / ${ms(v.worst)} worst` : null)
+  const parts = [one('host', series.hostEdge), one('viewer', series.viewerEdge)].filter(Boolean)
+  return parts.length ? parts.join('; ') : DASH
+}
+
+function delayText(series) {
+  const one = (name, v) => (v ? `${name} ${signed(v.median)} typical / ${signed(v.worst)} worst` : null)
+  const parts = [one('host to viewer', series.hv), one('viewer to host', series.vh)].filter(Boolean)
+  return parts.length ? parts.join('; ') : DASH
+}
+
+function bottleneckText(row) {
+  const b = row.bottleneck
+  const label = {
+    none: 'none seen',
+    'host-upload': `${row.hostName}'s upload (host)`,
+    'viewer-network': `${row.viewerName}'s network (viewer)`,
+    'viewer-computer': `${row.viewerName}'s computer (viewer)`,
+    'host-computer': `${row.hostName}'s computer (host)`,
+    unclear: 'unclear',
+  }[b.verdict]
+  const seen = b.numbers.troubled ? ` ${b.numbers.troubled} troubled sample${b.numbers.troubled === 1 ? '' : 's'};` : ''
+  return `${label}   [${seen ? `${seen.trim()} ` : ''}${b.reasons.join('; ')}]`
+}
+
+const compact = (d) => {
+  const {t, m, lv, sc, ev, room, self, ...rest} = d
+  const text = JSON.stringify(rest)
+  return text.length > 90 ? `${text.slice(0, 89)}…` : text
+}
+
+function formatMark(mark) {
+  const out = []
+  const others = mark.seenBy.filter((name) => name !== mark.by)
+  const who = mark.by ? `by ${mark.by}` : 'by someone'
+  out.push(`    ${clockOf(mark.at)} UTC  ${who}${mark.note ? `: "${mark.note}"` : ''}   [id ${mark.id}${others.length ? `; also in ${others.join(', ')}'s log` : ''}${finite(mark.pos) ? `; at ${duration(mark.pos * 1000)} into the media` : ''}]`)
+  if (!mark.rows.length || mark.rows.every((r) => !r.samples)) out.push('      no samples within the window (nobody was playing, or the logs are missing)')
+  for (const r of mark.rows) {
+    if (!r.samples) continue
+    const v = r.viewer
+    const parts = [
+      `RTT worst ${ms(v.rtt.worst)}`, `loss worst ${pct(v.loss.worst, 1)}`, `frozen ${v.frozen ? pct(v.frozen.pct) : DASH}`,
+      `video ${bps(v.videoRx)} / target ${bps(r.host.videoTarget)}`, `audio concealed ${pct(v.concealed, 2)}`,
+      `decode ${ms1(v.decode.worst)}`, `edge RTT host ${ms(r.hostEdge)} / viewer ${ms(r.viewerEdge)}`,
+      `delay host to viewer ${signed(r.hv)}, viewer to host ${signed(r.vh)}`,
+    ]
+    out.push(`      ${r.viewerName} watching ${r.hostName} (${r.samples} sample${r.samples === 1 ? '' : 's'}): ${parts.join(', ')}`)
+  }
+  for (const e of mark.nearby) out.push(`      ${clockOf(e.at)} ${e.user} ${e.d.sc}/${e.d.ev} ${compact(e.d)}`)
+  return out
+}
+
 function formatGroup(score) {
   const out = []
   const names = new Set([...score.people.map((p) => p.user), ...score.rows.flatMap((r) => [r.hostName, r.viewerName])])
@@ -339,6 +467,19 @@ function formatGroup(score) {
     line('CPU peak', `viewer ${cpuText(r.viewerCpu)}`)
     line('Quality decisions', decisionsText(h))
     if (h.decisions.length) line('  per sample', h.decisions.slice(0, 6).map(([k, n]) => `${k} ${n}`).join(', '))
+    line('Edge RTT', edgeText(r.series))
+    line('One-way delay', delayText(r.series))
+    line('Likely bottleneck', bottleneckText(r))
+  }
+  if (score.marks.length) {
+    out.push('')
+    out.push(`  Marks (${score.marks.length}): someone pressed the mark key. Numbers are from ${MARK_HALF_MS / 1000}s either side of the moment.`)
+    for (const mark of score.marks) out.push(...formatMark(mark))
+  }
+  if (score.rows.some((r) => r.series.hostEdge || r.series.viewerEdge || r.series.hv || r.series.vh)) {
+    out.push('')
+    out.push('  Edge RTT = round trip to the Cloudflare edge over the telemetry socket (builds with M1.9); a link full of video makes its own edge RTT climb.')
+    out.push('  One-way delay comes from the room clock offset and assumes both directions equal, so only a rise means something. The bottleneck line compares troubled samples (loss, freezes, encoder held back) with calm ones.')
   }
   if (used.size) {
     out.push('')
@@ -551,6 +692,6 @@ function run(args, {fetchArchive = null, defaultDir, out = (text) => console.log
 }
 
 module.exports = {
-  buildSessions, compareVersions, cpuMetrics, formatCompare, formatGroup, formatReport, groupSessions, hostMetrics,
+  buildSessions, collectMarks, compareVersions, cpuMetrics, formatCompare, formatGroup, formatReport, groupSessions, hostMetrics,
   loadEntries, parseArgs, parseLog, poolByVersion, run, scoreGroup, selectGroups, selectSessions, verdict, viewerMetrics,
 }

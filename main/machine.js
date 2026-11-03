@@ -32,7 +32,7 @@ function summarizeMetrics(metrics) {
 
 // One reading. Anything the platform can't tell is left out, never guessed: thermal state is macOS
 // only, and the CPU speed limit arrives as an event on macOS and Windows.
-function readMachine({getMetrics, systemMemory, power}) {
+function readMachine({getMetrics, systemMemory, power, edgeRtt}) {
   const reading = {p: summarizeMetrics(getMetrics())}
   try {
     const free = Number(systemMemory?.().free)
@@ -48,6 +48,13 @@ function readMachine({getMetrics, systemMemory, power}) {
   } catch {}
   const limit = power?.speedLimit?.()
   if (Number.isFinite(limit)) reading.lim = limit
+  // Round trip to the Cloudflare edge over the live telemetry socket (main/live.js, M1.9), when it is
+  // open and has just been answered; absent otherwise, never 0. A value that climbs while video
+  // flows is this person's own link filling up.
+  try {
+    const edge = edgeRtt?.()
+    if (Number.isFinite(edge) && edge >= 0) reading.er = edge
+  } catch {}
   return reading
 }
 

@@ -14,6 +14,7 @@ const {
   parseProgress,
   parseWebVtt,
   planSession,
+  sourceFacts,
   subtitleExtractArgs,
   summarizeProbe,
 } = require('./plan')
@@ -135,7 +136,14 @@ async function startSession({filePath, start = 0, audioIndex = null, subtitleId 
 
   const id = nextSessionId++
   sessions.set(id, session)
-  return {id, mime: plan.mime, offset: plan.offset, transcoding: plan.transcoding, encoder: plan.encoder}
+  // The facts about this file and what is done to it, once per file opened (probe() makes a new media
+  // object each time) and again if how it is converted changes: a retry after a decode failure, a
+  // burned-in subtitle. Seeks restart ffmpeg with the same plan and say nothing.
+  const facts = sourceFacts(media, plan, {audioIndex, subtitle: media.subtitles.find((s) => s.id === subtitleId) || null, forceTranscode, support, canTonemap})
+  const kind = `${facts.mode}|${(facts.why || []).join(',')}|${facts.enc || ''}|${audioIndex}`
+  const changed = media.factsKind !== kind
+  media.factsKind = kind
+  return {id, mime: plan.mime, offset: plan.offset, transcoding: plan.transcoding, encoder: plan.encoder, ...(changed && {facts})}
 }
 
 async function pull(id) {

@@ -2871,6 +2871,31 @@ button:disabled {
   position: relative;
 }
 
+/* The note box for a mark opens upward from its flag, like the reactions menu. */
+.mark-note {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  z-index: 5;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(22, 22, 29, 0.95);
+  transform: translateX(-50%);
+}
+
+.mark-note input {
+  width: 260px;
+}
+
+kbd {
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font: inherit;
+  font-size: 0.9em;
+}
+
 #reactions-toggle[aria-expanded='true'] svg {
   fill: var(--accent);
 }

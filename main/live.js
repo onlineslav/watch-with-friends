@@ -17,8 +17,15 @@
 // Reconnecting backs off from a second to a minute with jitter and never starts more than four
 // attempts in any minute, because the Worker's limit is ten requests a minute per address and a
 // Worker that is down must not be hammered. A WebSocket cannot say why an upgrade failed, so a
-// 429 is simply one more failed attempt. A ping every 15 seconds that is not answered within 10
-// declares the socket dead, so a connection that silently died is replaced within 25.
+// 429 is simply one more failed attempt. A ping that is not answered within 10 seconds declares the
+// socket dead, so a connection that silently died is replaced soon after.
+//
+// The ping doubles as a measurement (M1.9): the Worker answers "ping" with "pong" without waking
+// its Durable Object, so the time between the two is the round trip from this computer to the
+// Cloudflare edge, whether or not anybody is watching. While the person is in a room the ping goes
+// out every 2 seconds, so `edgeRtt()` has a fresh reading for every 2-second telemetry sample; a
+// rising edge RTT while video flows means this person's own link is saturated. Outside a room it
+// stays at every 15 seconds, which only keeps the connection honest.
 
 const {encodeBatch, splitBatches} = require('../shared/live')
 const {formatEvent} = require('../shared/log')
@@ -27,6 +34,9 @@ const MAX_AGE_MS = 60_000
 const MAX_BUFFER_BYTES = 256 * 1024
 const SEND_EVERY_MS = 1000
 const PING_EVERY_MS = 15_000
+const FAST_PING_EVERY_MS = 2000
+const EDGE_FRESH_MS = 6000 // a reading older than this belongs to no sample
+const EDGE_MAX_RTT_MS = 10_000
 const PONG_WITHIN_MS = 10_000
 const BACKOFF_FIRST_MS = 1000
 const BACKOFF_MAX_MS = 60_000
@@ -60,6 +70,7 @@ function createLiveSender({
   setTimer = setTimeout,
   clearTimer = clearTimeout,
   now = Date.now,
+  mono = now, // a clock that never steps, for the round trip (main passes performance.now)
   random = Math.random,
   record = () => {},
 } = {}) {
@@ -77,6 +88,9 @@ function createLiveSender({
   let sendTimer = null
   let pingTimer = null
   let pongTimer = null
+  let pingSentAt = null // when the unanswered ping went out (mono clock), null when none is outstanding
+  let fast = false
+  let edge = null // {rtt, at}: the last answered ping
   let lastSend = -Infinity
   let held = [] // {at, text, bytes}
   let heldBytes = 0
@@ -148,28 +162,40 @@ function createLiveSender({
     clearTimer(pingTimer)
     clearTimer(pongTimer)
     pingTimer = pongTimer = null
+    pingSentAt = null
   }
 
+  // One ping at a time: while one is unanswered no other goes out, so a pong can only belong to it,
+  // and the 10-second deadline counts from the first unanswered ping.
   function heartbeat(mine) {
-    stopHeartbeat()
+    clearTimer(pingTimer)
     pingTimer = setTimer(() => {
       if (mine !== generation || !socket) return
-      try { socket.send('ping') } catch { return }
-      pongTimer = setTimer(() => {
-        if (mine !== generation) return
-        record('live', 'heartbeat-lost', {}, 'warn')
-        closed(mine, 4000)
-      }, PONG_WITHIN_MS)
-      pongTimer.unref?.()
-    }, PING_EVERY_MS)
+      if (pingSentAt == null) {
+        try { socket.send('ping') } catch { return }
+        pingSentAt = mono()
+        stats.wireBytes += 4 + 6 // the text and a client frame's header and mask, so the rate check counts pings too
+        pongTimer = setTimer(() => {
+          if (mine !== generation) return
+          record('live', 'heartbeat-lost', {}, 'warn')
+          closed(mine, 4000)
+        }, PONG_WITHIN_MS)
+        pongTimer.unref?.()
+      }
+      heartbeat(mine)
+    }, fast ? FAST_PING_EVERY_MS : PING_EVERY_MS)
     pingTimer.unref?.()
   }
 
-  function heard(mine) {
+  function ponged(mine) {
     if (mine !== generation) return
     clearTimer(pongTimer)
     pongTimer = null
-    heartbeat(mine)
+    if (pingSentAt != null) {
+      const rtt = mono() - pingSentAt
+      if (rtt >= 0 && rtt <= EDGE_MAX_RTT_MS) edge = {rtt, at: mono()}
+      pingSentAt = null
+    }
   }
 
   // The one place a connection ends: a close, an error, a lost heartbeat, or being switched off.
@@ -182,6 +208,7 @@ function createLiveSender({
     socket = null
     opened = false
     watching = null
+    edge = null
     stopHeartbeat()
     clearTimer(sendTimer)
     sendTimer = null
@@ -230,8 +257,8 @@ function createLiveSender({
     })
     created.addEventListener('message', (event) => {
       if (mine !== generation) return
-      heard(mine)
-      if (typeof event.data !== 'string' || event.data === 'pong') return
+      if (event.data === 'pong') return ponged(mine)
+      if (typeof event.data !== 'string') return
       let message
       try { message = JSON.parse(event.data) } catch { return }
       if (typeof message?.watching !== 'boolean') return
@@ -262,6 +289,7 @@ function createLiveSender({
         socket = null
         opened = false
         watching = null
+        edge = null
         stopHeartbeat()
         try { old.close(1000, 'off') } catch {}
       }
@@ -273,18 +301,36 @@ function createLiveSender({
       socket = null
       opened = false
       watching = null
+      edge = null
       stopHeartbeat()
       try { old.close(1000, 'renamed') } catch {}
     }
     if (!socket) connect()
   }
 
+  // In a room the ping goes every 2 seconds (see the top of this file); the change takes effect at the
+  // next tick, and a socket that was idle is nudged so the first reading is not 15 seconds away.
+  function setFast(on) {
+    on = Boolean(on)
+    if (on === fast) return
+    fast = on
+    if (on && socket && opened) heartbeat(generation)
+  }
+
+  // Milliseconds to the Cloudflare edge from the last answered ping, or null: no socket, no answer yet,
+  // or the answer is too old to belong to the sample asking.
+  function edgeRtt() {
+    return edge && mono() - edge.at <= EDGE_FRESH_MS ? Math.round(edge.rtt * 10) / 10 : null
+  }
+
   return {
     configure,
     push,
+    setFast,
+    edgeRtt,
     close: () => configure({enabled: false, from: name}),
     status: () => ({connected: Boolean(socket && opened), watching, held: held.length, heldBytes, dropped, ...stats}),
   }
 }
 
-module.exports = {ATTEMPTS_PER_MINUTE, BACKOFF_MAX_MS, MAX_AGE_MS, MAX_BUFFER_BYTES, PING_EVERY_MS, PONG_WITHIN_MS, attemptDelay, backoffMs, createLiveSender, liveUrl}
+module.exports = {ATTEMPTS_PER_MINUTE, BACKOFF_MAX_MS, EDGE_FRESH_MS, FAST_PING_EVERY_MS, MAX_AGE_MS, MAX_BUFFER_BYTES, PING_EVERY_MS, PONG_WITHIN_MS, attemptDelay, backoffMs, createLiveSender, liveUrl}

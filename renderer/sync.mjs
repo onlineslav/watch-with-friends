@@ -10,6 +10,24 @@ export function updateClock(previous, sent, received, remoteNow) {
   return previous
 }
 
+// One-way delay of a message in one direction (M1.9), from the sender's clock reading to ours. `offset`
+// is the measured offset to the host's clock (host = ours + offset), so `toHost` converts our reading
+// into the host's and `fromHost` the other way. The offset assumes the two directions take equally
+// long, so the absolute number is only as good as that: what means something is a direction that gets
+// slower by itself (a queue building in one link), which moves its number and not the other's. A
+// delay can come out a little negative when the assumption is off; it is logged as it is.
+export const MAX_ONE_WAY_MS = 60_000
+export function oneWayDelayMs(sentAt, receivedAt, offset) {
+  if (!finite(sentAt, 0, 1e15) || !finite(receivedAt, 0, 1e15) || !finite(offset, -1e15, 1e15)) return null
+  const ms = receivedAt - sentAt + offset
+  return ms >= -5000 && ms <= MAX_ONE_WAY_MS ? ms : null
+}
+// host to viewer: our clock now, the host's clock at send, and the offset (host = ours + offset)
+export const hostToViewerMs = (hostSentAt, ourNow, offset) => oneWayDelayMs(hostSentAt, ourNow, offset)
+// viewer to host: the viewer stamps its message with the host's clock (`toHostClock`); the host just subtracts
+export const toHostClock = (ourNow, offset) => (finite(ourNow, 0, 1e15) && finite(offset, -1e15, 1e15) ? ourNow + offset : null)
+export const viewerToHostMs = (stampedHostClock, hostNow) => oneWayDelayMs(stampedHostClock, hostNow, 0)
+
 export function estimatedMediaTime(state, now, clock) {
   if (!state) return 0
   if (state.ended) return state.time

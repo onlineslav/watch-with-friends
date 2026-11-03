@@ -89,6 +89,20 @@ export class IntervalMeter {
   }
 }
 
+// Delays measured since the last sample, for the log (M1.9): the worst of them, or null when nothing
+// arrived. The worst, not the average, because a queue that builds for a moment is the thing sought.
+export class DelayTally {
+  constructor() { this.max = null }
+  add(ms) {
+    if (Number.isFinite(ms) && (this.max === null || ms > this.max)) this.max = ms
+  }
+  take() {
+    const out = this.max === null ? null : round(this.max, 1)
+    this.max = null
+    return out
+  }
+}
+
 export const frameSpacing = new IntervalMeter()
 
 // The latest reading pushed by main, kept only while it is fresh enough to belong to this sample.

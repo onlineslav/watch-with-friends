@@ -135,7 +135,7 @@ Decided (builder): A/V offset positive = sound behind picture, method labelled `
 jb + playout + Web Audio out − video jb); times in UTC; audio target = Settings' `set.ab`; `--no-fetch`/`--dir`.
 
 ### M1.4 Automated A/V sync and audio benchmark [must-work]
-Status: in progress
+Status: verified
 Story: Every change to the media path is measured the same way before release, so "better" is a number, not a
 feeling.
 Done when:
@@ -173,7 +173,18 @@ Decided (orchestrator, 2026-11-03): the share variant's stand-in source (canvas 
 `MediaStreamTrackGenerator` + PCM through the real `'app'` audio path via `SVP_APP_AUDIO_FAKE`) is accepted; real
 window capture is confirmed by the real session in M1.8 instead. No loss-injection option yet: M1.6/M1.7 add it.
 Gate: no
-Evidence:
+Evidence: 72b4e3f. Builder: `npm run bench` 3 runs/variant, 25/25 events each; film medians 47.4/48.0/41.3ms
+(sound late), p95 ~57ms, rVFC 0.99–1.0× clip fps, frame-interval sd 1.8–4.4ms, audio 2ch 256kbps, concealment 0%;
+share medians −627/−673/−709ms. Orchestrator rerun: `npm test` 365/365, `renderer/bundle.js` 0 `__bench` matches, one
+film run median 48.2ms p95 56.7ms worst 57.8ms, `deviceLatencyIncluded=true` (outputLatency 30, lag 41ms). Audit
+(workflow-auditor): film number holds up (mapping and flash/beep timing checked, components add up); harness inert in
+production, nothing reaches the speakers. The share's −650ms is a **timestamp-base artifact in size** over a real bug:
+`renderer/app-audio.mjs:43` stamps AudioData from 0, so lip-sync delays video by an amount set by when the audio track
+started (silent probe: 90ms to 2600ms+ rising, or lip-sync gives up after ~12s uptime); fix in M1.5. The viewer
+decoding mono is a real bug (only the remote description gets `stereo=1`; Trystero calls `setLocalDescription()` with
+no args); fix in M1.6. LOW: `deviceLatencyIncluded` can't tell a muted sink from a real device, so the film number may
+omit real device latency. Decided: no unmuted device probe (no-audible-tests); the flag is read as "reported by this
+muted context".
 
 ### M1.9 Session context and "something's wrong" marks [wire]
 Status: in progress
@@ -236,6 +247,9 @@ Done when:
   an audio track whose capture timestamps are on a different clock, e.g. `renderer/app-audio.mjs` AudioData vs the
   video generator's `performance.now()` stamps). Telemetry `s.av` (11–22ms) does not see the share gap: fix or
   replace it so live telemetry shows the real offset.
+- (M1.4 audit) Share fix: `renderer/app-audio.mjs` bases AudioData timestamps on `performance.now()` at the first chunk
+  plus frames written, re-anchored after delivery gaps (the Mac helper may deliver nothing in silence). The bench's
+  share variant starts the share only after ≥15s of app uptime (as in real use) and reports the offset after fixing.
 Likely failures:
 - Delaying video by the output latency while `jitterBufferTarget` also moves: the two must not double-count.
 Gate: no
@@ -254,8 +268,10 @@ Done when:
 - Under simulated loss (bench option), audio degrades by bitrate before it drops out.
 - Aya check: listen to a music-heavy scene with Lenna.
 - (M1.4 bench) The viewer hears MONO: L/R separation 0 at the viewer's tap (0.5 at the host's) in all runs; the
-  host's send fmtp has `stereo=1`, the viewer's receive fmtp is only `minptime=10;useinbandfec=1`. Fix so the bench
-  shows separation at the viewer, and still negotiates with 0.8.0.
+  host's send fmtp has `stereo=1`, the viewer's receive fmtp is only `minptime=10;useinbandfec=1`. Mechanism (audit): `preferStereoOpus` runs only in the
+  `setRemoteDescription` patch (`renderer/app.js:117-123`); Trystero calls `setLocalDescription()` with no arguments,
+  so the decoder follows the viewer's own SDP. Patch `setLocalDescription` to create the offer/answer explicitly and
+  add `stereo=1` before setting it. Fix so the bench shows separation at the viewer, and still negotiates with 0.8.0.
 - Add a loss-injection option to `npm run bench` (e.g. a local UDP relay/TURN in the harness, or forcing relay
   candidates through a lossy proxy) — needed here and in M1.7.
 Likely failures:

@@ -351,6 +351,21 @@ Done when:
 Gate: no
 Evidence:
 
+### M1.11 Second file silent for viewers [must-work]
+Status: todo
+Added: orchestrator, 2026-11-03, from the M1.6 builder's bench finding. Built with M1.7.
+Story: When I open a second film in the same session, my friends hear it, not just see it.
+Done when:
+- Reproduced or ruled out: in the bench harness, `hostFile()` a second time gave the viewer no audio (the host's own
+  tap heard it, its `captureStream` audio track had no signal), on v0.8.0, v0.8.1 and the M1.6 build. A plain
+  `captureStream` probe re-captures fine, so it looks specific to the MediaSource pipeline (`renderer/player.mjs`,
+  `publishStream`, the `loadedmetadata` republish).
+- If real: fixed, and `test:network` (or the bench) opens a second and third file and asserts the viewer's received
+  audio level is above threshold each time; also covers a playlist advance and a host change.
+- If a harness artifact: the reason is written here and the bench handles it.
+Gate: no
+Evidence:
+
 ### M1.8 Real session review with Lenna [feel]
 Status: todo
 Story: Lenna and I watch something together with live telemetry on, and the worst three things we notice get fixed.

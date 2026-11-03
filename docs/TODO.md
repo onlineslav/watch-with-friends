@@ -326,6 +326,14 @@ Done when:
 Likely failures:
 - Munging the remote description on one side only.
 Gate: no
+Audit (9a0d3aa): transport patch sound (perfect negotiation, rollback, ICE restart, refused munge falls back,
+idempotent markers); 0.7.x/0.8 peers unaffected; remote munge still needed. Decided (orchestrator, 2026-11-03, Aya: no
+questions): the loss ladder keeps a 128 kbps floor (no 64k step), triggers only on congestion
+(`qualityLimitationReason === 'bandwidth'` or `availableOutgoingBitrate` under ~1.5 Mbps), and is skipped when
+"keep audio quality" is on; the "concealment lower than fixed 256k" and "≥90% of cap at 1500 kbps" lines are dropped
+(CELT-mode Opus has no in-band FEC, and Chromium doesn't share bandwidth between audio and video without a field
+trial); "keep audio quality" stays as a setting, documented as DSCP marking + encoder priority + no ladder cut.
+`npm test` runs only `test/*.test.{js,mjs}` (it was also running old copies under `work/compat/`).
 Evidence:
 
 ### M1.7 Smooth, sharp video under real conditions [feel]
@@ -352,8 +360,9 @@ Gate: no
 Evidence:
 
 ### M1.11 Second file silent for viewers [must-work]
-Status: todo
-Added: orchestrator, 2026-11-03, from the M1.6 builder's bench finding. Built with M1.7.
+Status: in progress
+Added: orchestrator, 2026-11-03, from the M1.6 builder's bench finding; confirmed real by the M1.6 audit. Built right
+after M1.6's fixes by the same builder.
 Story: When I open a second film in the same session, my friends hear it, not just see it.
 Done when:
 - Reproduced or ruled out: in the bench harness, `hostFile()` a second time gave the viewer no audio (the host's own
@@ -363,6 +372,12 @@ Done when:
 - If real: fixed, and `test:network` (or the bench) opens a second and third file and asserts the viewer's received
   audio level is above threshold each time; also covers a playlist advance and a host change.
 - If a harness artifact: the reason is written here and the bench handles it.
+- (M1.6 audit, HIGH, real) Mechanism: `renderer/app.js:1320-1345` `publishStream` calls `video.captureStream()` again on
+  every `loadedmetadata` (`app.js:4775`); capture #1's own `loadedmetadata` listener survives `unpublishStream`, runs
+  after the page's, replaces capture #2's audio copy callback and fires `addtrack` on the old stream, which the page
+  stops (`session.stream !== stream`), so the published audio track goes silent. Fix: one `captureStream()` per
+  element, kept; publish `track.clone()`s and stop only the clones; existing `addtrack`/`removetrack` handling follows
+  source changes. Bench: second `hostFile()` gives viewer beep RMS ≥ 0.1.
 Gate: no
 Evidence:
 

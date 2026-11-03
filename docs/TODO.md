@@ -281,6 +281,25 @@ Done when:
   add `stereo=1` before setting it. Fix so the bench shows separation at the viewer, and still negotiates with 0.8.0.
 - Add a loss-injection option to `npm run bench` (e.g. a local UDP relay/TURN in the harness, or forcing relay
   candidates through a lossy proxy) — needed here and in M1.7.
+- (pre-mortem) Munging lives in `scripts/patch-trystero.js`, not an `app.js` wrapper: both argument-less calls
+  (offer and answer, `peer.mjs` ~156/~270) become create → munge → set; rollback is left alone, the ICE-restart offer
+  is munged too, and `signal()` waits for an in-flight offer before rolling back. `test/transport.test.mjs`: both
+  peers add streams at once (glare) and an ICE restart; both reach `stable` in <1s, no `watchOffer` resend, no
+  `failed to` errors.
+- (pre-mortem) `preferStereoOpus` (`renderer/lib.mjs:44`) munges every Opus section (global replace), and
+  `parseOpusFmtp` reports the active audio section, not the first: unit test with a 3-audio-section SDP; the bench
+  shows viewer L/R separation ≥0.4 for a film, a share, and a film after two republishes.
+- (pre-mortem) Loss injection via libwebrtc's fake network (`--force-fieldtrials=WebRTC-FakeNetworkSendConfig/
+  loss_percent:N/`, `link_capacity_kbps`), not a proxy: `npm run bench -- --loss 5` records the mode in the JSON and
+  asserts `packetsLost > 0`.
+- (pre-mortem) Degrade by bitrate: `tuneSenders` steps each viewer's audio cap 256 → 128 → 64 kbps at >2% / >5% loss
+  that viewer reports, back up after 30s calm (no RED). At 5% loss the sent audio bitrate drops a step within 10s and
+  concealment is lower than at a fixed 256k. SDP stays `stereo=1; sprop-stereo=1; useinbandfec=1; usedtx=0;
+  maxplaybackrate=48000; maxaveragebitrate` (no `cbr`, no `ptime`).
+- (pre-mortem) "Keep audio quality": a bench run with `link_capacity_kbps:1500` keeps audio ≥90% of its cap with it on
+  and lower with it off; the audio `setParameters` call fires once per change, not every second (`app.js` ~1420).
+- (pre-mortem) Compatibility: `test:network` loads one window from a bundle built at the `v0.8.0` tag: old host → new
+  viewer gives stereo, new host → old viewer gives audio RMS above threshold, a republish and a glare case complete.
 Likely failures:
 - Munging the remote description on one side only.
 Gate: no

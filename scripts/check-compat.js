@@ -36,7 +36,7 @@ const {execFileSync} = require('node:child_process')
 const esbuild = require('esbuild')
 const lib = require('./bench-lib')
 const {benchHooks} = require('./bench-hooks')
-const {prepare} = require('./old-tree')
+const {prepare, stopAll: stopPreparing} = require('./old-tree')
 
 const root = path.resolve(__dirname, '..')
 const tagArg = process.argv.find((arg) => arg.startsWith('--tag='))
@@ -222,7 +222,7 @@ async function direction(env, hostSide, viewerSide, index) {
     const expectSound = (what, heard) => {
       assert.ok(heard.audible, `${label}: ${what}: the viewer heard nothing`)
       if (viewerSide === 'new') assert.ok(heard.separation >= 0.4, `${label}: ${what}: a new viewer decodes stereo (separation ${heard.separation})`)
-      checks.push(`${what}: sound arrived${viewerSide === 'new' ? `, stereo (separation ${heard.separation})` : ` (separation ${heard.separation}, a copy from before the fix decodes mono)`}`)
+      checks.push(`${what}: sound arrived${viewerSide === 'new' ? `, stereo (separation ${heard.separation})` : ` (separation ${heard.separation}${heard.separation < 0.4 ? ', a copy from before the M1.6 fix decodes mono' : ''})`}`)
     }
 
     // film
@@ -291,10 +291,18 @@ async function direction(env, hostSide, viewerSide, index) {
 }
 
 app.whenReady().then(async () => {
-  const watchdog = setTimeout(() => { console.error('Compatibility check timed out'); app.exit(1) }, 8 * 60 * 1000 * runs)
+  // prepare() runs its steps asynchronously, so this fires even while an old tree is being set up; its children (and
+  // any ffmpeg session) are killed on the way out rather than left holding work/compat/<tag>.
+  const watchdog = setTimeout(() => {
+    console.error('Compatibility check timed out')
+    try { require('../main/media').stopAll() } catch {}
+    try { require('../main/app-audio').stopAll() } catch {}
+    stopPreparing()
+    app.exit(1)
+  }, 8 * 60 * 1000 * runs)
   let exitCode = 0
   try {
-    const oldRoot = prepare(tag)
+    const oldRoot = await prepare(tag)
     const env = await fixtures(oldRoot)
     require('../main/main').registerIpc()
     ipcMain.removeHandler('net:ice-servers')
@@ -325,6 +333,7 @@ app.whenReady().then(async () => {
     exitCode = 1
   } finally {
     clearTimeout(watchdog)
+    stopPreparing()
     require('../main/app-audio').stopAll()
     require('../main/media').stopAll()
     try { fs.rmSync(temporary, {recursive: true, force: true, maxRetries: 3}) } catch {}

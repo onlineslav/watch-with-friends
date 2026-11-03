@@ -27,3 +27,19 @@ One-time setup:
 3. Add the route to the build's config: `{"telemetry":"https://YOUR-WORKER.workers.dev/telemetry"}` (beside `endpoint` if you use TURN). For CI that's the `TURN_CONFIG` repository secret; for a local build, `config/turn.json`.
 
 Reading: `npm run diagnostics` from the repository root. Anyone with read access to the diagnostics repository can run it with their own `gh` login. Uploads share the ten-requests-a-minute limit with `/credentials`; an app uploads at most every few minutes.
+
+## Live telemetry
+
+The same checkbox also streams each log line as it happens, so a developer can watch two people's telemetry side by side while they watch a film. The route is `GET /live` (WebSocket); `relay/live.mjs` has the details. One Durable Object (`LiveHub`, SQLite-backed, stores nothing) holds every socket.
+
+- **Apps** connect to `/live?role=app&from=<username>` with no credentials, like `/telemetry`. The object tells them `{"watching": true|false}`; they send batches (about a second apart, deflated, 64 KB at most) only while someone is watching. Idle sockets are kept alive by `setWebSocketAutoResponse` ("ping" is answered without waking the object), so they cost nothing while it hibernates.
+- **Readers** (`npm run diagnostics -- --live [scope]`) connect to `/live?role=view` with `Authorization: Bearer <gh auth token>`. The Worker asks GitHub once per connection (cached a minute, by the token's hash) whether that token can read `DIAGNOSTICS_REPO`: no token or a bad one is 401, a valid one without access is 403, and a GitHub outage or rate limit is 503. `GET /live?role=view` without an upgrade is the same check on its own.
+- Caps per object: 64 apps, 8 readers, 64 KB per frame, 5 frames a second per socket. The existing ten-requests-a-minute limit applies to the upgrade request too.
+
+One-time deploy (the first deploy that includes live telemetry creates the Durable Object class; no new secret):
+
+1. From this directory: `npx wrangler deploy`. The `migrations` entry in `wrangler.jsonc` (`new_sqlite_classes`: `LiveHub`) is applied by that same command. Do not edit the tag later; a further change to the class needs a new migration tag.
+2. Check it: `curl -i "https://YOUR-WORKER.workers.dev/live?role=view"` answers `401`; `curl -i -H "Authorization: Bearer $(gh auth token)" "https://YOUR-WORKER.workers.dev/live?role=view"` answers `200 {"ok":true}`. An old build's `POST /telemetry` and `POST /credentials` are unchanged.
+3. Watch: `npm run diagnostics -- --live` (everything), `-- --live telemetry` (one scope), `-- --live telemetry/host-sample --from aya`. `--url` or `DIAGNOSTICS_LIVE_URL` points it at another Worker, for example `wrangler dev` on `http://localhost:8787`.
+
+`npm run test:live` runs the whole chain against `wrangler dev` with your own `gh` login (nothing is deployed).

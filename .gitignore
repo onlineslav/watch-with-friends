@@ -14,3 +14,5 @@ native/win-share-sources/win-share-sources.exe
 logs/
 work/
 .DS_Store
+
+relay/.wrangler/

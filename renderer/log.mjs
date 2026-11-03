@@ -9,7 +9,9 @@ import {createRing} from '../shared/log.js'
 // site is how it ends up missing from the one line that mattered.
 
 const PENDING_LIMIT = 600
-const FLUSH_MS = 2000
+// One second: the live telemetry stream shows a line about two seconds after it happens, and this
+// is the longest wait on the way (one small IPC message a second at most).
+const FLUSH_MS = 1000
 
 const pending = createRing(PENDING_LIMIT)
 let context = {}
@@ -60,7 +62,7 @@ export function installErrorLogging() {
   window.addEventListener('unhandledrejection', (event) => {
     logError('error', 'unhandled-rejection', errorData(event.reason))
   })
-  // A flush is up to 2 seconds behind, which is exactly the window in which a crash or a close
+  // A flush is up to a second behind, which is exactly the window in which a crash or a close
   // takes the last events with it.
   window.addEventListener('pagehide', () => flushLog())
   document.addEventListener('visibilitychange', () => {

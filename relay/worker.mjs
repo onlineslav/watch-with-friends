@@ -1,15 +1,20 @@
 // Optional Worker. Deploy separately; its secrets never enter Electron.
 //
-// Two routes, both POST:
+// Routes:
 //   /credentials  issues one-hour TURN credentials (secrets TURN_KEY_ID, TURN_API_TOKEN)
 //   /telemetry    stores development telemetry from apps that opted in (secret
 //                 DIAGNOSTICS_GITHUB_TOKEN, var DIAGNOSTICS_REPO): each upload is committed to the
 //                 private diagnostics repository as telemetry/<username>/<day>/<time>.log.gz, where
 //                 `npm run diagnostics` fetches and unpacks it.
+//   GET /live     live telemetry over WebSocket (relay/live.mjs): apps push their log lines, a
+//                 reader with access to the diagnostics repository watches them arrive.
 //
 // A /telemetry body is one line of JSON metadata and then the base64 gzip (main/diagnostics.js
 // builds it). Splitting on the first newline keeps CPU time near zero on a megabyte of body, which
 // parsing it as JSON would not.
+
+import {live} from './live.mjs'
+export {LiveHub} from './live.mjs'
 
 const MAX_BODY = 12 * 1024 * 1024
 const MAX_META = 8 * 1024
@@ -92,7 +97,8 @@ export async function telemetry(request, env) {
 export default {
   async fetch(request, env) {
     const {pathname} = new URL(request.url)
-    const route = request.method === 'POST' && {'/credentials': credentials, '/telemetry': telemetry}[pathname]
+    const route = request.method === 'POST' ? {'/credentials': credentials, '/telemetry': telemetry}[pathname]
+      : request.method === 'GET' && pathname === '/live' ? live : null
     if (!route) return reply({error: 'Not found'}, 404)
     if (!env.RATE_LIMITER) return reply({error: 'Relay is not configured'}, 503)
     const ip = request.headers.get('CF-Connecting-IP')

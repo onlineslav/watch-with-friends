@@ -80,7 +80,9 @@ function createSender({fetchImpl = fetch, timeoutMs = TIMEOUT_MS} = {}) {
 
 // `settingsFile` holds {enabled, from} so main knows at launch, before any window, whether to send
 // and under which name. Off unless the person turns it on.
-function createUploader({log, settingsFile, endpoint, send = createSender(), record = log.record, now = () => new Date(), intervalMs = INTERVAL_MS, firstDelayMs = FIRST_DELAY_MS}) {
+// `live` (main/live.js) is the as-it-happens copy of the same lines. It follows the same checkbox and
+// name, and never connects while the checkbox is off.
+function createUploader({log, settingsFile, endpoint, send = createSender(), record = log.record, now = () => new Date(), intervalMs = INTERVAL_MS, firstDelayMs = FIRST_DELAY_MS, live = null}) {
   let settings = {enabled: false, from: null}
   try {
     const saved = JSON.parse(fsSync.readFileSync(settingsFile, 'utf8'))
@@ -92,6 +94,8 @@ function createUploader({log, settingsFile, endpoint, send = createSender(), rec
   let busy = null
   let interval = null
   let soon = null
+  const unsubscribe = live ? log.subscribe(live.push) : null
+  const syncLive = () => live?.configure({enabled: settings.enabled, from: settings.from})
 
   const save = () => {
     try { fsSync.writeFileSync(settingsFile, JSON.stringify(settings)) } catch {}
@@ -125,6 +129,7 @@ function createUploader({log, settingsFile, endpoint, send = createSender(), rec
     clearInterval(interval)
     clearTimeout(soon)
     interval = soon = null
+    syncLive()
     if (!settings.enabled) return
     soon = setTimeout(upload, firstDelayMs)
     interval = setInterval(upload, intervalMs)
@@ -145,13 +150,18 @@ function createUploader({log, settingsFile, endpoint, send = createSender(), rec
     if (settings.enabled !== wasEnabled) {
       record('log', 'telemetry', {enabled: settings.enabled})
       schedule()
-    }
+    } else syncLive()
     return status()
   }
 
   return {
     start: schedule,
-    stop() { clearInterval(interval); clearTimeout(soon) },
+    stop() {
+      clearInterval(interval)
+      clearTimeout(soon)
+      unsubscribe?.()
+      live?.close()
+    },
     upload,
     set,
     status,

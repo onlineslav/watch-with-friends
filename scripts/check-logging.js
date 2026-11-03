@@ -9,6 +9,9 @@ const path = require('node:path')
 const {parseLine} = require('../shared/log')
 const log = require('../main/log')
 const {registerIpc, watchTransportWarnings} = require('../main/main')
+const {createLiveSender} = require('../main/live')
+const {decodeBatch} = require('../shared/live')
+const {createFakeWebSocket} = require('./fakes')
 
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'wwf-logging-test-'))
 app.setPath('userData', profile)
@@ -63,6 +66,26 @@ app.whenReady().then(async () => {
     // its own line about this rejection; that line is the check working, not the check failing.
     await win.webContents.executeJavaScript('window.api.startSession({filePath: "C:/nope/missing.mkv"}).catch(() => {})')
     await until(() => entries().some((e) => e.sc === 'ffmpeg'), 'a main-process ffmpeg line')
+
+    // The live stream (M1.1) carries exactly the lines the file holds: a path logged from the page is
+    // already redacted when a fake /live receives it.
+    const FakeWebSocket = createFakeWebSocket()
+    FakeWebSocket.answerPings = true
+    const live = createLiveSender({endpoint: async () => 'https://relay.test/telemetry', WebSocketImpl: FakeWebSocket})
+    const unsubscribe = log.subscribe(live.push)
+    live.configure({enabled: true, from: 'tester#aaaa-bbbb'})
+    await until(() => FakeWebSocket.instances.length === 1, 'the live socket')
+    FakeWebSocket.instances[0].open()
+    FakeWebSocket.instances[0].receive(JSON.stringify({watching: true}))
+    await win.webContents.executeJavaScript('window.api.logEvents([{at: Date.now(), mono: 1, level: "info", scope: "live", event: "path", data: {file: "C:\\\\Users\\\\x\\\\film.mkv"}}])')
+    await until(() => FakeWebSocket.instances[0].frames.length > 0, 'a live frame')
+    const received = FakeWebSocket.instances[0].frames.flatMap((frame) => decodeBatch(frame)).find((text) => text.includes('"ev":"path"'))
+    log.flush()
+    const filed = fs.readFileSync(log.filePath(), 'utf8').split('\n').find((text) => text.includes('"ev":"path"'))
+    assert.ok(received.includes('…/film.mkv') && !received.includes('Users'), 'the live line is redacted: ' + received)
+    assert.equal(received, filed, 'and byte-identical to the line in the file')
+    unsubscribe()
+    live.close()
 
     const target = path.join(profile, 'export.log')
     log.exportTo(target, {note: 'went blurry about 40 minutes in'})

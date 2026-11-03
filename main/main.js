@@ -10,6 +10,7 @@ const appWindows = require('./app-windows')
 const shareSources = require('./share-sources')
 const {loadIceServers} = require('./turn')
 const diagnostics = require('./diagnostics')
+const {createLiveSender} = require('./live')
 const updater = require('./updater')
 const {focusWindow} = require('./startup')
 const {watchZoom, zoomFactor} = require('./zoom')
@@ -69,6 +70,7 @@ const telemetry = () => (uploader ??= diagnostics.createUploader({
   log,
   settingsFile: path.join(app.getPath('userData'), 'telemetry.json'),
   endpoint: () => diagnostics.loadEndpoint(turnConfigPath()),
+  live: createLiveSender({endpoint: () => diagnostics.loadEndpoint(turnConfigPath()), record: log.record}),
 }))
 
 function createWindow() {

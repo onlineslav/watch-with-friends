@@ -7,6 +7,10 @@
     // secret: npx wrangler secret put DIAGNOSTICS_GITHUB_TOKEN
     "DIAGNOSTICS_REPO": "onlineslav/watch-with-friends-diagnostics"
   },
+  // Live telemetry (relay/live.mjs): one Durable Object holds every WebSocket. SQLite-backed, which
+  // is the only kind the free plan allows; it stores nothing.
+  "durable_objects": {"bindings": [{"name": "LIVE", "class_name": "LiveHub"}]},
+  "migrations": [{"tag": "v1", "new_sqlite_classes": ["LiveHub"]}],
   "ratelimits": [{
     "name": "RATE_LIMITER",
     "namespace_id": "71004",

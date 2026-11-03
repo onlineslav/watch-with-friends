@@ -14,7 +14,9 @@ const path = require('node:path')
 const {createRing, formatEvent, shouldRotate} = require('../shared/log')
 
 const MAX_FILE_BYTES = 5 * 1024 * 1024
-const FLUSH_MS = 1000
+// Half a second, so a line is in the file (and on the live stream, main/live.js) soon after it is
+// recorded; a write only happens when something was recorded.
+const FLUSH_MS = 500
 const PENDING_LIMIT = 4000
 const NAME = 'watch-with-friends.log'
 const PREVIOUS = 'watch-with-friends.1.log'
@@ -176,13 +178,25 @@ function flush() {
   const {items, dropped} = pending.drain()
   if (dropped) items.unshift(stamp('log', 'dropped', {events: dropped}, 'warn'))
   if (!items.length) return
-  const text = `${items.map(formatEvent).join('\n')}\n`
+  const lines = items.map(formatEvent)
+  const text = `${lines.join('\n')}\n`
   const bytes = Buffer.byteLength(text)
   rotate(bytes)
   try {
     fs.appendFileSync(filePath(), text)
     size += bytes
   } catch {}
+  for (const listener of listeners) {
+    try { listener(lines) } catch {}
+  }
+}
+
+// Whoever wants the lines as they are written (the live telemetry stream, main/live.js) gets the
+// same strings that went to the file, redacted and capped, so nothing downstream redacts again.
+const listeners = new Set()
+function subscribe(listener) {
+  listeners.add(listener)
+  return () => listeners.delete(listener)
 }
 
 const read = (file) => {
@@ -215,4 +229,4 @@ const headerInfo = () => ({...header})
 const defaultExportName =(now = new Date()) =>
   `watch-with-friends-${now.toISOString().slice(0, 16).replace(/[-:]/g, '').replace('T', '-')}.log`
 
-module.exports = {MAX_FILE_BYTES, defaultExportName, exportTo, filePath, flush, headerInfo, record, recordBatch, start, stop, takeUnsent}
+module.exports = {MAX_FILE_BYTES, defaultExportName, exportTo, filePath, flush, headerInfo, record, recordBatch, start, stop, subscribe, takeUnsent}

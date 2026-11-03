@@ -10,6 +10,7 @@
 //   npm run diagnostics              every person, every day
 //   npm run diagnostics -- aya       only folders starting with "aya"
 //   DIAGNOSTICS_REPO=owner/name      a different repository
+//   npm run diagnostics -- --live [scope]   watch everyone's lines as they happen (scripts/live-view.js)
 
 const {execFileSync} = require('node:child_process')
 const fs = require('node:fs')
@@ -58,12 +59,20 @@ function unpack() {
   return rows
 }
 
-sync()
-const rows = unpack()
-if (!rows.length) {
-  console.log(filter ? `No telemetry from anyone matching "${filter}" yet.` : 'No telemetry has arrived yet.')
-} else {
+function archive() {
+  sync()
+  const rows = unpack()
+  if (!rows.length) {
+    console.log(filter ? `No telemetry from anyone matching "${filter}" yet.` : 'No telemetry has arrived yet.')
+    return
+  }
   console.table(rows.slice(-20).map(({person, day, uploads, kb, last}) => ({person, day, uploads, 'size KB': kb, 'last upload (UTC)': last})))
   const latest = rows.reduce((a, b) => (`${b.day}${b.last}` > `${a.day}${a.last}` ? b : a))
   console.log(`Unpacked to ${path.relative(root, out)}. Newest: ${path.relative(root, path.join(out, latest.person, `${latest.day}.log`))}`)
+}
+
+if (process.argv.includes('--live')) {
+  require('./live-view').run(process.argv.slice(2)).then((code) => process.exit(code), (error) => { console.error(error.message); process.exit(1) })
+} else {
+  archive()
 }

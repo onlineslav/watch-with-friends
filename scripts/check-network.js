@@ -14,6 +14,11 @@ const diagnostics = require('../main/log')
 const {prepareYouTube, registerYouTube} = require('../main/youtube')
 prepareYouTube()
 const checkYouTube = process.argv.includes('--youtube')
+// --live-rate=N: N people in one room, the host playing a film, and the live telemetry stream measured
+// per person for 60 seconds (M1.1). Nothing else is checked.
+const liveRatePeople = Number((process.argv.find((arg) => arg.startsWith('--live-rate=')) || '').split('=')[1]) || 0
+const {createLiveSender} = require('../main/live')
+const {createFakeWebSocket} = require('./fakes')
 
 const root = path.resolve(__dirname, '..')
 const publicDiscovery = process.argv.includes('--public-discovery')
@@ -145,6 +150,52 @@ async function checkCost(host, viewer, baseline) {
   console.log('PASS: Samples cost under 2 ms of main thread on host and viewer')
 }
 
+// M1.1: what the live stream costs each person. Everyone's lines share one main process here, so each
+// person gets their own sender (the real one, with a socket that only counts) fed just the lines that
+// person's window wrote; lines from main itself, which carry no `self`, go to everyone, which
+// overcounts. The host is the busiest: one host-sample per viewer every 2 seconds.
+async function checkLiveRate(windows, video) {
+  const [host, ...viewers] = windows
+  await run(host, '__test.enterRoom("ABCDEFGH", {joining:false})')
+  await Promise.all(viewers.map((win) => run(win, '__test.enterRoom("ABCDEFGH")')))
+  await Promise.all(windows.map((win) => until(win, `__test.session.peers.size === ${windows.length - 1}`)))
+  await run(host, `__test.hostFile(${JSON.stringify(video)})`)
+  await run(host, '__test.control("loop", true)')
+  await Promise.all(viewers.map((win) => until(win, 'document.getElementById("remote-video").getVideoPlaybackQuality().totalVideoFrames > 12')))
+  const selves = await Promise.all(windows.map((win) => run(win, '__test.selfId')))
+  const FakeWebSocket = createFakeWebSocket()
+  FakeWebSocket.answerPings = true
+  const senders = selves.map(() => createLiveSender({endpoint: async () => 'https://relay.test/telemetry', WebSocketImpl: FakeWebSocket}))
+  const unsubscribe = diagnostics.subscribe((lines) => {
+    if (process.env.LIVE_RATE_DUMP) fs.appendFileSync(process.env.LIVE_RATE_DUMP, `# ${Date.now()}\n${lines.join('\n')}\n`) // sample lines, for building shared/live-dictionary.txt
+    const mine = selves.map(() => [])
+    for (const line of lines) {
+      const self = parseLine(line)?.self
+      selves.forEach((id, index) => { if (!self || self === id) mine[index].push(line) })
+    }
+    mine.forEach((list, index) => senders[index].push(list))
+  })
+  senders.forEach((sender) => sender.configure({enabled: true, from: 'tester#abcd-1234'}))
+  await pause(200)
+  for (const socket of FakeWebSocket.instances) { socket.open(); socket.receive(JSON.stringify({watching: true})) }
+  assert.equal(FakeWebSocket.instances.length, windows.length)
+  const started = Date.now()
+  await pause(60000)
+  const seconds = (Date.now() - started) / 1000
+  unsubscribe()
+  const rows = senders.map((sender, index) => {
+    const status = sender.status()
+    const role = index === 0 ? `host (${viewers.length} viewer${viewers.length === 1 ? '' : 's'})` : 'viewer'
+    return {person: index, role, lines: status.lines, pushes: status.pushes, frames: status.frames, payloadBytes: status.payloadBytes, wireBytes: status.wireBytes,
+      kbpsPayload: Number((status.payloadBytes * 8 / seconds / 1000).toFixed(2)), kbps: Number((status.wireBytes * 8 / seconds / 1000).toFixed(2))}
+  })
+  console.log(`MEASURE live stream over ${seconds.toFixed(0)}s, ${windows.length} people (host has ${viewers.length} peer${viewers.length === 1 ? '' : 's'}):`)
+  console.table(rows)
+  for (const row of rows) assert.ok(row.kbps < 5, `${row.role} sends ${row.kbps} kbps, under 5`)
+  senders.forEach((sender) => sender.close())
+  console.log(`PASS: Live telemetry stays under 5 kbps per person with ${viewers.length} peer${viewers.length === 1 ? '' : 's'} on the host (worst ${Math.max(...rows.map((row) => row.kbps))} kbps)`)
+}
+
 async function fixtures() {
   const subscriptions = new Map()
   ipcMain.on('test:subscribe', (event, topic, active) => {
@@ -268,7 +319,7 @@ app.whenReady().then(async () => {
     // Shares capture a synthetic canvas and oscillator instead (fakeShare below), never the real screen.
     ipcMain.removeHandler('screenshare:select')
     ipcMain.handle('screenshare:select', () => true)
-    for (const name of ['alpha', 'bravo', 'charlie']) {
+    for (const name of ['alpha', 'bravo', 'charlie', 'delta'].slice(0, liveRatePeople || 3)) {
       const win = new BrowserWindow({show: false, webPreferences: {partition: `network-${name}`, backgroundThrottling: false, autoplayPolicy: 'no-user-gesture-required', preload: path.join(temporary, 'preload.js')}})
       windows.push(win)
       testWindows.push([name, win])
@@ -283,6 +334,10 @@ app.whenReady().then(async () => {
       if (publicDiscovery && name !== 'bravo') await run(win, `__test.primed = __test.primeDiscovery(${JSON.stringify(name === 'alpha' ? 'presence' : 'persistent')}); true`)
       await run(win, `document.getElementById('handle').value=${JSON.stringify(name)}; document.getElementById('welcome-name').value=${JSON.stringify(name)}; document.getElementById('welcome-form').dispatchEvent(new Event('submit', {cancelable:true}));`)
       await until(win, '__test.friendNetwork.identity && !document.getElementById("home").hidden')
+    }
+    if (liveRatePeople) {
+      await checkLiveRate(windows, video)
+      return
     }
     const [a, b, c] = windows
     const names = await Promise.all(windows.map((win) => run(win, '__test.identity.username')))

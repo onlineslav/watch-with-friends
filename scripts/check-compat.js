@@ -10,6 +10,9 @@
 //              old host sends stereo already, so it works against a copy that was never fixed.
 //   republish  the host publishes its film again, twice (a new audio section each time); sound goes on
 //              arriving, in stereo for a new viewer.
+//   files      (new host only) the host opens a second and a third file; a transceiver stopped by the host
+//              ends the viewer's receiver track (an older copy only ever saw it mute) and the viewer must
+//              hear each file all the same.
 //   glare      the host publishes again at the very moment the viewer starts a share: both ends renegotiate
 //              at once. Both connections must settle to "stable", no page may log an error, and the share
 //              must reach the host.
@@ -197,6 +200,21 @@ async function direction(env, hostSide, viewerSide, index) {
       await picture()
       await pause(2500)
       expectSound(`republish ${n}`, await listen(viewer))
+    }
+
+    // more files: a new host stops each film's transceivers (the viewer's receiver track ENDS, where a copy from
+    // before M1.11 only ever muted it) and publishes the next on a fresh one; the viewer must recover on every
+    // file. (A v0.8.0 host cannot be asked this: its second file is silent, which is what M1.11 fixed.)
+    if (hostSide === 'new') {
+      for (const n of [2, 3]) {
+        const copy = env.clip.replace(/\.mkv$/, `-${n}.mkv`)
+        fs.copyFileSync(env.clip, copy)
+        const picture = await nextPicture(`file ${n}`)
+        await run(host, `__test.hostFile(${JSON.stringify(copy)})`)
+        await picture()
+        await pause(2500)
+        expectSound(`file ${n}`, await listen(viewer))
+      }
     }
 
     // glare: the host publishes again as the viewer starts a share

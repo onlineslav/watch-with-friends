@@ -75,6 +75,7 @@ const options = {
   audioLadder: String(flag('audio-ladder', 'on')),
   audioFirst: String(flag('audio-first', 'on')),
   label: String(flag('label', '')).replace(/[^A-Za-z0-9._-]/g, ''),
+  publishes: Math.max(1, Number(flag('publishes', 3))), // --variant=republish / reopen: how many times the film is published
 }
 const {createNetwork} = require('./bench-net')
 const treeRoot = options.tree ? path.resolve(options.tree) : root
@@ -444,29 +445,30 @@ async function runRepublish(env, runIndex, mode = 'republish') {
   try {
     await applySendOptions(host)
     await Promise.all([run(host, '__bench.installTap()'), run(viewer, '__bench.installTap()')])
-    const frames = () => run(viewer, 'document.getElementById("remote-video").getVideoPlaybackQuality().totalVideoFrames')
     const audioSections = '(() => { const pc = Object.values(__test.session.room.getPeers())[0]; return (pc.remoteDescription.sdp.match(/^m=audio /gm) || []).length })()'
     const stages = []
-    for (let publish = 1; publish <= 3; publish++) {
-      const before = await frames()
+    for (let publish = 1; publish <= options.publishes; publish++) {
+      await run(viewer, 'window.__lastSrc = document.getElementById("remote-video").srcObject; true') // the element's frame counter restarts with each new stream
       let file = env.clip
       if (mode === 'reopen' && publish > 1) {
         file = env.clip.replace(/\.mkv$/, `-${publish}.mkv`)
         fs.copyFileSync(env.clip, file) // another file, not the same one again
       }
       await run(host, publish === 1 || mode === 'reopen' ? `__test.hostFile(${JSON.stringify(file)})` : '__test.publishStream(); true')
-      await until(viewer, `document.getElementById("remote-video").getVideoPlaybackQuality().totalVideoFrames > ${before + 60}`, 45000, `the viewer receives publish ${publish}`)
+      await until(viewer, 'document.getElementById("remote-video").srcObject && document.getElementById("remote-video").srcObject !== window.__lastSrc && document.getElementById("remote-video").getVideoPlaybackQuality().totalVideoFrames > 60', 45000, `the viewer receives publish ${publish}`)
       await pause(3000)
       const beepsBefore = JSON.parse(await run(viewer, '__bench.collect().then(JSON.stringify)')).levels.length // the stereo reading restarts here
       await pause(6500)
       const data = JSON.parse(await run(viewer, '__bench.collect().then(JSON.stringify)'))
       const beeps = data.levels.slice(beepsBefore).map((l) => l.rms)
       const rtp = await rtpSnapshot(viewer)
-      stages.push({publish, beeps: beeps.length, beepRms: lib.round(lib.median(beeps), 3), separation: lib.round(data.stereo.side / Math.max(1e-12, data.stereo.side + data.stereo.mid), 3), energy: data.stereo, audioSections: await run(viewer, audioSections), receiveFmtp: rtp.audioIn?.codec?.sdpFmtpLine ?? null})
+      const shape = JSON.parse(await run(host, '(() => JSON.stringify(Object.values(__test.session.room.getPeers()).map((pc) => ({transceivers: pc.getTransceivers().length, sections: (pc.localDescription.sdp.match(/^m=/gm) || []).length, offerBytes: JSON.stringify({type: pc.localDescription.type, sdp: pc.localDescription.sdp}).length}))))()'))
+      stages.push({publish, shape: shape[0], beeps: beeps.length, beepRms: lib.round(lib.median(beeps), 3), separation: lib.round(data.stereo.side / Math.max(1e-12, data.stereo.side + data.stereo.mid), 3), energy: data.stereo, audioSections: await run(viewer, audioSections), receiveFmtp: rtp.audioIn?.codec?.sdpFmtpLine ?? null})
     }
     const errors = [...await run(host, '__test.errors'), ...await run(viewer, '__test.errors')]
     const problems = [
       ...stages.filter((s) => !(s.separation >= 0.4)).map((s) => `after publish ${s.publish} the viewer's L/R separation is ${s.separation}, under 0.4: the audio decodes as mono (or is silent: energy ${s.energy.mid})`),
+      ...stages.filter((s) => s.shape && s.shape.sections > 6).map((s) => `after publish ${s.publish} the connection has ${s.shape.sections} m-sections (${s.shape.offerBytes} bytes of offer): they pile up`),
       ...stages.filter((s) => !(s.beepRms >= 0.1)).map((s) => `after publish ${s.publish} the viewer heard ${s.beeps} beep(s), median RMS ${s.beepRms}, under 0.1: no sound arrived`),
     ]
     return {variant: mode, stages, pageErrors: errors, problems}
@@ -540,9 +542,10 @@ const spread = (values) => (values.length ? lib.round(Math.max(...values) - Math
 
 function summarizeRepublish(allRuns) {
   const runs = allRuns.filter((r) => !r.failed)
+  const count = Math.max(0, ...runs.map((r) => r.stages.length))
   const at = (n) => runs.map((r) => r.stages[n]?.separation).filter(Number.isFinite)
   const rms = (n) => runs.map((r) => r.stages[n]?.beepRms).filter(Number.isFinite)
-  return {runs: runs.length, failedRuns: allRuns.length - runs.length, separation: [1, 2, 3].map((publish) => ({publish, perRun: at(publish - 1), median: lib.round(lib.median(at(publish - 1)), 3), beepRms: {perRun: rms(publish - 1), median: lib.round(lib.median(rms(publish - 1)), 3)}}))}
+  return {runs: runs.length, failedRuns: allRuns.length - runs.length, sections: runs.map((r) => r.stages.at(-1)?.shape?.sections ?? null), offerBytes: runs.map((r) => r.stages.at(-1)?.shape?.offerBytes ?? null), separation: Array.from({length: count}, (_, i) => i + 1).map((publish) => ({publish, perRun: at(publish - 1), median: lib.round(lib.median(at(publish - 1)), 3), beepRms: {perRun: rms(publish - 1), median: lib.round(lib.median(rms(publish - 1)), 3)}}))}
 }
 
 function summarizeVariant(allRuns) {
@@ -576,8 +579,9 @@ function printReport(report) {
     const s = report.summary[variant]
     if (variant === 'republish' || variant === 'reopen') {
       console.log(`\n--- ${variant}: ${runs.length} run(s) ---`)
-      console.log(`  viewer L/R separation after publish 1, 2, 3 (0.5 is stereo, 0 is mono): ${s.separation.map((x) => `${x.median} (${x.perRun.join(', ')})`).join('  |  ')}`)
-      console.log(`  viewer beep RMS after publish 1, 2, 3 (1kHz beep at 0.5 peak reads 0.35; silence 0): ${s.separation.map((x) => `${x.beepRms.median} (${x.beepRms.perRun.join(', ')})`).join('  |  ')}`)
+      console.log(`  viewer L/R separation after each publish (0.5 is stereo, 0 is mono): ${s.separation.map((x) => x.median).join(', ')}  (lowest of any run: ${Math.min(...s.separation.flatMap((x) => x.perRun))})`)
+      console.log(`  viewer beep RMS after each publish (1kHz beep at 0.5 peak reads 0.35; silence 0): ${s.separation.map((x) => x.beepRms.median).join(', ')}  (lowest of any run: ${Math.min(...s.separation.flatMap((x) => x.beepRms.perRun))})`)
+      console.log(`  the host's connection after the last publish: m-sections ${s.sections.join(', ')}, offer ${s.offerBytes.join(', ')} bytes per run (a signalling message may be 65536)`)
       runs.forEach((r, i) => {
         if (r.failed) return console.log(`  run ${i + 1}: FAILED ${r.failed}`)
         console.log(`  run ${i + 1}: ${r.stages.map((x) => `#${x.publish} sep ${x.separation}, ${x.audioSections} audio section(s)`).join('; ')}; receive fmtp '${r.stages.at(-1).receiveFmtp}'`)

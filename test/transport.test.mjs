@@ -74,7 +74,18 @@ class FakeConnection extends EventTarget {
       this.remoteDescription = description
     })
   }
-  getSenders() { return [] }
+  transceivers = [] // every one ever made, stopped or not
+  detached = [] // senders taken off with removeTrack()
+  addTransceiver(track, {direction, streams} = {}) {
+    const sender = {track, replaceTrack: async (next) => { sender.track = next }, setStreams() {}}
+    const transceiver = {sender, receiver: {track: {kind: track.kind}}, direction, streams, stopped: false, mid: String(this.transceivers.length), currentDirection: 'sendonly', stop() { this.stopped = true }}
+    this.transceivers.push(transceiver)
+    return transceiver
+  }
+  addTrack(track) { throw new Error('the peer must make its own transceiver (addTransceiver), not let addTrack pick one') }
+  removeTrack(sender) { this.detached.push(sender); sender.track = null }
+  getTransceivers() { return this.transceivers.filter((t) => !t.stopped) }
+  getSenders() { return this.getTransceivers().map((t) => t.sender) }
   close() { this.connectionState = 'closed' }
 }
 const settle = () => new Promise((resolve) => setImmediate(resolve))
@@ -95,12 +106,12 @@ test('an offer whose answer never arrives is sent again, and a repeated answer i
   await settle()
   assert.equal(offersSent().length, 2, 'unanswered after 3s: sent again')
   assert.equal(offersSent()[1].sdp, offersSent()[0].sdp, 'the same offer')
-  await peer.signal({type: 'answer', sdp: 'v=0 a=rtpmap:111 opus answer'})
+  await peer.signal({type: 'answer', sdp: 'v=0\r\nm=audio 9 X 111\r\na=rtpmap:111 opus answer'})
   assert.equal(peer.connection.signalingState, 'stable')
   t.mock.timers.tick(60_000)
   await settle()
   assert.equal(offersSent().length, 2, 'answered: no more repeats')
-  await peer.signal({type: 'answer', sdp: 'v=0 a=rtpmap:111 opus answer'}) // the repeat's answer
+  await peer.signal({type: 'answer', sdp: 'v=0\r\nm=audio 9 X 111\r\na=rtpmap:111 opus answer'}) // the repeat's answer
   assert.deepEqual(errors, [], 'a repeated answer is ignored, not an error that tears the connection down')
   peer.destroy()
 })
@@ -492,5 +503,109 @@ test('a description the browser refuses after editing is replaced by its own, ne
   assert.deepEqual(pair.log.errors, [])
   assert.equal(pair.a.connection.localDescription.sdp.includes('stereo=1'), false, 'the offer went out as the browser wrote it')
   assert.ok(pair.b.connection.localDescription.sdp.includes(OPUS_LINE), 'the other end is unaffected')
+  pair.a.destroy(); pair.b.destroy()
+})
+
+// ---------- stopping transceivers (M1.11) ----------
+
+test('removeStream and removeTrack stop the transceiver, so its m-section can be recycled instead of piling up', async () => {
+  const peer = createPeer(true, {rtcPolyfill: FakeConnection, trickleIce: true})
+  const pc = peer.connection
+  await settle()
+  const track = (kind) => ({kind, id: `${kind}-${++offers}`})
+  const stream = {id: 'film'}
+  const [audio, video] = [track('audio'), track('video')]
+  stream.getTracks = () => [audio, video]
+  peer.addStream(stream)
+  assert.equal(pc.transceivers.length, 2)
+  assert.ok(pc.transceivers.every((t) => t.direction === 'sendrecv' && t.streams[0] === stream), 'each made by addTransceiver, with the stream')
+  assert.equal(pc.getSenders().length, 2, 'two senders on the connection')
+  peer.removeStream(stream)
+  assert.ok(pc.transceivers.every((t) => t.stopped), 'both transceivers were stopped, not just detached')
+  assert.deepEqual(pc.detached, [], 'removeTrack() is not what ended them: that would leave the section behind')
+  assert.equal(pc.getSenders().length, 0, 'nothing left to send on')
+  // A track added on its own and taken off on its own.
+  const solo = track('audio')
+  peer.addTrack(solo, stream)
+  assert.equal(pc.getSenders().length, 1)
+  peer.removeTrack(solo)
+  assert.equal(pc.getSenders().length, 0)
+  assert.equal(pc.transceivers.filter((t) => t.stopped).length, 3)
+  // Taking off something that is not there is harmless.
+  peer.removeTrack(track('audio'))
+  peer.removeStream({id: 'other', getTracks: () => [track('audio')]})
+  assert.equal(pc.transceivers.length, 3)
+  peer.destroy()
+})
+
+test('a transceiver the other end sends on too is only detached, so its picture is not ended with ours', async () => {
+  const peer = createPeer(true, {rtcPolyfill: FakeConnection, trickleIce: true})
+  const pc = peer.connection
+  await settle()
+  const audio = {kind: 'audio', id: 'a-shared'}
+  peer.addTrack(audio, {id: 's'})
+  pc.transceivers[0].currentDirection = 'sendrecv' // negotiated both ways: a copy from before M1.11 reused it for its own share
+  peer.removeTrack(audio)
+  assert.equal(pc.transceivers[0].stopped, false)
+  assert.equal(pc.detached.length, 1)
+  peer.destroy()
+})
+
+test('a detached transceiver that never got a section is reused by the next track of its kind', async () => {
+  const peer = createPeer(true, {rtcPolyfill: FakeConnection, trickleIce: true})
+  const pc = peer.connection
+  await settle()
+  const first = {kind: 'audio', id: 'a-1'}
+  peer.addTrack(first, {id: 's'})
+  pc.transceivers[0].mid = null
+  peer.removeTrack(first)
+  const second = {kind: 'audio', id: 'a-2'}
+  peer.addTrack(second, {id: 's2'})
+  await settle()
+  assert.equal(pc.transceivers.length, 1, 'no second transceiver')
+  assert.equal(pc.transceivers[0].sender.track, second)
+  assert.equal(pc.transceivers[0].direction, 'sendrecv')
+  const video = {kind: 'video', id: 'v-1'}
+  peer.addTrack(video, {id: 's2'})
+  assert.equal(pc.transceivers.length, 2, 'another kind gets its own')
+  peer.destroy()
+})
+
+test('a transceiver that never got a section is only detached, not stopped (stopping it makes negotiation needed for good)', async () => {
+  const peer = createPeer(true, {rtcPolyfill: FakeConnection, trickleIce: true})
+  const pc = peer.connection
+  await settle()
+  const audio = {kind: 'audio', id: 'a-fresh'}
+  peer.addTrack(audio, {id: 's'})
+  pc.transceivers[0].mid = null // added, and no offer has been made yet
+  peer.removeTrack(audio)
+  assert.equal(pc.transceivers[0].stopped, false)
+  assert.equal(pc.detached.length, 1)
+  peer.destroy()
+})
+
+test('if stopping a transceiver is refused the sender is detached the old way', async () => {
+  const peer = createPeer(true, {rtcPolyfill: FakeConnection, trickleIce: true})
+  const pc = peer.connection
+  await settle()
+  const audio = {kind: 'audio', id: 'a-refuse'}
+  peer.addTrack(audio, {id: 's'})
+  pc.transceivers[0].stop = () => { throw new Error('InvalidStateError') }
+  peer.removeTrack(audio)
+  assert.equal(pc.detached.length, 1, 'removeTrack(sender) was the fallback')
+  peer.destroy()
+})
+
+test('an offer that only ends media sections (all rejected, no codecs) is answered, one with no media section at all is not', async () => {
+  // A host stopping its film with nothing yet in its place sends exactly this. It used to be dropped for having no
+  // a=rtpmap line, and the sender stayed in have-local-offer for good.
+  const pair = wiredPair()
+  await untilStable(pair)
+  const answersBefore = pair.log.a.filter((signal) => signal.type === 'answer').length
+  await pair.a.signal({type: 'offer', sdp: ['v=0', 'm=audio 0 UDP/TLS/RTP/SAVPF 0', 'a=mid:1', 'm=video 0 UDP/TLS/RTP/SAVPF 0', 'a=mid:2', ''].join('\r\n')})
+  assert.equal(pair.log.a.filter((signal) => signal.type === 'answer').length, answersBefore + 1, 'the all-rejected offer got its answer')
+  await pair.a.signal({type: 'offer', sdp: ['v=0', 'a=group:BUNDLE', ''].join('\r\n')})
+  assert.equal(pair.log.a.filter((signal) => signal.type === 'answer').length, answersBefore + 1, 'an SDP with no media section is still ignored')
+  assert.deepEqual(pair.log.errors, [])
   pair.a.destroy(); pair.b.destroy()
 })

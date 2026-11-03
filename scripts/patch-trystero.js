@@ -335,3 +335,64 @@ if (!opusPeer.includes(opusMarker)) {
   }
   fs.writeFileSync(peerPath, opusPeer + opusMarker)
 }
+
+// Media sections that go away (M1.11). RTCPeerConnection.removeTrack() only detaches the sender: the transceiver
+// keeps its m-section and its full codec list, and a later addTrack() never reuses a sender that has sent. So
+// every film opened in a session added an audio and a video section that never went away (measured in Electron
+// 44: about 10 KB of offer per file, over the 64 KiB a signalling message may have at the 7th film, where the
+// receive budget closes the connection to the viewer; a reused connection carries the growth from room to room).
+// transceiver.stop() lets the section be rejected and then recycled: 5 sections and under 20 KB after 25 files.
+// Four things go with it:
+//  - removeStream/removeTrack stop the transceiver (the other end's receiver track ends instead of going mute),
+//    unless the other end is sending on it too (currentDirection sendrecv: a copy from before this reused its
+//    receiving transceiver for its own share, which native addTrack does), when it is only detached; and
+//    unless it never got a section (no mid: added and taken off before any offer), when it is also only
+//    detached, because a stopped transceiver nothing can negotiate away keeps negotiation "needed" for good.
+//  - addTrack/addStream make their own transceiver (addTransceiver) instead of letting addTrack pick one of the
+//    receiving transceivers the other end made: stopping our film must not kill the share the other end put on
+//    the very same section. A detached transceiver that never got a section is reused first.
+//  - An offer that only ends sections (a host stopping its film, nothing yet in its place) has every section
+//    rejected, so no codec lines at all: the guard in signal() that drops a data-channel-era SDP "without
+//    media" looked for a=rtpmap and threw such an offer, and its answer, away, leaving the stopper in
+//    have-local-offer for good. It now looks for a media section (m=audio / m=video), rejected or not. (A copy
+//    from before this still ignores such an offer until the next one that has codecs; the end just reaches it
+//    later.)
+const stopMarker = '// watch-with-friends stop transceivers v2\n'
+let stopPeer = fs.readFileSync(peerPath, 'utf8')
+if (!stopPeer.includes(stopMarker)) {
+  const edits = [
+    ['\tpc.onnegotiationneeded = async () => createOffer(false);',
+     [
+       '\tconst stopSender = (sender) => {',
+       '\t\tconst transceiver = pc.getTransceivers().find((t) => t.sender === sender);',
+       '\t\ttry {',
+       '\t\t\tif (transceiver && transceiver.mid != null && transceiver.currentDirection !== "sendrecv") transceiver.stop();',
+       '\t\t\telse pc.removeTrack(sender);',
+       '\t\t} catch {',
+       '\t\t\ttry { pc.removeTrack(sender); } catch {}',
+       '\t\t}',
+       '\t};',
+       '\tconst addSender = (track, stream) => {',
+       '\t\tconst idle = pc.getTransceivers().find((t) => t.mid == null && t.sender.track === null && t.receiver.track.kind === track.kind);',
+       '\t\tif (idle) {',
+       '\t\t\tidle.sender.replaceTrack(track).catch(() => {});',
+       '\t\t\tidle.sender.setStreams(stream);',
+       '\t\t\tidle.direction = "sendrecv";',
+       '\t\t\treturn idle.sender;',
+       '\t\t}',
+       '\t\treturn pc.addTransceiver(track, { direction: "sendrecv", streams: [stream] }).sender;',
+       '\t};',
+       '\tpc.onnegotiationneeded = async () => createOffer(false);',
+     ].join('\n')],
+    ['forEach((sender) => pc.removeTrack(sender)),', 'forEach(stopSender),'],
+    ['\t\t\tif (sender) pc.removeTrack(sender);', '\t\t\tif (sender) stopSender(sender);'],
+    ['addStream: (stream) => stream.getTracks().forEach((track) => pc.addTrack(track, stream)),', 'addStream: (stream) => stream.getTracks().forEach((track) => addSender(track, stream)),'],
+    ['\t\taddTrack: (track, stream) => pc.addTrack(track, stream),', '\t\taddTrack: (track, stream) => addSender(track, stream),'],
+    ['!sdp.sdp?.includes("a=rtpmap")) return;', '!/(^|\\n)m=(audio|video) /.test(sdp.sdp ?? "")) return;'],
+  ]
+  for (const [before, after] of edits) {
+    if (stopPeer.split(before).length !== 2) throw new Error('Trystero stop-transceiver patch context changed: peer.mjs: ' + before.slice(0, 60))
+    stopPeer = stopPeer.replace(before, () => after)
+  }
+  fs.writeFileSync(peerPath, stopPeer + stopMarker)
+}

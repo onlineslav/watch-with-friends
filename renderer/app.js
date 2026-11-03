@@ -1324,15 +1324,53 @@ function showPicture(url) {
 // stopped its track, so every file after the first reached viewers with picture and no sound (M1.11).
 // Stopping a clone ends only that clone; the capture, and the element's audio into it, stay. When the
 // element's source changes, Chromium ends the capture's old tracks and adds new ones to the same stream:
-// the sink below follows that, publishing a clone of each new track and dropping the clone of each old one.
+// the sink below follows that. The old clone's sender waits a few seconds and takes the new clone with
+// replaceTrack (one audio section, the viewer's receiver and its track stay, nothing renegotiated); only
+// if nothing takes over is the sender let go.
 let elementCapture = null // {video, stream, sink}: the one capture of the host's <video>
+const RETIRED_CLONE_MS = 5000
 
 function captureElement(video) {
   if (elementCapture?.video === video) return elementCapture
   const capture = {video, stream: video.captureStream(), sink: null}
-  capture.stream.addEventListener('addtrack', ({track}) => capture.sink?.add(track))
+  capture.stream.addEventListener('addtrack', ({track}) => {
+    // A new file adds its audio track to the capture and leaves the last file's in it, live and silent
+    // (Chromium 152: one more per file, never ended): every audio track before the new one is stale.
+    const audio = capture.stream.getAudioTracks()
+    if (track.kind === 'audio') {
+      for (const stale of audio.slice(0, Math.max(0, audio.indexOf(track)))) {
+        capture.sink?.remove(stale)
+        stale.stop()
+      }
+    }
+    if (capture.sink) capture.sink.add(track)
+    else if (track.kind === 'video' && typeof MediaStreamTrackGenerator === 'function') track.stop() // nobody publishes: the picture is the frame generator's
+  })
   capture.stream.addEventListener('removetrack', ({track}) => capture.sink?.remove(track))
   return (elementCapture = capture)
+}
+
+// Every connection's transceivers that send this track. A transceiver is STOPPED, not just detached:
+// pc.removeTrack() leaves it, with its codec list, as an m-section nothing ever reuses, and 7 films' worth of
+// them pushed the offer past what a signalling message may be (the connection to the viewers was closed).
+function sendTransceiversOf(track) {
+  return Object.values(session.room?.getPeers() || {}).flatMap((pc) => pc.getTransceivers().filter((t) => t.sender.track === track))
+}
+
+// The same rules as the patched peer's stopSender (scripts/patch-trystero.js): one that never got a section (no
+// mid) or that the other end sends on too (currentDirection sendrecv: a copy from before this reused its receiving
+// transceiver for its own share) is only detached; stopping it would leave a transceiver nothing can negotiate
+// away, or end the other end's picture.
+function stopSendersOf(track) {
+  for (const pc of Object.values(session.room?.getPeers() || {})) {
+    for (const transceiver of pc.getTransceivers()) {
+      if (transceiver.sender.track !== track) continue
+      try {
+        if (transceiver.mid != null && transceiver.currentDirection !== 'sendrecv') transceiver.stop()
+        else pc.removeTrack(transceiver.sender)
+      } catch {}
+    }
+  }
 }
 
 function publishStream() {
@@ -1352,22 +1390,26 @@ function publishStream() {
   // Capture can end/replace tracks without changing the MediaSource. Retaining an
   // old audio sender leaves a silent track alongside its replacement on viewers.
   const clones = new Map() // capture track -> the clone published in its place
-  const drop = (source) => {
-    const clone = clones.get(source)
-    if (!clone) return
-    clones.delete(source)
-    if (session.stream === stream && stream.getTracks().includes(clone)) {
+  const retired = new Map() // clone whose source went away -> timer; its sender waits for the track that takes over
+  const live = (clone) => session.stream === stream && stream.getTracks().includes(clone)
+  const release = (clone) => {
+    clearTimeout(retired.get(clone))
+    retired.delete(clone)
+    if (live(clone)) {
+      // The room only lets go of tracks it was given one by one (addTrack), and these came with the stream
+      // (addStream): its removeTrack finds nothing for them, so the transceiver is stopped here as well.
       session.room?.removeTrack(clone)
-      // The room only lets go of tracks it was given one by one (addTrack); these came with the stream
-      // (addStream), so its removeTrack finds nothing to remove. Release the sender here, or the viewer keeps
-      // a silent track beside the new one, and plays whichever it finds first.
-      for (const pc of Object.values(session.room?.getPeers() || {})) {
-        const sender = pc.getSenders().find((s) => s.track === clone)
-        if (sender) try { pc.removeTrack(sender) } catch {}
-      }
+      stopSendersOf(clone)
       stream.removeTrack(clone)
     }
     clone.stop()
+  }
+  const retire = (source) => {
+    const clone = clones.get(source)
+    if (!clone) return
+    clones.delete(source)
+    if (live(clone)) retired.set(clone, setTimeout(() => release(clone), RETIRED_CLONE_MS))
+    else clone.stop()
   }
   const adopt = (source) => {
     if (clones.has(source) || source.readyState === 'ended') return null
@@ -1378,8 +1420,12 @@ function publishStream() {
     const clone = source.clone()
     if (clone.kind === 'video') clone.contentHint = 'motion'
     clones.set(source, clone)
-    source.addEventListener('ended', () => drop(source), {once: true})
+    source.addEventListener('ended', () => retire(source), {once: true})
     return clone
+  }
+  const send = (clone) => {
+    stream.addTrack(clone)
+    Promise.all(session.room.addTrack(clone, stream, {metadata: {claimedAt: session.claimedAt}})).then(tuneSenders, () => {})
   }
   for (const track of capture.stream.getTracks()) {
     const clone = adopt(track)
@@ -1390,11 +1436,24 @@ function publishStream() {
       if (session.stream !== stream) return
       const clone = adopt(track)
       if (!clone) return
-      for (const old of stream.getTracks()) if (old.readyState === 'ended') drop([...clones].find(([, c]) => c === old)?.[0])
+      const old = [...retired.keys()].find((c) => c.kind === clone.kind)
+      const senders = old ? sendTransceiversOf(old).map((t) => t.sender) : []
+      if (!old || !senders.length) {
+        for (const stale of [...retired.keys()]) release(stale)
+        return send(clone)
+      }
+      // The same sender carries the new clone: no new m-section, no renegotiation, the viewer's track stays.
+      clearTimeout(retired.get(old))
+      retired.delete(old)
+      stream.removeTrack(old)
       stream.addTrack(clone)
-      Promise.all(session.room.addTrack(clone, stream, {metadata: {claimedAt: session.claimedAt}})).then(tuneSenders, () => {})
+      Promise.all(senders.map((sender) => sender.replaceTrack(clone))).then(() => old.stop(), () => {
+        stopSendersOf(old)
+        old.stop()
+        if (live(clone)) Promise.all(session.room.addTrack(clone, stream, {metadata: {claimedAt: session.claimedAt}})).then(tuneSenders, () => {})
+      })
     },
-    remove: drop,
+    remove: retire,
   }
   if (session.peers.size) Promise.all(session.room.addStream(stream, {metadata: {claimedAt: session.claimedAt}})).then(tuneSenders, () => {})
 }
@@ -1405,8 +1464,10 @@ function unpublishStream() {
   session.stream = null
   if (elementCapture) elementCapture.sink = null
   try {
-    session.room?.removeStream(stream)
+    session.room?.removeStream(stream) // stops the transceivers of every track that came with it (patched peer.mjs)
   } catch {}
+  // The room remembers tracks it was given one by one until the room is left; forget these now.
+  for (const track of stream.getTracks()) try { session.room?.removeTrack(track) } catch {}
   // Only what was published: the clones and the frame generator. The capture itself is kept (see captureElement).
   stream.getTracks().forEach((track) => track.stop())
   session.captured = null

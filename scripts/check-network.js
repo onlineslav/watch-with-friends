@@ -803,14 +803,35 @@ app.whenReady().then(async () => {
     // of the same element lost its audio to the first). Each viewer must hear the new host's file, not the last.
     const heardFrom = (host, claimBefore) => `(() => { const s = __test.session; const tracks = document.getElementById('remote-video').srcObject?.getAudioTracks() || []; return s.role === 'viewer' && s.remote?.claimedAt > ${claimBefore} && s.peerStreams.get(s.hostId)?.claimedAt === s.remote.claimedAt && tracks.some((t) => t.readyState === 'live' && !t.muted) && __test.audioLevel() > 0.01 })()`
     await Promise.all([a, b].map((win) => until(win, heardFrom(c, 0), 45000, 'viewers hear the takeover file')))
-    for (const [index, name] of ['second', 'third'].entries()) {
-      const copy = path.join(temporary, `${name}-file.mp4`)
+    // Ten files on one connection: each one audible, and the connection's size bounded. pc.removeTrack() used to
+    // leave an audio and a video m-section behind per file (about 10 KB of offer each); the offer passed the 64 KiB a
+    // signalling message may have at the 7th film and the receive budget closed the connection to every viewer.
+    const MAX_TRANSCEIVERS = 6 // one film is 2 (audio + video); a source swap or a file change in flight briefly 4; 6 leaves room for a recycled pair
+    const hostConnections = () => run(c, `JSON.stringify(Object.values(__test.session.room.getPeers()).map((pc) => ({transceivers: pc.getTransceivers().length, audioSenders: pc.getSenders().filter((s) => s.track?.kind === 'audio' && s.track.readyState === 'live').length, sections: (pc.localDescription.sdp.match(/^m=/gm) || []).length, offerBytes: JSON.stringify({type: pc.localDescription.type, sdp: pc.localDescription.sdp}).length})))`)
+    let largest = 0
+    for (let n = 2; n <= 11; n++) {
+      const copy = path.join(temporary, `file-${n}.mp4`)
       fs.copyFileSync(video, copy)
       const claimBefore = await run(a, '__test.session.remote.claimedAt')
       await run(c, `__test.hostFile(${JSON.stringify(copy)})`)
-      await Promise.all([a, b].map((win) => until(win, heardFrom(c, claimBefore), 45000, `viewers hear the ${name} file`)))
+      await Promise.all([a, b].map((win) => until(win, heardFrom(c, claimBefore), 45000, `viewers hear file ${n}`)))
+      // A stopped transceiver goes once the negotiation that ends it is done: give that a moment.
+      let shapes = JSON.parse(await hostConnections())
+      for (let waited = 0; waited < 10000 && shapes.some((shape) => shape.audioSenders !== 1 || shape.transceivers > MAX_TRANSCEIVERS); waited += 250) {
+        await new Promise((resolve) => setTimeout(resolve, 250))
+        shapes = JSON.parse(await hostConnections())
+      }
+      for (const shape of shapes) {
+        assert.ok(shape.transceivers <= MAX_TRANSCEIVERS, `file ${n}: ${shape.transceivers} transceivers on one connection (bound ${MAX_TRANSCEIVERS})`)
+        assert.ok(shape.sections <= MAX_TRANSCEIVERS, `file ${n}: ${shape.sections} m-sections in the offer (bound ${MAX_TRANSCEIVERS})`)
+        assert.equal(shape.audioSenders, 1, `file ${n}: one live audio sender per peer (${JSON.stringify(shape)})`)
+        largest = Math.max(largest, shape.offerBytes)
+      }
     }
-    console.log('PASS: A second and a third file opened by the host are audible to both viewers each time')
+    const final = JSON.parse(await hostConnections())
+    console.log(`  after 11 files on one connection: ${final.map((s) => `${s.transceivers} transceivers, ${s.sections} m-sections, offer ${s.offerBytes} bytes`).join(' | ')} (largest offer seen ${largest} bytes; a signalling message may be 65536)`)
+    assert.ok(largest < 32768, `the offer stays far below the 64 KiB signalling limit (${largest} bytes)`)
+    console.log('PASS: Ten more files on one connection are each audible to both viewers, with bounded transceivers, one live audio sender per peer and a small offer')
     await run(c, `__test.hostFile(${JSON.stringify(path.join(temporary, 'missing.mp4'))})`)
     await Promise.all([a, b].map((win) => until(win, 'Boolean(__test.session.remote?.error) && document.getElementById("spinner").hidden')))
     console.log('PASS: A failed host file reaches both viewers as a terminal error')

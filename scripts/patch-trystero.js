@@ -194,3 +194,28 @@ patch('media.mjs', [
 			const [next] = pending.splice(index, 1);
 			emitTrack(id, next.key, track, stream, next.metadata);`],
 ])
+
+// A connection that stays "disconnected" for 5s is given up on: every room drops the peer. Upstream
+// only reported that (emitClose) and left the RTCPeerConnection open, and a shared connection's
+// manager deliberately doesn't destroy a peer that reported its own close. So when the network came
+// back a moment after the deadline, the connection recovered with nobody on this side using it,
+// while the other side never saw a close and kept treating us as still in the room: a viewer sat on
+// a frozen frame for nine minutes after the host's app had dropped them (both logs, 0.7.1, with the
+// host's connection back 150ms after its 5s deadline and the viewer's back after 2.4s). Giving up now
+// closes the connection, so the other side's data channel closes too (or its own consent checks
+// fail) and both apps drop each other and reconnect through discovery. Separate marker, so
+// already-hardened installs receive it.
+const peerPath = path.join(core, 'dist/peer.mjs')
+const giveUpMarker = '// watch-with-friends close abandoned connections v1\n'
+let peerText = fs.readFileSync(peerPath, 'utf8')
+if (!peerText.includes(giveUpMarker)) {
+  const before = 'if (pc.connectionState === "disconnected" || pc.iceConnectionState === "disconnected") emitClose();'
+  const after = `if (pc.connectionState === "disconnected" || pc.iceConnectionState === "disconnected") {
+					dataChannel?.close();
+					pc.close();
+					emitClose();
+				}`
+  if (!peerText.includes(before)) throw new Error('Trystero abandoned-connection patch context changed')
+  // Appended, not prepended: the hardening patch above recognises a patched file by its first line.
+  fs.writeFileSync(peerPath, peerText.replace(before, after) + giveUpMarker)
+}

@@ -109,3 +109,69 @@ test('group health uses one complete peer record', () => {
   const bad = {rttMs: 150, sender: {limit: 'bandwidth'}, receiver: {lossPct: 10}}
   assert.equal(aggregateLinks([good, bad]), bad)
 })
+
+// Replays of a real night (0.7.1 logs, host and viewer): the cap went 4 -> 6.1 -> 7.7 Mbps in two
+// seconds on an estimate of 7.7-8.9 Mbps, the viewer's link choked at ~5.9 Mbps actually sent (82%
+// loss, 12.8s ping), and then the viewer's reports stopped arriving while the cap only held.
+const clean = {lossPct: 0, freezes: 0}
+function feed(quality, reports, extra = {}) {
+  for (const receiver of reports) quality = chooseSendQuality(quality, {receiver, receiverAt: (quality?.receiverAt ?? 0) + 2000, capacity: 8e6, ...extra})
+  return quality
+}
+
+test('above the starting rate the cap climbs one probe at a time, not on the bandwidth estimate', () => {
+  let quality = feed({bitrate: 4e6}, [clean, clean, clean])
+  assert.equal(quality.decision, 'recovery')
+  assert.equal(quality.bitrate, 5e6, 'a 25% probe, not a jump to 80% of an 8 Mbps estimate')
+  quality = feed(quality, [clean])
+  assert.equal(quality.bitrate, 5e6, 'the first report after a raise mostly predates it')
+  quality = feed(quality, [clean])
+  assert.equal(quality.bitrate, 6.25e6, 'two fresh clean reports later, the next probe')
+})
+
+test('below the starting rate recovery still uses the estimate', () => {
+  const quality = feed({bitrate: 1e6, calmMs: 4000}, [clean])
+  assert.equal(quality.bitrate, 2e6, 'doubles toward 80% of the estimate')
+})
+
+test('a viewer report that stops arriving during playback lowers the cap', () => {
+  const held = chooseSendQuality({bitrate: 6e6, receiverAt: 1000}, {receiver: clean, receiverAt: 1000, feedbackAgeMs: 2500})
+  assert.equal(held.decision, 'duplicate-feedback', 'one late report is normal: the two clocks drift')
+  assert.equal(held.bitrate, 6e6)
+  let quality = chooseSendQuality(held, {receiver: clean, receiverAt: 1000, feedbackAgeMs: 4500})
+  assert.equal(quality.decision, 'stale-feedback')
+  assert.equal(quality.bitrate, 4.5e6)
+  quality = chooseSendQuality(quality, {receiver: clean, receiverAt: 1000, feedbackAgeMs: 6500})
+  assert.equal(quality.bitrate, 3.375e6, 'keeps backing off while the reports stay missing')
+  const paused = chooseSendQuality({bitrate: 6e6, receiverAt: 1000}, {active: false, receiver: clean, receiverAt: 1000, feedbackAgeMs: 60_000})
+  assert.equal(paused.bitrate, 6e6, 'paused playback is not trouble')
+})
+
+test('heavy loss halves the cap', () => {
+  assert.equal(chooseSendQuality({bitrate: 6e6}, {receiver: {lossPct: 5, freezes: 0}}).bitrate, 4.5e6)
+  assert.equal(chooseSendQuality({bitrate: 6e6}, {receiver: {lossPct: 60, freezes: 0}}).bitrate, 3e6)
+})
+
+test('after a stall the cap stays below what was being sent when it began, for a minute of calm', () => {
+  let quality = chooseSendQuality({bitrate: 7.67e6, receiverAt: 0}, {receiver: {lossPct: 0, freezes: 1}, receiverAt: 2000, sentBps: 5.9e6})
+  assert.equal(quality.failedAt, 5.9e6, 'the rate really going out, not the 7.67 Mbps cap above it')
+  quality = chooseSendQuality(quality, {receiver: {lossPct: 0, freezes: 1}, receiverAt: 4000, sentBps: 3e6})
+  assert.equal(quality.failedAt, 5.9e6, 'a second cut in the same episode keeps where it began')
+  let peak = 0
+  for (let t = 2; t <= 30; t++) {
+    quality = chooseSendQuality(quality, {receiver: clean, receiverAt: 4000 + t * 2000, capacity: 9e6})
+    peak = Math.max(peak, quality.bitrate)
+  }
+  assert.ok(peak <= 5.9e6 * 0.85 + 1, `climbed to ${peak} within a minute of the stall`)
+  for (let t = 31; t <= 45; t++) quality = chooseSendQuality(quality, {receiver: clean, receiverAt: 4000 + t * 2000, capacity: 9e6})
+  assert.equal(quality.failedAt, null, 'forgotten after a minute of clean playback')
+  assert.ok(quality.bitrate > 5.9e6, `free to probe again, at ${quality.bitrate}`)
+})
+
+test('a long run of cuts down to the floor does not pin recovery there', () => {
+  let quality = {bitrate: 4e6}
+  for (let i = 0; i < 12; i++) quality = chooseSendQuality(quality, {receiver: {lossPct: 5}, receiverAt: i * 2000})
+  assert.equal(quality.bitrate, 300000)
+  for (let i = 12; i < 22; i++) quality = chooseSendQuality(quality, {receiver: clean, receiverAt: i * 2000, capacity: 6e6})
+  assert.ok(quality.bitrate >= 2e6, `only ${quality.bitrate} after 20 clean seconds`)
+})

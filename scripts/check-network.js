@@ -272,7 +272,10 @@ app.whenReady().then(async () => {
       await run(a, '__test.qualityProbe.capacity = 1200000; __test.qualityProbe.lossPct = 0; __test.qualityProbe.freezes = 0; true')
       // Advance 30 seconds of clean feedback without waiting for the periodic timer.
       for (let i = 0; i < 15; i++) await qualitySample()
-      assert.ok((await videoEncoding()).maxBitrate >= 4000000)
+      // For a minute after a stall the ceiling stays under 85% of the rate that stalled (4 Mbps
+      // here), which still leaves a 720p clip its full picture.
+      const recovered = (await videoEncoding()).maxBitrate
+      assert.ok(recovered >= 3000000 && recovered <= 3400000, `ceiling ${recovered} after 30 clean seconds`)
       assert.equal((await videoEncoding()).scaleResolutionDownBy, 1)
       // Native congestion control can take longer than our accelerated policy
       // samples to reopen its own resolution. Keep the clip playing through it.

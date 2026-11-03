@@ -292,3 +292,63 @@ test('pooled offers older than offerTtl are replaced, never regenerated with an 
   assert.ok(!young.offerCalls.includes(true), 'no recycled peer is restarted')
   pool.destroy()
 })
+
+// A connection given up on after 5s "disconnected" must be closed, not just reported: on a shared
+// connection nobody else closes it, so it recovered a moment later with this side's rooms gone and
+// the other side still treating us as present (a viewer stuck on a frozen frame for 9 minutes).
+function dropConnection(peer) {
+  peer.connection.connectionState = 'disconnected'
+  peer.connection.iceConnectionState = 'disconnected'
+  peer.connection.onconnectionstatechange()
+}
+
+test('a connection still disconnected after 5s is closed, so the other side drops us too', async (t) => {
+  t.mock.timers.enable({apis: ['setTimeout']})
+  const peer = createPeer(true, {rtcPolyfill: FakeConnection, trickleIce: true})
+  let closes = 0
+  peer.setHandlers({signal() {}, close: () => closes++})
+  await settle()
+  dropConnection(peer)
+  t.mock.timers.tick(4999)
+  assert.equal(closes, 0, 'not given up on before 5s')
+  assert.notEqual(peer.connection.connectionState, 'closed')
+  t.mock.timers.tick(1)
+  assert.equal(closes, 1, 'rooms are told once')
+  assert.equal(peer.connection.connectionState, 'closed', 'and the connection itself is closed, not left to recover unowned')
+  peer.destroy()
+  assert.equal(closes, 1, 'destroying afterwards does not report a second close')
+})
+
+test('a connection that recovers within 5s is kept', async (t) => {
+  t.mock.timers.enable({apis: ['setTimeout']})
+  const peer = createPeer(true, {rtcPolyfill: FakeConnection, trickleIce: true})
+  let closes = 0
+  peer.setHandlers({signal() {}, close: () => closes++})
+  await settle()
+  dropConnection(peer)
+  t.mock.timers.tick(2400)
+  peer.connection.connectionState = 'connected'
+  peer.connection.iceConnectionState = 'connected'
+  peer.connection.onconnectionstatechange()
+  t.mock.timers.tick(60_000)
+  assert.equal(closes, 0)
+  assert.equal(peer.connection.connectionState, 'connected')
+  peer.destroy()
+})
+
+test('a shared connection given up on is closed and every room on it drops the peer', async (t) => {
+  t.mock.timers.enable({apis: ['setTimeout']})
+  const manager = new SharedPeerManager()
+  const peer = createPeer(true, {rtcPolyfill: FakeConnection, trickleIce: true})
+  const shared = manager.register('app', 'friend', peer, 100_000)
+  const left = []
+  for (const room of ['pair', 'media']) {
+    manager.bind(room, Promise.resolve(`${room}-token`), shared, {onDetach() {}}).proxy.setHandlers({close: () => left.push(room)})
+  }
+  await settle()
+  dropConnection(peer)
+  t.mock.timers.tick(5000)
+  assert.deepEqual(left.sort(), ['media', 'pair'])
+  assert.equal(peer.connection.connectionState, 'closed')
+  assert.equal(manager.get('app', 'friend'), undefined)
+})

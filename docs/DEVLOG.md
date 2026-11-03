@@ -22,3 +22,4 @@
   7.6s → 0.9s); compat harness fixed, 10/10 vs v0.7.1, v0.8.0, v0.8.2. Milestone audit done (2 HIGH, 4 MEDIUM, all
   handled). Run ends with 8 verified, 4 needing Aya (M1.5, M1.6, M1.7, M1.10) and M1.8 for Aya + Lenna. 0.8.3 held:
   the network probe from another session (e6e60a4) runs without the telemetry checkbox. Helper tokens ≈ 5.3M.
+- 0.8.3: looped films stay audible, 60fps films ~58fps at the viewer, 1s recovery after a loss burst, network probe (router + 1.1.1.1 every 200ms, only with the telemetry checkbox on), viewer log lines say role viewer.

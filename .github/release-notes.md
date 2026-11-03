@@ -1,14 +1,13 @@
-## What's new in 0.8.2
+## What's new in 0.8.3
 
 Windows users and Mac users on 0.5.3 or later receive this release through the in-app updater. Mac users on 0.5.2 or earlier should install the DMG below once to enable future in-app updates.
 
-- **Stereo sound for viewers.** Until now everyone watching heard mono, even though the host was sending stereo. Films and shares now arrive in full stereo. (Watching a host who is still on an older version stays mono until they update.)
-- **The second film has sound.** When the host opened another file, or the playlist moved to the next item, viewers could see the picture but hear nothing. Fixed.
-- **No more dropping out after a few films.** Every film opened in one evening made the connection a little heavier, and around the seventh one everyone watching got disconnected. That no longer builds up.
-- **Rejoining works again.** Leaving a room and coming back could leave you with sound but a black picture, or (on Mac) not reconnecting to the others at all. Both fixed.
-- **Smarter audio on a congested connection.** If the host's upload is genuinely full, sound steps down to 128 kbps instead of breaking up, and comes back on its own. With **Keep audio quality** on (the default) it's never lowered.
+- **Looped films keep their sound.** With **Loop** on, viewers could lose the sound a few seconds into the second time round. Fixed, for short clips and full-length films alike.
+- **Smoother 60fps video.** A 60fps film reached viewers at about 49 frames a second. It now arrives at about 58.
+- **Faster recovery after a hiccup.** After a short burst of bad connection the picture went soft for several seconds before coming back to full quality. It now comes back in about a second.
+- **Better problem reports.** With **Send telemetry for development** on, the app now also checks your own router and internet connection while you watch, so a stutter can be traced to whoever's connection caused it.
 
-Also in 0.8.1: sound and picture line up, the **X** key marks a bad moment, and better problem reports. See the 0.8.1 release for details.
+Also in 0.8.2: stereo sound for viewers, the second film has sound, no more dropping out after a few films. See the 0.8.2 release for details.
 
 ## Download
 

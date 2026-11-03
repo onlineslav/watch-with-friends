@@ -70,7 +70,7 @@ Gate: no
 Evidence:
 
 ### M1.2 Comprehensive measurements
-Status: in progress
+Status: verified
 Story: When something goes wrong, the log already says whether it was the network, the computer, the encoder or the
 audio path, so nobody has to reproduce it to find out.
 Done when (each as fields on the existing 2s samples or a once-per-session event, documented in CLAUDE.md):
@@ -94,7 +94,15 @@ Likely failures:
 - Line size: samples grow; keep each under the 4000-byte line cap (`shared/log.js`).
 Out of scope: changing any behaviour based on these numbers (later cards).
 Gate: no
-Evidence:
+Evidence: 69ca220. Rerun by orchestrator: `npm test` 299/299; `npm run test:logging` ok; `check-network.js` exit 0, 43
+PASS, `checkMeasurements` asserts every new field in the real log (no NaN/undefined). Page profile: full
+`sampleConnection` 1.39ms host / 0.98ms viewer (HEAD before: 4.24/3.97ms); in-page JS per tick host median 1.9ms, max
+2.2ms (cold JIT). Lines: viewer-sample 832 B, host-sample 868 B, machine-sample 324 B, link 317 B, machine/static
+1002 B. Real values seen: audio `jb` 248ms, `out`/`base` 30/10ms, ffmpeg 15.8x (nvenc), Opus remote ch2 st1 br510000
+fec1. Gap: `estimatedPlayoutTimestamp` is undefined in loopback Chromium, so `aEpt`/`vEpt`/`av` are unit-tested only.
+Decided: machine numbers in one `machine-sample` per tick; slow facts in change-only `link` and per-room
+`machine/static` events; SDP re-read on stream change and every 30s. LOW: host per-tick max 2.2ms is at the 2ms bar;
+re-check at the milestone audit with 3+ viewers.
 
 ### M1.3 Session scorecard and release comparison
 Status: todo

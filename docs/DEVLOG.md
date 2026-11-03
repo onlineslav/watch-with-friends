@@ -7,3 +7,4 @@
   alone. New notes were filed as B1 in `docs/BUGS.md` and under **Later** in `docs/TODO.md`; notes already built
   (simultaneous shares, whiteboard, Ableton window audio, sending the log) were skipped.
 - `docs/PLAN.md` doesn't exist; the milestone's Must work list stands in for it.
+- M1.2 verified (69ca220, workflow-builder, 1 attempt after a usage-limit pause; ~260k tokens). Sample cost 1.39ms host / 0.98ms viewer, down from 4.2/4.0ms.

@@ -169,6 +169,9 @@ Decided (orchestrator, 2026-11-03, under Aya's "easy for development" rule; over
 - "≤40ms" is measured up to the Web Audio output, including the latency the OS reports (`outputLatency`). Extra
   latency a device doesn't report (Bluetooth) is out of scope, and so is the host's own local playback (the
   `<video>` element syncs itself).
+Decided (orchestrator, 2026-11-03): the share variant's stand-in source (canvas frames through a
+`MediaStreamTrackGenerator` + PCM through the real `'app'` audio path via `SVP_APP_AUDIO_FAKE`) is accepted; real
+window capture is confirmed by the real session in M1.8 instead. No loss-injection option yet: M1.6/M1.7 add it.
 Gate: no
 Evidence:
 
@@ -228,6 +231,11 @@ Done when:
   math uses the video delay).
 - Live telemetry from a real session shows the offset field stays near zero.
 - Aya check: watch a film with Lenna; dialogue matches lips.
+- (M1.4 bench, before) Film median +41–48ms (sound late), p95 ~57ms; share −627 to −709ms (sound ~650ms EARLY:
+  the picture arrives ~730–816ms late with audio, 53ms late without it — suspect WebRTC lip-sync holding video for
+  an audio track whose capture timestamps are on a different clock, e.g. `renderer/app-audio.mjs` AudioData vs the
+  video generator's `performance.now()` stamps). Telemetry `s.av` (11–22ms) does not see the share gap: fix or
+  replace it so live telemetry shows the real offset.
 Likely failures:
 - Delaying video by the output latency while `jitterBufferTarget` also moves: the two must not double-count.
 Gate: no
@@ -245,6 +253,11 @@ Done when:
   a recorded 0.8.0 offer).
 - Under simulated loss (bench option), audio degrades by bitrate before it drops out.
 - Aya check: listen to a music-heavy scene with Lenna.
+- (M1.4 bench) The viewer hears MONO: L/R separation 0 at the viewer's tap (0.5 at the host's) in all runs; the
+  host's send fmtp has `stereo=1`, the viewer's receive fmtp is only `minptime=10;useinbandfec=1`. Fix so the bench
+  shows separation at the viewer, and still negotiates with 0.8.0.
+- Add a loss-injection option to `npm run bench` (e.g. a local UDP relay/TURN in the harness, or forcing relay
+  candidates through a lossy proxy) — needed here and in M1.7.
 Likely failures:
 - Munging the remote description on one side only.
 Gate: no

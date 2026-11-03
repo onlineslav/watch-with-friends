@@ -346,7 +346,7 @@ nothing in Electron 44); ladder ignores the first 30s of a connection and a band
 estimate. LOW: with keep-audio off, random loss can still look like congestion to libwebrtc and step to 128 kbps.
 Waiting on: Aya's check (music-heavy film with Lenna).
 
-### M1.7 Smooth, sharp video under real conditions [feel]
+### M1.7 Smooth, sharp video under real conditions [feel] [wire]
 Status: in progress
 Story: The picture stays smooth and as sharp as the connection allows, and recovers quickly after a hiccup.
 Done when:
@@ -449,6 +449,11 @@ Done when:
   republishing, and M1.11 now keeps one `captureStream()` per element whose tracks may end on `ended`.
 - If real: fixed, and `test:network` or the bench loops a short film ≥5 times asserting the viewer's audio level each
   repeat (and the "loop restarts must not look like pauses" rule in CLAUDE.md still holds).
+- (milestone audit, MEDIUM) After a loop the capture's track list is empty, and `publishStream` builds only from it
+  (`app.js:1453`) after unpublishing the clones that still carried sound, so a republish without a new file (a claim
+  bump in `broadcastState`, `activatePreview`) sends no audio until the next file. Fix: carry the previous publish's
+  live clone over when the capture has no live track of that kind; `test:network` loops twice, forces a republish and
+  checks audio.
 Gate: no
 Evidence:
 
@@ -465,6 +470,19 @@ timestamp fix isn't her cause. Start the review from the film path: the viewer's
 video wait, +42 → +16.5ms on the bench) and film audio quality (captureStream audio → Opus, mono at the viewer: M1.6).
 Gate: no
 Evidence:
+
+### Milestone audit (2026-11-03, code read while M1.7 ran)
+- HIGH M1.12 had code (3b70980) but no card evidence or audit → attempt 2 (loop + republish) then item audit.
+- HIGH 0.7.x never compat-tested against the M1 wire changes, nor 0.8.1/0.8.2 → orchestrator runs `test:compat` against
+  v0.7.1 and v0.8.2 after M1.7.
+- MEDIUM `scripts/session-report.js:172` uses `s.av` first (CLAUDE.md: unreliable) → use `s.off`, label `[off]`.
+- MEDIUM CLAUDE.md lacks M1.7's ghost-attach patch, `peer-stream.mjs`, `sender-parameters.mjs`, `source-buffer.mjs`
+  `whenIdle`, the new log events, and `s.off` in the field list → M1.7 builder.
+- MEDIUM share A/V margin thin on the newest bench (run medians 68.6/16.7/32.4ms) → final `npm run bench` on final HEAD.
+- LOW 2ms sample cost proven only on the dev machine → read `machine-sample.cost` from Lenna's log in M1.8.
+- LOW a peer's mark note lands in the receiver's log and is uploaded if the receiver's box is on. Decided
+  (orchestrator, Aya's "easy for development"): allowed; host logs already carry viewers' reports.
+- M1.7 gets `[wire]` (ghost-attach changes which signals from other copies are honoured).
 
 ## Aya's checks
 

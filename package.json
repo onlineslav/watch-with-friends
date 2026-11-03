@@ -17,6 +17,7 @@
     "test:logging": "npm run bundle && node scripts/electron.js scripts/check-logging.js",
     "diagnostics": "node scripts/diagnostics.js",
     "bench": "node scripts/patch-trystero.js && node scripts/electron.js scripts/bench.js",
+    "status": "node scripts/status-page.js",
     "test:network": "node scripts/patch-trystero.js && node scripts/electron.js scripts/check-network.js",
     "test:compat": "node scripts/patch-trystero.js && node scripts/electron.js scripts/check-compat.js",
     "test:live": "npm run bundle && node scripts/electron.js scripts/check-live.js",

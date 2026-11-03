@@ -45,6 +45,7 @@ const options = {
   seed: Number(flag('seed', 1)),
   count: Number(flag('count', 0)), // fewer events than the full 28, for working on the bench (not a result)
   shareAudio: String(flag('share-audio', 'app')), // 'none' shares the picture alone: how the video behaves without the audio beside it
+  shareUptimeS: Number(flag('share-uptime-s', 15)), // the share starts only after both pages have been up this long, as in real use (a fresh page hides a timestamp-base bug)
   keep: Boolean(flag('keep', false)),
   raw: Boolean(flag('raw', false)), // also write every frame and beep to a .raw.json beside the report
 }
@@ -267,7 +268,7 @@ function telemetryOf(selfId) {
   const samples = lines.filter((e) => e.ev === 'viewer-sample' && e.self === selfId && e.s)
   const steady = samples.slice(5) // the first ten seconds are ramp-up
   const col = (key) => steady.map((e) => e.s[key]).filter(Number.isFinite)
-  return {samples: samples.length, avSkewMedianMs: lib.round(lib.median(col('av')), 1), avSkewP95AbsMs: lib.round(lib.percentile(col('av').map(Math.abs), 0.95), 1), audioJitterBufferMs: lib.round(lib.median(col('aJb')), 1), videoJitterBufferMs: lib.round(lib.median(col('vJb')), 1), reportedOutMs: lib.round(lib.median(col('out')), 1), reportedBaseMs: lib.round(lib.median(col('base')), 1)}
+  return {samples: samples.length, avSkewMedianMs: lib.round(lib.median(col('av')), 1), avSkewP95AbsMs: lib.round(lib.percentile(col('av').map(Math.abs), 0.95), 1), estimatedOffsetMedianMs: lib.round(lib.median(col('off')), 1), estimatedOffsetP95AbsMs: lib.round(lib.percentile(col('off').map(Math.abs), 0.95), 1), audioJitterBufferMs: lib.round(lib.median(col('aJb')), 1), videoJitterBufferMs: lib.round(lib.median(col('vJb')), 1), reportedOutMs: lib.round(lib.median(col('out')), 1), reportedBaseMs: lib.round(lib.median(col('base')), 1)}
 }
 
 function transportOf(from, to, sender, schedule) {
@@ -361,6 +362,10 @@ async function runShare(env, runIndex) {
   process.env.BENCH_STATS_FILE = statsFile
   try {
     const sharerId = await run(sharer, '__test.selfId')
+    // A share is started well into an app's life, not in its first seconds: WebRTC's lip-sync compares the
+    // audio track's timestamps with the video's performance.now() stamps, so a bench that shares at 5s of
+    // uptime hides what a 15-minute-old app does. Both pages must be this old before the share starts.
+    for (const win of [sharer, viewer]) await until(win, `performance.now() >= ${options.shareUptimeS * 1000}`, options.shareUptimeS * 1000 + 30000, `the page is ${options.shareUptimeS}s old`)
     await Promise.all([run(viewer, '__bench.installTap()')])
     await run(sharer, `__bench.installWindow(${JSON.stringify({fps: env.schedule.fps, flashFrames: lib.FLASH_FRAMES, events: env.schedule.events})})`)
     await run(sharer, `__test.shareSettings.audioDeviceId = ${JSON.stringify(options.shareAudio)}; true`)
@@ -430,7 +435,7 @@ function printReport(report) {
       const t = r.transport
       console.log(`  run ${i + 1}: n=${o.n}/${r.viewer.expectedSteady} median ${f(o.medianMs, 'ms')} p95 ${f(o.p95AbsMs, 'ms')} worst ${f(o.worstMs, 'ms')} sd ${f(o.stddevMs, 'ms')} drift ${f(r.viewer.offset.driftMsPerS, 'ms/s')}` +
         (r.host ? `   | host's own playback: median ${f(r.host.offset.steady.medianMs, 'ms')} (n=${r.host.offset.steady.n})` : '') +
-        `   | telemetry s.av median ${f(r.telemetry.avSkewMedianMs, 'ms')} (transport skew, not subtracted)`)
+        `   | telemetry s.off (estimate, sound late) median ${f(r.telemetry.estimatedOffsetMedianMs, 'ms')}, s.av (capture-time skew, not subtracted) median ${f(r.telemetry.avSkewMedianMs, 'ms')}`)
       const c = t.audio.concealment
       console.log(`         audio: ${f(t.audio.codecChannels)} ch (receive fmtp '${f(t.audio.fmtp)}', send fmtp '${f(t.audio.sentFmtp)}'; stereo separation at the viewer's tap ${f(r.viewer.stereo.separation)}${r.host ? `, at the host's ${f(r.host.stereo.separation)}` : ''}; 0.5 is two independent channels, 0 is mono), received ${f(t.audio.receivedKbps, ' kbps')} of ${f(t.audio.configuredMaxKbps, ' kbps')} cap (sent ${f(t.audio.sentKbps, ' kbps')}), concealed (conc-sil) ${f(c?.pct, '%')} over ${f(t.windowS, 's')} (${f(c?.netSamples)} of ${f(c?.totalSamples)} samples), lost ${f(t.audio.packetsLost)}, beep RMS ${f(lib.round(r.viewer.levelRms, 3))}`)
       const v = r.viewer.video

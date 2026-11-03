@@ -115,3 +115,12 @@ export function outputSize(box, limit = MAX_OUTPUT) {
   const even = (value) => Math.max(2, Math.floor((value * scale) / 2) * 2)
   return {width: even(box.width), height: even(box.height), scale}
 }
+
+// A frame stamp (microseconds) on the page's performance.now() clock, for a worker that reads its own.
+// A worker's performance.now() counts from the worker's creation, the page's from the page's; the two
+// time origins are wall-clock times, so their difference is the offset between the clocks. WebRTC's
+// lip-sync compares the video's stamps with the audio track's (app-audio.mjs stamps on the page's
+// clock), so a video on any other base is held back or pushed ahead by the difference.
+export function pageClockUs(workerNowMs, workerOrigin, pageOrigin) {
+  return Math.round((workerNowMs + workerOrigin - pageOrigin) * 1000)
+}

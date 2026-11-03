@@ -17,10 +17,15 @@ import {
   readStats,
   readDetail,
   detailDelta,
+  soundLateMs,
+  audioPathMs,
+  videoTargetMs,
+  viewerDelayMs,
   linkFacts,
   omitNull,
   parseOpusFmtp,
 } from '../renderer/telemetry.mjs'
+import {captionHtml} from '../renderer/subtitles.mjs'
 
 test('nextSteady only counts uninterrupted playback', () => {
   let steady = {since: null, epoch: 0}
@@ -276,4 +281,65 @@ test('linkFacts still names the codec when Chromium withholds the encoder and de
   const facts = linkFacts(readDetail(detailReport(1).map((s) => ({...s, encoderImplementation: undefined, decoderImplementation: undefined, powerEfficientEncoder: undefined, powerEfficientDecoder: undefined}))))
   assert.deepEqual(facts.venc, {codec: 'video/H264'})
   assert.deepEqual(facts.vdec, {codec: 'video/H264'})
+})
+
+test('soundLateMs sees the share gap that the estimatedPlayoutTimestamp skew (av) missed', () => {
+  // The M1.4 bench's share: audio buffered 30ms, video held ~700ms by lip-sync; av read 11-22ms throughout.
+  assert.equal(soundLateMs({aJb: 30, vJb: 697.2, dec: 5, outMs: 30, baseMs: 10}), -632.2)
+  // The M1.4 bench's film: both about 250ms, the Web Audio output (30 + 10) is the sound's extra: measured +48.
+  const film = soundLateMs({aJb: 252, vJb: 233, dec: 3, outMs: 30, baseMs: 10})
+  assert.ok(film > 40 && film < 65, `${film}`)
+  // Output latency missing (a context that reports none) or decode unknown still gives the jitter-buffer difference.
+  assert.equal(soundLateMs({aJb: 100, vJb: 80, dec: null, outMs: null, baseMs: null}), 20)
+  // Without either jitter buffer there is nothing to say.
+  assert.equal(soundLateMs({aJb: null, vJb: 80}), null)
+  assert.equal(soundLateMs({aJb: 100, vJb: undefined}), null)
+})
+
+test('the video waits for the Web Audio output path, on top of the adapted buffer, once', () => {
+  assert.equal(audioPathMs(0.03, 0.01), 40)
+  assert.equal(audioPathMs(0.0304, 0.0098), 40, 'rounded to 10ms: a wobble does not rewrite the target every tick')
+  assert.equal(audioPathMs(0, 0), 0)
+  assert.equal(audioPathMs(undefined, NaN), 0, 'a context that reports nothing adds nothing')
+  assert.equal(audioPathMs(5, 5), 200, 'a nonsense reading is capped')
+  // The adapted buffer (250..750 for a film, 0..250 for a share) is what the audio receiver gets; the video
+  // receiver gets the same plus the fixed path. The adaptation is never added twice.
+  for (const buffer of [0, 100, 250, 500, 750]) assert.equal(videoTargetMs(buffer, 40), buffer + 40)
+  assert.equal(videoTargetMs(250, 0), 250, 'with no audio context the targets are equal, as before')
+})
+
+test('viewerDelayMs: a measured delay already holds the video wait; the buffer fallback gets it added', () => {
+  const base = {rttMs: 20, decodeMs: 40}
+  assert.equal(viewerDelayMs({...base, frameDelayMs: 310, playoutDelayMs: 999, bufferMs: 999, audioPath: 40}), 310, 'the frame\'s own display delay wins')
+  assert.equal(viewerDelayMs({...base, playoutDelayMs: 290, bufferMs: 250, audioPath: 40}), 290 + 10 + 40, 'a measured jitter-buffer delay is not topped up again')
+  assert.equal(viewerDelayMs({...base, bufferMs: 250, audioPath: 40}), 250 + 40 + 10 + 40, 'no measurement yet: requested buffer + the video wait')
+  assert.equal(viewerDelayMs({...base, bufferMs: 250}), 250 + 10 + 40)
+})
+
+test('captions stay aligned with the picture when the video waits for the audio path', () => {
+  // Host clock: a cue is on screen for host time 10.0..12.0s. The viewer's picture shows host time f at
+  // viewer time f + trueDelay, and the captions are drawn for (host time estimate - delay) with the delay the
+  // app computes. Every displayed frame must show the caption exactly when its own host time is inside the cue.
+  const cues = [{start: 10, end: 12, text: 'hello'}]
+  const rttMs = 30
+  const decodeMs = 40
+  for (const audioPath of [0, 40]) {
+    for (const bufferMs of [250, 500]) {
+      const trueDelay = bufferMs + audioPath + rttMs / 2 + decodeMs // what the picture really trails the host by
+      const sources = {
+        'a measured frame delay': {frameDelayMs: trueDelay},
+        'a measured jitter-buffer delay': {playoutDelayMs: bufferMs + audioPath},
+        'only the requested buffer': {},
+      }
+      for (const [name, measured] of Object.entries(sources)) {
+        const delay = viewerDelayMs({...measured, bufferMs, audioPath, rttMs, decodeMs})
+        assert.ok(Math.abs(delay - trueDelay) < 1e-9, `${name} (buffer ${bufferMs}, path ${audioPath}): ${delay} vs ${trueDelay}`)
+        for (let f = 9.5; f < 12.5; f += 1 / 30) {
+          const viewerClock = f + trueDelay / 1000 // when this frame is on screen; the host time estimate there
+          const shown = captionHtml(cues, viewerClock - delay / 1000) === 'hello'
+          assert.equal(shown, f >= 10 && f < 12, `${name}: frame ${f.toFixed(3)}`)
+        }
+      }
+    }
+  }
 })

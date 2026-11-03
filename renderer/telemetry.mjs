@@ -106,6 +106,28 @@ export function adaptBuffer(state, troubled, intervalMs) {
   return {bufferMs: Math.max(MIN_BUFFER_MS, state.bufferMs - SHRINK_STEP_MS), calmMs: 0}
 }
 
+// The received sound plays through a Web Audio graph (routeRemoteAudio / routeTileAudio), whose output
+// path (the context's outputLatency + baseLatency) WebRTC's lip-sync cannot see: it lines up audio and
+// video where the audio leaves the jitter buffer, so the sound reaches the speakers that much after the
+// picture. The video receiver therefore waits that long extra: its jitterBufferTarget is the adapted
+// buffer (the same value the audio receiver gets, which grows and shrinks with trouble) PLUS this fixed
+// amount, computed once from the two so the adaptation is never added to itself. Rounded to 10ms so a
+// latency that wobbles by a fraction doesn't rewrite the target every tick.
+export const MAX_AUDIO_PATH_MS = 200
+export function audioPathMs(outputLatencySeconds, baseLatencySeconds) {
+  const ms = ((Number(outputLatencySeconds) || 0) + (Number(baseLatencySeconds) || 0)) * 1000
+  return Number.isFinite(ms) && ms > 0 ? Math.min(MAX_AUDIO_PATH_MS, Math.round(ms / 10) * 10) : 0
+}
+export const videoTargetMs = (bufferMs, audioPath) => bufferMs + audioPath
+
+// How far a viewer's picture trails the host's clock, for captions and the report to the host. A
+// measured value (the frame's own display time against its capture time, or the video jitter buffer's
+// recent delay) already includes the extra video wait above; the buffer fallback is only the requested
+// buffer, so the wait is added to it there.
+export function viewerDelayMs({frameDelayMs = null, playoutDelayMs = null, bufferMs = 0, audioPath = 0, rttMs = 0, decodeMs = 0}) {
+  return frameDelayMs ?? (playoutDelayMs ?? videoTargetMs(bufferMs, audioPath)) + (rttMs || 0) / 2 + decodeMs
+}
+
 // A live share or game is not a film: the 250 ms floor above that smooths playback is pure lag
 // there. Share receivers start at 0 (the browser's own adaptive buffer), step up only while this
 // viewer's connection is troubled, and step back down after the same calm stretch.
@@ -265,6 +287,17 @@ export function readDetail(report) {
       relay: label(local?.relayProtocol), tcp: label(local?.tcpType),
     },
   }
+}
+
+// How far the sound trails the picture at the viewer's output, in ms (positive = sound late, the same
+// sign as `npm run bench`), estimated from what each path holds: the audio's jitter buffer plus the Web
+// Audio output it plays through (`outMs` + `baseMs`) against the video's jitter buffer plus its decode.
+// `av` (the gap between the two tracks' estimatedPlayoutTimestamp) is NOT this: it compares the
+// capture-time estimates, which lip-sync has already lined up, so it read 11-22ms while a share's picture
+// was really ~650ms behind its sound. The jitter-buffer delays include whatever lip-sync is holding.
+export function soundLateMs({aJb, vJb, dec, outMs, baseMs}) {
+  if (!Number.isFinite(aJb) || !Number.isFinite(vJb)) return null
+  return aJb + (Number.isFinite(outMs) ? outMs : 0) + (Number.isFinite(baseMs) ? baseMs : 0) - (vJb + (Number.isFinite(dec) ? dec : 0))
 }
 
 // What the audio and video did since the previous reading. A replaced stream (new ssrc) or a

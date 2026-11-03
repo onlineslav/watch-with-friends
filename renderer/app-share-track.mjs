@@ -123,7 +123,7 @@ export function appShareTrack({getLayout, subscribe, captureWindow, anchor, init
   }
 
   const {writable} = generator
-  worker.postMessage({type: 'start', writable, anchor, limits: {...limits}, layout: getLayout()}, [writable])
+  worker.postMessage({type: 'start', writable, anchor, pageOrigin: performance.timeOrigin, limits: {...limits}, layout: getLayout()}, [writable])
   if (initial) watch(initial.hwnd, initial.track)
   reconcile(getLayout())
   // A share of a minimized window starts with the card straight away rather than nothing.

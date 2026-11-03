@@ -7,7 +7,7 @@
 // beats against the captures' own rate, which dropped and doubled frames unevenly. With only the
 // shared window showing and nothing to crop, its frames go out untouched; otherwise the windows
 // are drawn together, bottom first. A still screen still sends one at least every KEEPALIVE_MS.
-import {outputSize, placeholderText, settleCrop} from './app-share.mjs'
+import {outputSize, pageClockUs, placeholderText, settleCrop} from './app-share.mjs'
 
 const KEEPALIVE_MS = 500
 const STATS_MS = 10_000
@@ -16,6 +16,7 @@ const windows = new Map() // hwnd → {reader, frame}
 let writer = null
 let layout = null
 let anchor = null
+let pageOrigin = performance.timeOrigin // the page's timeOrigin, sent with 'start'
 let limits = {frameRate: 30}
 let crop = null
 let lastSent = -Infinity
@@ -33,6 +34,9 @@ let cardSize = [1280, 720]
 let stats = {passed: 0, composed: 0, composeMs: 0, framesIn: 0, busy: 0}
 
 const post = (message) => self.postMessage(message)
+// Frames are stamped on the PAGE's performance.now() clock, the one frames.mjs and app-audio.mjs use, so WebRTC's
+// lip-sync sees audio and video on one base. A worker's own performance.now() starts at the worker's creation.
+const stampUs = (workerNowMs) => pageClockUs(workerNowMs, performance.timeOrigin, pageOrigin)
 const minInterval = () => 1000 / limits.frameRate - 2 // a little early is fine; late doubles up
 
 function schedule() {
@@ -129,12 +133,12 @@ function send() {
   let frame
   if (exact) {
     size = {width: lone.displayWidth, height: lone.displayHeight, scale: 1}
-    frame = new VideoFrame(lone, {timestamp: Math.round(now * 1000)})
+    frame = new VideoFrame(lone, {timestamp: stampUs(now)})
     stats.passed++
   } else {
     const started = performance.now()
     compose(box, size)
-    frame = new VideoFrame(canvas, {timestamp: Math.round(now * 1000)})
+    frame = new VideoFrame(canvas, {timestamp: stampUs(now)})
     stats.composeMs += performance.now() - started
     stats.composed++
   }
@@ -188,7 +192,7 @@ function placeholder({title, detail}) {
     draw.font = `${Math.round(unit * 0.6)}px "Segoe UI", system-ui, sans-serif`
     draw.fillText(detail, width / 2, height / 2 + unit * 0.7, width * 0.9)
   }
-  return new VideoFrame(card, {timestamp: Math.round(performance.now() * 1000)})
+  return new VideoFrame(card, {timestamp: stampUs(performance.now())})
 }
 
 function stop() {
@@ -213,6 +217,7 @@ self.onmessage = ({data}) => {
   if (data.type === 'start') {
     writer = data.writable.getWriter()
     anchor = data.anchor
+    if (Number.isFinite(data.pageOrigin)) pageOrigin = data.pageOrigin
     limits = data.limits
     layout = data.layout
   } else if (data.type === 'window') {

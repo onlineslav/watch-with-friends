@@ -92,6 +92,10 @@ import {
   linkFacts,
   parseOpusFmtp,
   omitNull,
+  soundLateMs,
+  audioPathMs,
+  videoTargetMs,
+  viewerDelayMs,
   round,
 } from './telemetry.mjs'
 import {LongTaskTally, DelayTally, watchLongTasks, frameSpacing, freshMachine, settingsTag} from './machine.mjs'
@@ -1481,10 +1485,11 @@ const isShareSender = (peerId) => session.shares.has(peerId) || Boolean(session.
 // Shares use their own low-latency buffer per sender (starts at 0); films keep session.buffer.
 function applyViewerBuffer(pc, peerId) {
   const bufferMs = isShareSender(peerId) ? (person(peerId).shareBuffer ||= {...SHARE_BUFFER_START}).bufferMs : session.buffer.bufferMs
+  const audioPath = audioPathMs(audio?.outputLatency, audio?.baseLatency)
   for (const receiver of pc?.getReceivers() || []) {
-    if ('jitterBufferTarget' in receiver && receiver.jitterBufferTarget !== bufferMs) {
-      receiver.jitterBufferTarget = bufferMs
-    }
+    if (!('jitterBufferTarget' in receiver)) continue
+    const target = receiver.track?.kind === 'video' ? videoTargetMs(bufferMs, audioPath) : bufferMs
+    if (receiver.jitterBufferTarget !== target) receiver.jitterBufferTarget = target
   }
 }
 
@@ -1546,7 +1551,11 @@ const currentSettingsTag = () => settingsTag({priority: sharePriority(shareSetti
 // the received sound plays through) and decoder cost (v).
 function viewerDetail(delta) {
   const ms = (seconds) => (Number.isFinite(seconds) && seconds > 0 ? round(seconds * 1000, 1) : null)
-  const sync = omitNull({...delta?.s, out: ms(audio?.outputLatency), base: ms(audio?.baseLatency)})
+  const out = ms(audio?.outputLatency)
+  const base = ms(audio?.baseLatency)
+  // `off`: the estimated sound-late offset in ms (see soundLateMs); `av` is kept but cannot see a lip-sync hold.
+  const off = round(soundLateMs({aJb: delta?.s?.aJb, vJb: delta?.s?.vJb, dec: delta?.v?.dec, outMs: out, baseMs: base}), 1)
+  const sync = omitNull({...delta?.s, out, base, off})
   return omitNull({a: delta?.a, s: sync, v: delta?.v}) || {}
 }
 
@@ -1715,7 +1724,7 @@ async function sampleConnection() {
       fps: stats.inbound.fps,
       height: stats.inbound.height,
       bufferMs: shownBufferMs,
-      delayMs: Math.max(0, Math.min(10000, session.frameDelayMs ?? (session.playoutDelayMs || shownBufferMs) + (stats.rttMs || 0) / 2 + DECODE_DELAY_MS)),
+      delayMs: Math.max(0, Math.min(10000, viewerDelayMs({frameDelayMs: session.frameDelayMs, playoutDelayMs: session.playoutDelayMs || null, bufferMs: shownBufferMs, audioPath: audioPathMs(audio?.outputLatency, audio?.baseLatency), rttMs: stats.rttMs, decodeMs: DECODE_DELAY_MS}))),
     }
     session.link = {...base, receiver, sender: session.remote?.senders?.[selfId] || null}
     logEvent('telemetry', 'viewer-sample', {
@@ -3243,7 +3252,7 @@ let captionsFrame = 0
 function drawCaptions() {
   captionsFrame = 0
   const {cues} = session.captions
-  const delayMs = isHost() || youtube.videoId ? 0 : session.frameDelayMs ?? ((session.playoutDelayMs ?? session.buffer.bufferMs) + (session.link?.rttMs || 0) / 2 + DECODE_DELAY_MS)
+  const delayMs = isHost() || youtube.videoId ? 0 : viewerDelayMs({frameDelayMs: session.frameDelayMs, playoutDelayMs: session.playoutDelayMs, bufferMs: session.buffer.bufferMs, audioPath: audioPathMs(audio?.outputLatency, audio?.baseLatency), rttMs: session.link?.rttMs, decodeMs: DECODE_DELAY_MS})
   const html = cues.length && session.role !== 'idle' ? captionHtml(cues, currentTime() - delayMs / 1000) : ''
   if (html !== captionsShown) ui.captions.innerHTML = captionsShown = html
   if (cues.length) captionsFrame = requestAnimationFrame(drawCaptions)

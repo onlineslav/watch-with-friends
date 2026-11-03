@@ -241,7 +241,7 @@ accept the optional `telemetry.at`. Decided (builder): mark key `X`, Shift+X foc
 15s otherwise; `window/fullscreen`/`visibility` lines only smoke-tested.
 
 ### M1.10 Release 0.8.1 with live telemetry
-Status: todo
+Status: in progress
 Added: Aya, 2026-11-03 (approved "build them right after M1.4, before the release").
 Done when: M1.1–M1.4 and M1.9 are verified; a 0.8.1 release is cut the usual way (CI builds both platforms,
 auto-update picks it up); after install, `npm run diagnostics -- --live` shows Aya's own lines.
@@ -249,7 +249,7 @@ Gate: no
 Evidence:
 
 ### M1.5 Audio in sync with the picture [feel]
-Status: in progress
+Status: needs Aya
 Story: When I host, my friends hear the sound exactly when they see it, for films and screen shares.
 Done when:
 - `npm run bench` shows |offset| ≤ 40ms (median) for a film and a share, and the before/after numbers are on the card.
@@ -269,7 +269,17 @@ Done when:
 Likely failures:
 - Delaying video by the output latency while `jitterBufferTarget` also moves: the two must not double-count.
 Gate: no
-Evidence:
+Evidence: 3877b63 (+ cf6aa73 on top). Builder bench (3 runs each, before → after): film run medians 42.0/31.8/47.2 →
+16.5/−4.9/21.3ms; share at 15s uptime 51.8/51.0/53.6 → 19.5/17.7/35.5ms (before, lip-sync had given up; −650ms was the
+fresh-page case). Orchestrator rerun, `npm run bench` (work/bench/0.8.0-2026-11-03-0928.json): film median −2.7ms
+(runs 57.4/−2.7/−6.4), p95 47.1, worst 70.4; share median 20.4ms (runs 11.9/20.4/49.3), p95 42.7, worst 74; 25/25
+events every run; `s.off` read 28–29ms on the share. `npm test` 430/430; `test:network` 48 PASS;
+`check-app-share.js` passed (whole-app worker now on the page clock). Captions: `test/telemetry.test.mjs` "captions
+stay aligned with the picture when the video waits for the audio path". LOW: single-run medians spread widely (63.8ms
+film, 37.4ms share); the film run at 57ms had the host's own playback at 39.7ms, so host-side load (another project's
+Electron tests were running) is the likely cause; compare medians over 3 runs. Decided (builder): the video wait
+(output + base latency, ≤200ms, added once to the video receiver's `jitterBufferTarget`) applies to shares too; `s.av`
+kept but documented as unreliable, `s.off` is the sync number. Waiting on: Aya's check with Lenna (below).
 
 ### M1.6 Audio quality end to end [wire] [feel]
 Status: todo
@@ -347,6 +357,16 @@ timestamp fix isn't her cause. Start the review from the film path: the viewer's
 video wait, +42 → +16.5ms on the bench) and film audio quality (captureStream audio → Opus, mono at the viewer: M1.6).
 Gate: no
 Evidence:
+
+## Aya's checks
+
+1. **M1.5 film sync (with Lenna, after 0.8.1 installs):** both tick Settings → Having problems? → "Send telemetry for
+   development". Host a film, watch 5 minutes, check dialogue matches lips. Optional: run
+   `npm run diagnostics -- --live telemetry` and look at `s.off` in Lenna's `viewer-sample` lines (within about ±40).
+2. **M1.5 share sync:** share a window that plays sound (open for over a minute first); check sound matches picture.
+   If lips are off only on Bluetooth headphones, that's device latency the app can't see.
+3. **M1.9 mark key:** in a room press X (a toast shows on both ends); press Shift+X, type a note, Enter. Afterwards
+   `npm run diagnostics -- --report` lists both marks.
 
 ## Later (filed from Aya's notes, not cards yet)
 

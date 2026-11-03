@@ -369,7 +369,7 @@ Done when:
 Gate: no
 Evidence:
 
-### M1.11 Second file silent for viewers [must-work]
+### M1.11 Second file silent for viewers [must-work] [wire]
 Status: in progress
 Added: orchestrator, 2026-11-03, from the M1.6 builder's bench finding; confirmed real by the M1.6 audit. Built right
 after M1.6's fixes by the same builder.
@@ -388,6 +388,16 @@ Done when:
   stops (`session.stream !== stream`), so the published audio track goes silent. Fix: one `captureStream()` per
   element, kept; publish `track.clone()`s and stop only the clones; existing `addtrack`/`removetrack` handling follows
   source changes. Bench: second `hostFile()` gives viewer beep RMS ≥ 0.1.
+- (M1.11 audit, HIGH, pre-existing and worsened) Every publish adds m-sections that never go away (`pc.removeTrack`
+  leaves the transceiver; a later `addTrack` never reuses it): measured in Electron 44, the renegotiation offer passes
+  the 64 KiB receive budget for `@_signal` at file 7 (8 before this fix), which closes the connection to every viewer;
+  with connection reuse it carries across rooms. Fix: `transceiver.stop()` in `drop` and in the patched
+  `peer.removeStream`/`removeTrack` (measured: 5 m-sections, 19.8 KB at file 25), and `sender.replaceTrack(newClone)`
+  for a source change instead of remove + add. Done when: `test:network` opens 10 files, asserts a bounded
+  transceiver count, one live audio sender per peer and audio heard each time; `test:compat` passes (a 0.8.0 viewer
+  sees an ended receiver track instead of a muted one).
+- (audit, LOW) `unpublishStream` also calls `session.room.removeTrack(t)` for each published clone; with `sink` null
+  the capture's `addtrack` listener stops new video tracks itself.
 Gate: no
 Evidence:
 

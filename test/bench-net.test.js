@@ -37,13 +37,26 @@ test('a relay with no loss and no cap passes everything, both ways', async () =>
   assert.deepEqual({arrived, replies}, {arrived: 50, replies: 50})
 })
 
-test('loss drops about that share at each hop, and the drops are counted', async () => {
+// The drop decision is tested on its own, packet by packet with a seeded generator, so the count is the same every
+// run on every machine. Through real sockets the kernel itself drops datagrams under load (a CI Mac delivered 302 of
+// 600 against a 30% loss), which is not what these tests are about.
+test('loss drops about that share at each hop, and the drops are counted', () => {
   const network = createNetwork({lossPct: 30, random: seeded(7)})
-  const {arrived, replies} = await through(network, 600)
+  let delivered = 0
+  for (let i = 0; i < 600; i++) network.pass('from:a', 100, () => delivered++)
+  assert.equal(delivered + network.stats.dropped, 600)
+  assert.equal(network.stats.forwarded, delivered)
+  assert.equal(delivered, 414, 'the seeded generator drops the same packets every run')
+  assert.ok(delivered > 600 * 0.6 && delivered < 600 * 0.8)
   network.close()
-  assert.ok(arrived > 600 * 0.6 && arrived < 600 * 0.8, `arrived ${arrived}`)
-  assert.ok(replies < arrived && replies > arrived * 0.6, `replies ${replies} of ${arrived}`)
-  assert.ok(network.stats.dropped > 200)
+})
+
+test('a relay with total loss delivers nothing and counts every packet', async () => {
+  const network = createNetwork({lossPct: 99.999999, random: () => 0.5})
+  const {arrived, replies} = await through(network, 50)
+  assert.deepEqual({arrived, replies}, {arrived: 0, replies: 0})
+  assert.equal(network.stats.dropped, 50)
+  network.close()
 })
 
 test('a capped link spreads packets over time and drops what does not fit its queue', async () => {

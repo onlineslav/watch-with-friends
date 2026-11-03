@@ -76,7 +76,7 @@ function createNetwork({lossPct = 0, linkKbps = 0, queuePackets = 50, random = M
     relays.clear()
   }
 
-  return {relayFor, close, stats, options: {lossPct, linkKbps, queuePackets}}
+  return {relayFor, close, stats, pass, options: {lossPct, linkKbps, queuePackets}}
 }
 
 module.exports = {createNetwork}

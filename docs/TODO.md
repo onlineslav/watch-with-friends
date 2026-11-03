@@ -324,6 +324,13 @@ Done when:
 - `chooseSendQuality`'s ladder reviewed against M1.2 data: recovery after a loss burst back to full quality within
   10s on a clean link (bench with injected loss).
 - Keyframe requests after loss produce no freeze longer than 500ms on the bench.
+- (Aya's other session, 2026-11-03) Rejoin black screen: on the v0.8.0 tag's Windows CI, `npm run test:network` once had
+  a viewer in a persistent room (`connectedBefore: true`, reused connection) receive the host's audio but never video
+  after leave/rejoin (`remote-video.readyState >= 3` timed out); the host logged `send-parameters-failed` ("Attempted
+  to set RtpParameters with modified RTCP parameters") just before. Intermittent, Windows only, not new. Suspect
+  `tuneSenders`/`setParameters` on parameters read before a renegotiation, rejected and never retried. Done when: a
+  rejoin over a reused connection always gets video (repeat the rejoin step ≥20 times in a loop), and a rejected
+  `setParameters` is retried with a fresh `getParameters()`.
 Gate: no
 Evidence:
 
@@ -335,6 +342,9 @@ Done when:
 - The scorecard and live view are reviewed; the top three problems are written up with evidence and fixed or filed
   as cards.
 - Aya and Lenna confirm the difference.
+Note (Aya's other session, 2026-11-03): Lenna was watching a hosted MOVIE FILE, not a screen share, so M1.5's share
+timestamp fix isn't her cause. Start the review from the film path: the viewer's Web Audio output latency (M1.5's
+video wait, +42 → +16.5ms on the bench) and film audio quality (captureStream audio → Opus, mono at the viewer: M1.6).
 Gate: no
 Evidence:
 

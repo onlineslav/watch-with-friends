@@ -111,9 +111,9 @@ function benchHooks() {
       report.forEach((s) => {
         const fields = {
           audioIn: ['timestamp', 'bytesReceived', 'packetsReceived', 'packetsLost', 'jitter', 'concealedSamples', 'silentConcealedSamples', 'totalSamplesReceived', 'insertedSamplesForDeceleration', 'removedSamplesForAcceleration', 'jitterBufferDelay', 'jitterBufferEmittedCount', 'codecId', 'totalAudioEnergy', 'totalSamplesDuration'],
-          videoIn: ['timestamp', 'bytesReceived', 'framesReceived', 'framesDecoded', 'framesDropped', 'framesPerSecond', 'frameWidth', 'frameHeight', 'freezeCount', 'totalFreezesDuration', 'packetsLost', 'packetsReceived', 'jitterBufferDelay', 'jitterBufferEmittedCount', 'decoderImplementation', 'codecId'],
+          videoIn: ['timestamp', 'bytesReceived', 'framesReceived', 'framesDecoded', 'framesDropped', 'framesPerSecond', 'frameWidth', 'frameHeight', 'freezeCount', 'totalFreezesDuration', 'pliCount', 'nackCount', 'firCount', 'keyFramesDecoded', 'totalDecodeTime', 'packetsLost', 'packetsReceived', 'jitterBufferDelay', 'jitterBufferEmittedCount', 'decoderImplementation', 'codecId'],
           audioOut: ['timestamp', 'bytesSent', 'packetsSent', 'codecId'],
-          videoOut: ['timestamp', 'bytesSent', 'framesEncoded', 'framesPerSecond', 'frameWidth', 'frameHeight', 'qualityLimitationReason', 'encoderImplementation', 'codecId'],
+          videoOut: ['timestamp', 'bytesSent', 'framesEncoded', 'framesPerSecond', 'frameWidth', 'frameHeight', 'qualityLimitationReason', 'encoderImplementation', 'powerEfficientEncoder', 'pliCount', 'nackCount', 'firCount', 'keyFramesEncoded', 'totalEncodeTime', 'codecId'],
         }
         const key = s.type === 'inbound-rtp' ? s.kind + 'In' : s.type === 'outbound-rtp' ? s.kind + 'Out' : null
         if (!key) return

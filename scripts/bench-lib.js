@@ -22,7 +22,7 @@ function rng(seed) {
 
 // Events at irregular gaps of at least `minGap` seconds, each on a frame boundary so the flash's first
 // frame and the beep's first sample are the same instant in the file. `t` is that instant in seconds.
-function makeSchedule({seed = 1, count = 28, first = 3, minGap = 2, maxGap = 3.6, fps = FPS} = {}) {
+function makeSchedule({seed = 1, count = 28, first = 3, minGap = 2, maxGap = 3.6, fps = FPS, size = '1280x720'} = {}) {
   const next = rng(seed)
   const events = []
   let frame = Math.round(first * fps)
@@ -30,7 +30,7 @@ function makeSchedule({seed = 1, count = 28, first = 3, minGap = 2, maxGap = 3.6
     events.push({index, frame, t: frame / fps})
     frame += Math.round((minGap + next() * (maxGap - minGap)) * fps)
   }
-  return {fps, events, duration: events.at(-1).t + 3}
+  return {fps, size, events, duration: events.at(-1).t + 3}
 }
 
 const num = (value) => Number(value.toFixed(6)).toString()
@@ -55,7 +55,7 @@ function clipArgs(schedule, output) {
   const d = num(schedule.duration)
   return [
     '-v', 'error', '-y',
-    '-f', 'lavfi', '-i', `testsrc2=size=1280x720:rate=${schedule.fps}:duration=${d}`,
+    '-f', 'lavfi', '-i', `testsrc2=size=${schedule.size || '1280x720'}:rate=${schedule.fps}:duration=${d}`,
     '-f', 'lavfi', '-i', `aevalsrc=0.03*sin(2*PI*220*t)|0.03*sin(2*PI*330*t):s=${SAMPLE_RATE}:d=${d}`,
     '-f', 'lavfi', '-i', `aevalsrc='${beepExpression(schedule)}':s=${SAMPLE_RATE}:d=${d}`,
     '-filter_complex', `[0:v]${videoFilter(schedule)}[v];[2:a]pan=stereo|c0=c0|c1=c0[beep];[1:a][beep]amix=inputs=2:normalize=0:duration=first[a]`,

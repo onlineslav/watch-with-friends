@@ -54,7 +54,7 @@ export function estimatedMediaTime(state, now, clock) {
 const START_BITRATE = 4_000_000
 export const STALE_FEEDBACK_MS = 4000
 const SAFE_MEMORY_MS = 60_000
-const RECOVERY_CALM_MS = 6000
+const RECOVERY_CALM_MS = 4000 // two clean reports (was three: a 4s loss burst on a 1080p film left the picture at 540p for up to 12s, bench --variant=burst)
 
 export function chooseSendQuality(previous, {receiver, receiverAt = null, feedbackAgeMs = null, sentBps = null, capacity, active = true, peerCount = 1, width = 1920, height = 1080}, intervalMs = 2000) {
   const ceiling = Math.min(10_000_000, 18_000_000 / Math.max(1, peerCount))

@@ -79,6 +79,9 @@ const options = {
   audioLadder: String(flag('audio-ladder', 'on')),
   audioFirst: String(flag('audio-first', 'on')),
   label: String(flag('label', '')).replace(/[^A-Za-z0-9._-]/g, ''),
+  burstAtS: Number(flag('burst-at', 15)), burstS: Number(flag('burst-s', 4)), burstPct: Number(flag('burst-pct', 10)), recoverS: Number(flag('recover-s', 30)), // --variant=burst
+  size: String(flag('size', '1280x720')), // the clip's picture size, e.g. 1920x1080
+  fps: Number(flag('fps', 30)), // the clip's (and the share window's) frame rate: 24, 30 or 60
   repeats: Math.max(1, Number(flag('repeats', 8))), // --variant=loop: how many times the short film loops
   publishes: Math.max(1, Number(flag('publishes', 3))), // --variant=republish / reopen: how many times the film is published
 }
@@ -88,7 +91,9 @@ const degraded = options.loss > 0 || options.linkKbps > 0 // not a sync run: the
 assert.ok(options.loss >= 0 && options.loss < 100 && options.linkKbps >= 0, '--loss is a percent, --link-kbps a number')
 assert.ok(['on', 'off'].includes(options.audioLadder) && ['on', 'off'].includes(options.audioFirst), '--audio-ladder and --audio-first are on or off')
 const variants = options.variant === 'all' ? ['film', 'share'] : [options.variant]
-assert.ok(variants.every((v) => ['film', 'share', 'republish', 'reopen', 'loop'].includes(v)), '--variant is film, share, republish, reopen, loop or all')
+// The relays are in the path for a damaged link, and for a burst of loss on a clean one (their loss starts at 0).
+const network = degraded || variants.includes('burst') ? createNetwork({lossPct: options.loss, linkKbps: options.linkKbps}) : null
+assert.ok(variants.every((v) => ['film', 'share', 'republish', 'reopen', 'loop', 'burst'].includes(v)), '--variant is film, share, republish, reopen, loop, burst or all')
 
 const scratch = require('./temp-dirs').create('synced-bench-', {keep: Boolean(flag('keep', false)) || Boolean(process.env.KEEP_TEMP)})
 const temporary = scratch.dir
@@ -98,7 +103,6 @@ app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
 app.commandLine.appendSwitch('disable-renderer-backgrounding')
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows')
-const network = degraded ? createNetwork({lossPct: options.loss, linkKbps: options.linkKbps}) : null
 
 // Each run closes its windows; the next run opens new ones, so closing the last must not quit the app.
 app.on('window-all-closed', () => {})
@@ -184,7 +188,7 @@ async function fixtures() {
   fs.writeFileSync(path.join(temporary, 'index.html'), html)
   fs.copyFileSync(path.join(__dirname, 'bench-tap.js'), path.join(temporary, 'bench-tap.js'))
 
-  const schedule = lib.makeSchedule({seed: options.seed, ...(options.quick ? {count: 6, first: 3, minGap: 2, maxGap: 2.6} : {}), ...(options.count ? {count: options.count} : {})})
+  const schedule = lib.makeSchedule({seed: options.seed, fps: options.fps, size: options.size, ...(options.quick ? {count: 6, first: 3, minGap: 2, maxGap: 2.6} : {}), ...(options.count ? {count: options.count} : {})})
   const ffmpeg = require('ffmpeg-static')
   const clip = path.join(temporary, 'bench-clip.mkv')
   const pcm = path.join(temporary, 'bench-clip.f32')
@@ -304,7 +308,7 @@ function readSide(collected, schedule, {deviceMs, epoch = null}) {
     },
     stereo: {channelsSeenByTap: collected.channelsIn, separation: lib.round(collected.stereo.side / Math.max(1e-12, collected.stereo.side + collected.stereo.mid), 3)},
     video: {
-      callbacks: window.length, rvfcPerSecond: lib.round((window.length - 1) / Math.max(1, spanS), 2), spanS: lib.round(spanS, 1), presentedFramesNotCalledBack: skipped, steadyOnly: Boolean(long),
+      callbacks: window.length, presentedPerSecond: window.length > 1 ? lib.round((window.at(-1).presented - window[0].presented) / Math.max(1, spanS), 2) : null, rvfcPerSecond: lib.round((window.length - 1) / Math.max(1, spanS), 2), spanS: lib.round(spanS, 1), presentedFramesNotCalledBack: skipped, steadyOnly: Boolean(long),
       width: collected.width, height: collected.height,
       cadence: lib.cadence(distinct.map((f) => f.time), 1000 / schedule.fps),
     },
@@ -332,7 +336,11 @@ function hostTelemetryOf(selfId) {
   const steps = mine.filter((e) => e.ev === 'audio-step-change').map((e) => ({atS: origin == null ? null : lib.round((e.m - origin) / 1000, 1), from: e.from, to: e.to, reason: e.reason, limit: e.limit, estimateKbps: Number.isFinite(e.estimateBps) ? Math.round(e.estimateBps / 1000) : null, capKbps: Number.isFinite(e.capBps) ? e.capBps / 1000 : null}))
   const col = (key) => samples.map((e) => e[key]).filter(Number.isFinite)
   const applied = mine.filter((e) => e.ev === 'send-parameters-applied')
+  const links = mine.filter((e) => e.ev === 'link' && e.venc)
   return {
+    venc: links.at(-1)?.venc ?? null, linkEvents: links.length,
+    // ms of encoder time per frame (software H.264 at 720p+ is several ms; a hardware encoder about one) and what the encoder was limited by
+    encMsMedian: lib.round(lib.median(samples.map((e) => e.e?.enc ?? e.sender?.enc).filter(Number.isFinite)), 2),
     samples: samples.length, audioSteps: steps, firstStepS: steps[0]?.atS ?? null, finalStep: samples.at(-1)?.audioStep ?? null,
     audioSentKbpsMedian: lib.round(lib.median(col('audioSentBitrateBps')) / 1000, 1),
     audioSentKbpsSeries: samples.filter((e) => Number.isFinite(e.audioSentBitrateBps)).filter((_, i) => i % 3 === 0).map((e) => [origin == null ? null : lib.round((e.m - origin) / 1000, 0), lib.round(e.audioSentBitrateBps / 1000, 0), e.audioStep ?? null]),
@@ -376,9 +384,11 @@ function transportOf(from, to, sender, schedule) {
 function validity({viewer, transport, schedule, variant, quick, extra}) {
   const problems = []
   const fps = schedule.fps
-  const rate = viewer.video.rvfcPerSecond
+  // Presented frames (rVFC's own counter), not callbacks: at 60fps a callback is skipped when two frames land in one rendering
+  // frame, which says nothing about whether the picture is trustworthy; a shortfall of presented frames is real.
+  const rate = viewer.video.presentedPerSecond ?? viewer.video.rvfcPerSecond
   // A run on a damaged link is read for its audio, not for sync: its picture and its pairs are allowed to suffer.
-  if (!degraded && !(rate >= 0.9 * fps)) problems.push(`viewer rVFC rate ${rate}/s is under 0.9x the clip's ${fps}fps: the picture times are not trustworthy`)
+  if (!degraded && !(rate >= 0.9 * fps)) problems.push(`the viewer presents ${rate} frames/s, under 0.9x the clip's ${fps}fps: frames are missing (or the picture times are not trustworthy)`)
   if (!degraded && !quick && viewer.matchedSteady < 20) problems.push(`only ${viewer.matchedSteady} of ${viewer.expectedSteady} steady-state events were paired (need 20)`)
   if (!degraded && !extra?.noAudio && !(viewer.levelRms >= 0.1)) problems.push(`the received beep's RMS ${viewer.levelRms} is under 0.1: the audio arrived silent or not at all`)
   if (!degraded && !extra?.noAudio && viewer.matched < 3) problems.push('fewer than 3 flash/beep pairs: no offset can be reported')
@@ -403,6 +413,16 @@ function validity({viewer, transport, schedule, variant, quick, extra}) {
 }
 
 // ---------- the two variants ----------
+
+// What can be confirmed about hardware H.264 encoding. Chromium names the encoder (encoderImplementation) and sets
+// powerEfficientEncoder only for a page with capture permission, so neither shows here or in the logs; instead: the GPU
+// process's own verdict (app.getGPUFeatureStatus().video_encode), MediaCapabilities' answer for a WebRTC H.264 encode at the
+// clip's size (powerEfficient is true for a hardware encoder), and the measured encode time per frame.
+async function hardwareEncode(win) {
+  const gpu = app.getGPUFeatureStatus?.() || {}
+  const caps = await run(win, `navigator.mediaCapabilities.encodingInfo({type: 'webrtc', video: {contentType: 'video/H264;profile-level-id=42e01f;packetization-mode=1', width: ${Number(options.size.split('x')[0])}, height: ${Number(options.size.split('x')[1])}, bitrate: 4000000, framerate: ${options.fps}}}).then((r) => JSON.stringify({supported: r.supported, smooth: r.smooth, powerEfficient: r.powerEfficient})).catch((e) => JSON.stringify({error: String(e.message || e)}))`).then(JSON.parse)
+  return {gpuVideoEncode: gpu.video_encode ?? null, gpuVideoDecode: gpu.video_decode ?? null, mediaCapabilities: caps}
+}
 
 async function runFilm(env, runIndex) {
   const {host, viewer} = await connectedPair(`film${runIndex}`, 'filmhost', 'filmviewer')
@@ -431,6 +451,7 @@ async function runFilm(env, runIndex) {
     const transport = transportOf(from, to, host, env.schedule)
     const errors = [...await run(host, '__test.errors'), ...await run(viewer, '__test.errors')]
     const sent = hostTelemetryOf(hostSelfId)
+    sent.hardware = await hardwareEncode(host)
     return {variant: 'film', viewer: viewerRead, host: {offset: hostRead.offset, matchedSteady: hostRead.matchedSteady, video: hostRead.video, levelRms: hostRead.levelRms, clock: hostRead.clock, stereo: hostRead.stereo, raw: hostRead.raw}, transport, telemetry: telemetryOf(selfId), sent, elapsedS: lib.round((Date.now() - startedAt) / 1000, 1), pageErrors: errors, problems: validity({viewer: viewerRead, transport, schedule: env.schedule, variant: 'film', quick: options.quick, extra: {hostRead: sent}})}
   } finally {
     host.destroy()
@@ -632,6 +653,92 @@ async function runLoop(env, runIndex) {
   }
 }
 
+// M1.7: a burst of packet loss on an otherwise clean link, then clean again. A film plays; after --burst-at seconds the relays
+// drop --burst-pct percent of the packets each way for --burst-s seconds, then none. Read:
+//   - the sender's ladder (host-sample `scale` and `bitrate`): how many seconds after the burst ends until the picture is back at
+//     the size it had before (scale) and at the bitrate it had before. The card asks for 10s.
+//   - the longest gap between the viewer's presented frames from the first dropped packet until --recover-s after the burst's end
+//     (a freeze while the decoder waits for a keyframe or a retransmission). The card asks for no freeze over 500ms.
+//   - the keyframe requests (PLI/FIR) and NACKs each side counted, and the viewer's freeze count and duration from getStats.
+async function runBurst(env, runIndex) {
+  const {host, viewer} = await connectedPair(`burst${runIndex}`, 'bursthost', 'burstviewer')
+  try {
+    await applySendOptions(host)
+    await run(viewer, '__bench.installTap()') // collect() reads the tap too
+    await run(viewer, `__bench.watchVideo(() => document.getElementById('remote-video'))`)
+    await run(host, `__test.hostFile(${JSON.stringify(env.clip)})`)
+    await until(viewer, 'document.getElementById("remote-video").getVideoPlaybackQuality().totalVideoFrames > 24', 45000, 'viewer receives video')
+    await pause(options.burstAtS * 1000)
+    const hostSelfId = await run(host, '__test.selfId')
+    const before = {viewer: await rtpSnapshot(viewer), sender: await rtpSnapshot(host)}
+    const droppedBefore = network.stats.dropped
+    const startedWall = Date.now()
+    network.setLoss(options.burstPct)
+    await pause(options.burstS * 1000)
+    network.setLoss(0)
+    const endedWall = Date.now()
+    const dropped = network.stats.dropped - droppedBefore
+    await pause(options.recoverS * 1000)
+    const after = {viewer: await rtpSnapshot(viewer), sender: await rtpSnapshot(host)}
+    await Promise.all([host, viewer].map((win) => run(win, '__test.flushLog()')))
+    const viewerData = JSON.parse(await run(viewer, '__bench.collect().then(JSON.stringify)'))
+    const errors = [...await run(host, '__test.errors'), ...await run(viewer, '__test.errors')]
+    const read = readBurst({hostSelfId, startedWall, endedWall, viewerData, before, after, fps: env.schedule.fps})
+    const problems = [
+      ...(dropped > 0 ? [] : ['no packet was dropped: the relays are not in the path']),
+      ...(read.scaleBackAtS != null && read.scaleBackAtS <= 10 ? [] : [`the picture was not back at its size ${read.pre?.scale} within 10s of the burst's end (back at ${read.scaleBackAtS}s)`]),
+      // The card's 500ms is for a burst a real link has; at 30% the retransmissions are lost too and no keyframe can be asked for sooner, so a heavier burst only reports.
+      ...(read.longestGapMs <= 500 || options.burstPct > 15 ? [] : [`the longest freeze after the loss was ${read.longestGapMs}ms, over 500ms`]),
+    ]
+    return {variant: 'burst', dropped, read, pageErrors: errors, problems}
+  } finally {
+    network.setLoss(0)
+    host.destroy()
+    viewer.destroy()
+    require('../main/media').stopAll()
+  }
+}
+
+function readBurst({hostSelfId, startedWall, endedWall, viewerData, before, after, fps}) {
+  diagnostics.flush()
+  const lines = fs.readFileSync(diagnostics.filePath(), 'utf8').trim().split('\n').map(parseLine).filter(Boolean)
+  const wall = (e) => Date.parse(e.t)
+  const samples = lines.filter((e) => e.self === hostSelfId && e.ev === 'host-sample' && e.bitrate != null).map((e) => ({atS: lib.round((wall(e) - endedWall) / 1000, 1), wall: wall(e), bitrate: e.bitrate, scale: e.scale, decision: e.decision, lossPct: e.receiver?.lossPct ?? null, freezes: e.receiver?.freezes ?? null}))
+  const pre = [...samples].reverse().find((s) => s.wall < startedWall) || null
+  const during = samples.filter((s) => s.wall >= startedWall && s.wall <= endedWall + 2000)
+  const post = samples.filter((s) => s.wall > endedWall)
+  const scaleBack = pre && post.find((s) => s.scale <= pre.scale + 1e-6)
+  const bitrateBack = pre && post.find((s) => s.bitrate >= pre.bitrate * 0.99)
+  const frames = viewerData.frames.map((f) => viewerData.timeOrigin + f[4])
+  const gaps = []
+  for (let i = 1; i < frames.length; i++) if (frames[i] >= startedWall - 500 && frames[i] <= endedWall + options.recoverS * 1000) gaps.push({atS: lib.round((frames[i - 1] - startedWall) / 1000, 2), ms: Math.round(frames[i] - frames[i - 1])})
+  const calmGaps = []
+  for (let i = 1; i < frames.length; i++) if (frames[i] >= viewerData.timeOrigin + 5000 && frames[i] < startedWall - 500) calmGaps.push(frames[i] - frames[i - 1])
+  const v0 = before.viewer.videoIn
+  const v1 = after.viewer.videoIn
+  const s0 = before.sender.videoOut
+  const s1 = after.sender.videoOut
+  const delta = (a, b, key) => (a && b && Number.isFinite(a[key]) && Number.isFinite(b[key]) ? b[key] - a[key] : null)
+  return {
+    pre, lowest: during.length ? {bitrate: Math.min(...during.map((s) => s.bitrate)), scale: Math.max(...during.map((s) => s.scale))} : null,
+    scaleBackAtS: scaleBack ? scaleBack.atS : null, bitrateBackAtS: bitrateBack ? bitrateBack.atS : null,
+    // Information, not a gate: the ceiling is held below its old value for a minute on purpose (the stall memory).
+    ceilingAt10sPct: pre && post.find((s) => s.atS >= 10) ? lib.round((100 * post.find((s) => s.atS >= 10).bitrate) / pre.bitrate, 0) : null,
+    series: samples.filter((s) => s.wall >= startedWall - 4000).map((s) => [s.atS, s.bitrate, s.scale, s.decision, s.lossPct]),
+    longestGapMs: gaps.reduce((m, g) => Math.max(m, g.ms), 0), calmLongestGapMs: Math.round(calmGaps.reduce((m, g) => Math.max(m, g), 0)),
+    gapsOver500: gaps.filter((g) => g.ms > 500), gapsOver150: gaps.filter((g) => g.ms > 150).length,
+    viewer: {freezes: delta(v0, v1, 'freezeCount'), freezeS: lib.round(delta(v0, v1, 'totalFreezesDuration'), 2), framesDropped: delta(v0, v1, 'framesDropped'), heightBefore: v0?.frameHeight ?? null, heightAfter: v1?.frameHeight ?? null, packetsLost: delta(v0, v1, 'packetsLost'), pli: delta(v0, v1, 'pliCount'), nack: delta(v0, v1, 'nackCount'), fir: delta(v0, v1, 'firCount'), keyFramesDecoded: delta(v0, v1, 'keyFramesDecoded')},
+    sender: {pli: delta(s0, s1, 'pliCount'), nack: delta(s0, s1, 'nackCount'), fir: delta(s0, s1, 'firCount'), keyFramesEncoded: delta(s0, s1, 'keyFramesEncoded')},
+  }
+}
+
+function summarizeBurst(allRuns) {
+  const runs = allRuns.filter((r) => !r.failed)
+  const col = (pick) => runs.map(pick).filter(Number.isFinite)
+  const med = (pick, digits = 1) => lib.round(lib.median(col(pick)), digits)
+  return {runs: runs.length, failedRuns: allRuns.length - runs.length, scaleBackAtS: {perRun: runs.map((r) => r.read.scaleBackAtS), median: med((r) => r.read.scaleBackAtS)}, bitrateBackAtS: {perRun: runs.map((r) => r.read.bitrateBackAtS), median: med((r) => r.read.bitrateBackAtS)}, ceilingAt10sPct: {perRun: col((r) => r.read.ceilingAt10sPct), median: med((r) => r.read.ceilingAt10sPct, 0)}, longestGapMs: {perRun: col((r) => r.read.longestGapMs), median: med((r) => r.read.longestGapMs, 0)}, calmLongestGapMs: {perRun: col((r) => r.read.calmLongestGapMs), median: med((r) => r.read.calmLongestGapMs, 0)}}
+}
+
 function summarizeRepublish(allRuns) {
   const runs = allRuns.filter((r) => !r.failed)
   const count = Math.max(0, ...runs.map((r) => r.stages.length))
@@ -663,6 +770,18 @@ function summarizeVariant(allRuns) {
       firstStepS: {perRun: col((r) => r.sent?.firstStepS), median: med((r) => r.sent?.firstStepS, 1)},
       setParametersAudio: {perRun: col((r) => r.sent?.setParameters.audio), median: med((r) => r.sent?.setParameters.audio, 0)},
     },
+    video: {
+      presentedPerSecond: {perRun: col((r) => r.viewer.video.presentedPerSecond), median: med((r) => r.viewer.video.presentedPerSecond, 2)},
+      rvfcPerSecond: {perRun: col((r) => r.viewer.video.rvfcPerSecond), median: med((r) => r.viewer.video.rvfcPerSecond, 2)},
+      hostPresentedPerSecond: {perRun: col((r) => r.host?.video.presentedPerSecond), median: med((r) => r.host?.video.presentedPerSecond, 2)},
+      inboundFps: {perRun: col((r) => r.transport.video.inboundFps), median: med((r) => r.transport.video.inboundFps, 1)},
+      intervalSdMs: {perRun: col((r) => r.viewer.video.cadence.intervalStddevMs), median: med((r) => r.viewer.video.cadence.intervalStddevMs, 2)},
+      intervalP95Ms: {perRun: col((r) => r.viewer.video.cadence.intervalP95Ms), median: med((r) => r.viewer.video.cadence.intervalP95Ms, 2)},
+      intervalMaxMs: {perRun: col((r) => r.viewer.video.cadence.intervalMaxMs), median: med((r) => r.viewer.video.cadence.intervalMaxMs, 1)},
+      lateFramePct: {perRun: col((r) => r.viewer.video.cadence.lateFramePct), median: med((r) => r.viewer.video.cadence.lateFramePct, 2)},
+      freezes: {perRun: col((r) => r.transport.video.freezes), median: med((r) => r.transport.video.freezes, 0)},
+      receivedKbps: {perRun: col((r) => r.transport.video.receivedKbps), median: med((r) => r.transport.video.receivedKbps, 0)},
+    },
     steadyMedianMs: {perRun: col((r) => r.viewer.offset.steady.medianMs), median: lib.round(lib.median(col((r) => r.viewer.offset.steady.medianMs)), 1), spread: spread(col((r) => r.viewer.offset.steady.medianMs))},
     steadyMedianAbsMs: lib.round(lib.median(col((r) => r.viewer.offset.steady.medianAbsMs)), 1),
     steadyP95AbsMs: {perRun: col((r) => r.viewer.offset.steady.p95AbsMs), median: lib.round(lib.median(col((r) => r.viewer.offset.steady.p95AbsMs)), 1)},
@@ -676,6 +795,19 @@ function printReport(report) {
   console.log(`\n=== Benchmark ${report.version} ${report.date}${report.options.quick ? ' (quick: not a result)' : ''} [${mode}] ===`)
   for (const [variant, runs] of Object.entries(report.variants)) {
     const s = report.summary[variant]
+    if (variant === 'burst') {
+      console.log(`
+--- burst: ${runs.length} run(s), ${report.options.burstPct}% loss for ${report.options.burstS}s after ${report.options.burstAtS}s, ${report.options.recoverS}s to recover ---`)
+      console.log(`  seconds after the burst ends until the picture is back at its size: ${f(s.scaleBackAtS.median, 's')} (${s.scaleBackAtS.perRun.join(', ')}); until the send ceiling is back at its old value: ${f(s.bitrateBackAtS.median, 's')} (${s.bitrateBackAtS.perRun.join(', ')}), at 10s it stands at ${f(s.ceilingAt10sPct.median, '%')} of it (${s.ceilingAt10sPct.perRun.join(', ')}); longest gap between presented frames from the loss to the end of the window ${f(s.longestGapMs.median, 'ms')} (${s.longestGapMs.perRun.join(', ')}), before the loss ${f(s.calmLongestGapMs.median, 'ms')}`)
+      runs.forEach((r, i) => {
+        if (r.failed) return console.log(`  run ${i + 1}: FAILED ${r.failed}`)
+        const k = r.read
+        console.log(`  run ${i + 1}: dropped ${r.dropped} packets; before ${JSON.stringify(k.pre)}; lowest ${JSON.stringify(k.lowest)}; gaps over 500ms ${JSON.stringify(k.gapsOver500)}, over 150ms ${k.gapsOver150}; viewer ${JSON.stringify(k.viewer)}; sender ${JSON.stringify(k.sender)}`)
+        console.log(`         ladder after the loss started (s after the burst ended, bitrate, scale, decision, reported loss%): ${JSON.stringify(k.series)}`)
+        for (const problem of r.problems) console.log(`         INVALID: ${problem}`)
+      })
+      continue
+    }
     if (variant === 'loop') {
       console.log(`
 --- loop: ${runs.length} run(s) ---`)
@@ -705,6 +837,7 @@ function printReport(report) {
     }
     console.log(`\n--- ${variant}: ${runs.length} run(s) ---`)
     console.log(`  audio, medians over ${s.runs} run(s): L/R separation at the viewer ${f(s.audio.separationAtViewer.median)} (${s.audio.separationAtViewer.perRun.join(', ')}), concealed ${f(s.audio.concealmentPct.median, '%')} (${s.audio.concealmentPct.perRun.join(', ')}), received ${f(s.audio.receivedKbps.median, ' kbps')}, sent ${f(s.audio.sentKbps.median, ' kbps')}, lost packets ${f(s.audio.packetsLost.median)}, first audio step ${f(s.audio.firstStepS.median, 's')}, audio setParameters ${f(s.audio.setParametersAudio.median)}`)
+    console.log(`  video, medians over ${s.runs} run(s) at ${report.clip.fps}fps: viewer presents ${f(s.video.presentedPerSecond.median, '/s')} (${s.video.presentedPerSecond.perRun.join(', ')}; host's own ${f(s.video.hostPresentedPerSecond.median, '/s')}), rVFC callbacks ${f(s.video.rvfcPerSecond.median, '/s')}, inbound ${f(s.video.inboundFps.median, 'fps')}, frame interval sd ${f(s.video.intervalSdMs.median, 'ms')} (${s.video.intervalSdMs.perRun.join(', ')}), p95 ${f(s.video.intervalP95Ms.median, 'ms')}, max ${f(s.video.intervalMaxMs.median, 'ms')}, late frames ${f(s.video.lateFramePct.median, '%')}, freezes ${f(s.video.freezes.median)}, ${f(s.video.receivedKbps.median, ' kbps')}`)
     console.log(`  A/V offset at the viewer, beep heard minus flash shown (positive = sound late), events after ${lib.STEADY}s of clip:`)
     console.log(`    median ${f(s.steadyMedianMs.median, 'ms')}  |median| ${f(s.steadyMedianAbsMs, 'ms')}  p95 |offset| ${f(s.steadyP95AbsMs.median, 'ms')}  worst ${f(s.steadyWorstMs.worst, 'ms')}   spread of the run medians ${f(s.steadyMedianMs.spread, 'ms')} (${s.steadyMedianMs.perRun.join(', ')})`)
     runs.forEach((r, i) => {
@@ -716,6 +849,7 @@ function printReport(report) {
         `   | telemetry s.off (estimate, sound late) median ${f(r.telemetry.estimatedOffsetMedianMs, 'ms')}, s.av (capture-time skew, not subtracted) median ${f(r.telemetry.avSkewMedianMs, 'ms')}`)
       const c = t.audio.concealment
       console.log(`         audio: ${f(t.audio.codecChannels)} ch (receive fmtp '${f(t.audio.fmtp)}', send fmtp '${f(t.audio.sentFmtp)}'; stereo separation at the viewer's tap ${f(r.viewer.stereo.separation)}${r.host ? `, at the host's ${f(r.host.stereo.separation)}` : ''}; 0.5 is two independent channels, 0 is mono), received ${f(t.audio.receivedKbps, ' kbps')} of ${f(t.audio.configuredMaxKbps, ' kbps')} cap (sent ${f(t.audio.sentKbps, ' kbps')}), concealed (conc-sil) ${f(c?.pct, '%')} over ${f(t.windowS, 's')} (${f(c?.netSamples)} of ${f(c?.totalSamples)} samples), lost ${f(t.audio.packetsLost)}, beep RMS ${f(lib.round(r.viewer.levelRms, 3))}`)
+      if (r.sent) console.log(`         sender video encoder (the host's change-only link event, venc): ${JSON.stringify(r.sent.venc)} (${r.sent.linkEvents} link event(s)); encode time ${f(r.sent.encMsMedian, 'ms')}/frame; hardware: ${JSON.stringify(r.sent.hardware)}`)
       if (r.sent) console.log(`         sender: audio steps ${JSON.stringify(r.sent.audioSteps)}, final step ${f(r.sent.finalStep)}, host-sample audio median ${f(r.sent.audioSentKbpsMedian, ' kbps')}, viewer-reported loss median ${f(r.sent.lossReportedMedianPct, '%')}, setParameters applied audio ${r.sent.setParameters.audio} video ${r.sent.setParameters.video} failed ${r.sent.setParameters.failed}`)
       const v = r.viewer.video
       console.log(`         video: ${f(v.cadence.frames)} frames presented, ${f(v.cadence.intervalMeanMs, 'ms')} mean interval (sd ${f(v.cadence.intervalStddevMs, 'ms')}, p95 ${f(v.cadence.intervalP95Ms, 'ms')}, max ${f(v.cadence.intervalMaxMs, 'ms')}, ${f(v.cadence.lateFramePct, '%')} late), rVFC ${f(v.rvfcPerSecond, '/s')}${v.presentedFramesNotCalledBack ? ` (${v.presentedFramesNotCalledBack} presented frames got no callback)` : ''} = ${f(lib.round(v.rvfcPerSecond / report.clip.fps, 2), 'x')} the clip's ${report.clip.fps}fps, inbound ${f(t.video.inboundFps, 'fps')} ${f(t.video.width)}x${f(t.video.height)} ${f(t.video.receivedKbps, ' kbps')}, dropped ${f(t.video.framesDropped)}, freezes ${f(t.video.freezes)}`)
@@ -750,7 +884,7 @@ app.whenReady().then(async () => {
       for (let i = 1; i <= options.runs; i++) {
         console.log(`${variant} run ${i}/${options.runs} ...`)
         try {
-          variantsOut[variant].push(await (variant === 'film' ? runFilm(env, i) : variant === 'loop' ? runLoop(env, i) : variant === 'republish' || variant === 'reopen' ? runRepublish(env, i, variant) : runShare(env, i)))
+          variantsOut[variant].push(await (variant === 'film' ? runFilm(env, i) : variant === 'loop' ? runLoop(env, i) : variant === 'burst' ? runBurst(env, i) : variant === 'republish' || variant === 'reopen' ? runRepublish(env, i, variant) : runShare(env, i)))
         } catch (error) {
           console.error(error)
           variantsOut[variant].push({variant, failed: String(error.message || error), problems: [`the run failed: ${error.message}`]})
@@ -762,14 +896,14 @@ app.whenReady().then(async () => {
     const date = new Date().toISOString().slice(0, 10)
     const report = {
       version, date, createdAt: new Date().toISOString(), options, platform: `${process.platform} ${process.arch}`, electron: process.versions.electron, chromium: process.versions.chrome,
-      clip: {fps: env.schedule.fps, events: env.schedule.events.length, durationS: env.schedule.duration, seed: options.seed, flashFrames: lib.FLASH_FRAMES, beepS: lib.BEEP_SECONDS},
+      clip: {fps: env.schedule.fps, size: env.schedule.size, events: env.schedule.events.length, durationS: env.schedule.duration, seed: options.seed, flashFrames: lib.FLASH_FRAMES, beepS: lib.BEEP_SECONDS},
       measurement: {
         gated: 'viewer.offset.steady: beep heard (AudioWorklet frame after the output gain, mapped with getOutputTimestamp) minus flash shown (rVFC expectedDisplayTime of the first white frame); host and telemetry s.av are beside it, never subtracted',
         steadyFromS: lib.STEADY, concealment: 'conc - sil over the window that starts 10s after the picture does',
       },
       mode: {loss: options.loss, linkKbps: options.linkKbps, audioLadder: options.audioLadder, audioFirst: options.audioFirst, tree: options.tree ? path.basename(options.tree) : null, network: network && {kind: 'UDP relays (scripts/bench-net.js)', stats: network.stats}},
       variants: variantsOut,
-      summary: Object.fromEntries(Object.entries(variantsOut).map(([k, runs]) => [k, k === 'republish' || k === 'reopen' ? summarizeRepublish(runs) : k === 'loop' ? summarizeLoop(runs) : summarizeVariant(runs)])),
+      summary: Object.fromEntries(Object.entries(variantsOut).map(([k, runs]) => [k, k === 'republish' || k === 'reopen' ? summarizeRepublish(runs) : k === 'loop' ? summarizeLoop(runs) : k === 'burst' ? summarizeBurst(runs) : summarizeVariant(runs)])),
     }
     const dir = path.join(root, 'work', 'bench')
     fs.mkdirSync(dir, {recursive: true})

@@ -101,7 +101,7 @@ test('quality diagnostics identify recovery, settling, the ceiling and group bud
   const group = chooseSendQuality({bitrate: 10e6}, {...clean, peerCount: 7})
   assert.equal(group.decision, 'group-budget')
   assert.equal(group.ceiling, 18e6 / 7)
-  assert.equal(chooseSendQuality(group, {...clean, peerCount: 7}).decision, 'settling', 'rounding cannot manufacture another group reduction')
+  assert.equal(chooseSendQuality({...group, calmMs: 0}, {...clean, peerCount: 7}).decision, 'settling', 'rounding cannot manufacture another group reduction')
 })
 
 test('group health uses one complete peer record', () => {
@@ -120,7 +120,7 @@ function feed(quality, reports, extra = {}) {
 }
 
 test('above the starting rate the cap climbs one probe at a time, not on the bandwidth estimate', () => {
-  let quality = feed({bitrate: 4e6}, [clean, clean, clean])
+  let quality = feed({bitrate: 4e6}, [clean, clean])
   assert.equal(quality.decision, 'recovery')
   assert.equal(quality.bitrate, 5e6, 'a 25% probe, not a jump to 80% of an 8 Mbps estimate')
   quality = feed(quality, [clean])
@@ -255,4 +255,20 @@ test('with "keep audio quality" on the ladder is never used', () => {
   // Turning it on while a step is taken puts the audio straight back.
   const stepped = tick(warm(), limited, 2)
   assert.equal(chooseAudioStep(stepped, {...limited, enabled: false}).step, 0)
+})
+
+// M1.7: `npm run bench -- --variant=burst` (a 10% loss burst of 4s on a clean loopback link, 1080p film). Reports arrive every
+// 2s; three clean ones used to be needed before the first raise and the picture was back at full size 7.6-10.7s after the
+// burst ended. Two are enough now, and the stall memory (the cap stays under 85% of the failed rate for a minute) is untouched.
+test('after a short loss burst the picture is back at full size within 10s of clean reports', () => {
+  let quality = {bitrate: 7.8e6}
+  quality = feed(quality, [{lossPct: 4.6, freezes: 1}, {lossPct: 10, freezes: 1}, {lossPct: 8, freezes: 1}], {sentBps: 7.8e6, width: 1920, height: 1080})
+  assert.ok(quality.scale > 1, `the burst took the picture below full size (${quality.scale})`)
+  let seconds = 0
+  while (quality.scale > 1 && seconds < 60) {
+    quality = feed(quality, [clean], {sentBps: quality.bitrate, width: 1920, height: 1080})
+    seconds += 2
+  }
+  assert.ok(seconds <= 10, `full size again after ${seconds}s of clean reports`)
+  assert.ok(quality.bitrate <= 7.8e6 * 0.85 + 1, 'the stall memory still holds the cap under 85% of the failed rate')
 })

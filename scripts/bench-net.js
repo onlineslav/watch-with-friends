@@ -76,7 +76,11 @@ function createNetwork({lossPct = 0, linkKbps = 0, queuePackets = 50, random = M
     relays.clear()
   }
 
-  return {relayFor, close, stats, pass, options: {lossPct, linkKbps, queuePackets}}
+  // A burst of loss on an otherwise clean link (bench --variant=burst): the percentage can change while packets flow.
+  function setLoss(pct) { lossPct = pct; options.lossPct = pct }
+  const options = {lossPct, linkKbps, queuePackets}
+
+  return {relayFor, close, stats, pass, setLoss, options}
 }
 
 module.exports = {createNetwork}

@@ -258,25 +258,32 @@ test('live lines are the redacted lines of the log file, byte for byte', async (
 
 const frameFrom = (label, lines) => Buffer.concat([Buffer.from([Buffer.byteLength(label)]), Buffer.from(label), encodeBatch(lines)])
 
-test('the reader prints two people\'s lines interleaved by their own clock, labelled', () => {
-  const hold = view.createHold({holdMs: 1000})
-  const aya = view.linesFromFrame(frameFrom('aya#abcd-1234', [line(10), line(30)]))
-  const lenna = view.linesFromFrame(frameFrom('lenna#efgh-5678', [line(20), line(40)]))
-  // Lenna's batch is slower on the wire than Aya's, but both are held before printing.
-  for (const item of aya) hold.add(item, 1000)
-  assert.deepEqual(hold.release(1500), [], 'held for a second')
-  for (const item of lenna) hold.add(item, 1600)
-  const out = hold.release(2000)
-  assert.deepEqual(out.map((item) => item.label), ['aya#abcd-1234', 'aya#abcd-1234'], 'only the old batch is ready')
-  const rest = hold.release(2700)
-  const order = [...out, ...rest].sort((a, b) => a.at - b.at).map((item) => `${item.label.split('#')[0]}:${item.line.rttMs}`)
-  assert.deepEqual(order, ['aya:10', 'lenna:20', 'aya:30', 'lenna:40'])
-  // Within one release they come out sorted.
-  const both = view.createHold({holdMs: 1000})
-  for (const item of [...aya, ...lenna]) both.add(item, 0)
-  assert.deepEqual(both.release(1000).map((item) => item.line.rttMs), [10, 20, 30, 40])
+test('the reader prints two people\'s lines interleaved by their own clock, labelled, across releases', () => {
+  const T = 1_800_000_000_000
+  const at = (offset) => formatEvent({at: T + offset, mono: 0, level: 'info', scope: 'telemetry', event: 'viewer-sample', data: {offset}})
+  const aya = view.linesFromFrame(frameFrom('aya#abcd-1234', [at(100), at(500), at(900)]))
+  const lenna = view.linesFromFrame(frameFrom('lenna#efgh-5678', [at(50), at(450), at(850)]))
+  // Aya's batch arrives at once, Lenna's 300 ms later; the printer ticks every 250 ms.
+  const hold = view.createHold()
+  const printed = []
+  for (let now = T; now <= T + 8000; now += 250) {
+    if (now === T) for (const item of aya) hold.add(item, now)
+    if (now === T + 250) for (const item of lenna) hold.add(item, now)
+    for (const item of hold.release(now)) printed.push(`${item.label.split('#')[0]}${item.line.offset}`)
+  }
+  assert.deepEqual(printed, ['lenna50', 'aya100', 'lenna450', 'aya500', 'lenna850', 'aya900'], 'in order of their own clocks, across ticks')
+  assert.equal(hold.size, 0)
+  // Nothing is printed before it has had time for the other person's batch to arrive.
+  const early = view.createHold()
+  for (const item of aya) early.add(item, T)
+  assert.deepEqual(early.release(T + 1000), [])
+  // A line with a far-off clock does not stall the rest: it goes when its hold is up.
+  const skewed = view.createHold()
+  skewed.add({at: T + 600_000, label: 'x', line: {}, text: ''}, T)
+  assert.equal(skewed.release(T + 2999).length, 0)
+  assert.equal(skewed.release(T + 3000).length, 1)
   const text = view.formatLine(aya[0], {color: false})
-  assert.match(text, /^\d\d:\d\d:\d\d\.\d{3} aya#abcd-1234 +telemetry\/viewer-sample \{.*"rttMs":10/)
+  assert.match(text, /^\d\d:\d\d:\d\d\.\d{3} aya#abcd-1234 +telemetry\/viewer-sample \{.*"offset":100/)
 })
 
 test('the reader filters by scope, scope/event and person', () => {
@@ -305,6 +312,19 @@ test('control characters from a hostile app never reach the terminal', () => {
   assert.ok(!/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u202a-\u202e]/.test(printed), JSON.stringify(printed))
   assert.match(printed, /pwned/, 'the text survives, the control characters do not')
   assert.equal(stripControl('a\u001b[0mb'), 'a[0mb')
+})
+
+test('escapes inside JSON values, and the level, cannot smuggle control characters either', () => {
+  const json = '{"t":"2026-11-03T00:00:00.000Z","lv":"\\u001b]0;pwn\\u0007","sc":"s\\u009b","ev":"e","a":"\\u001b[2J","b":"\\u009b2J\\u202eevil","c":["\\u0085x"]}'
+  const items = view.linesFromFrame(frameFrom('lbl‮', [json]))
+  assert.equal(items.length, 1)
+  assert.equal(items[0].line.lv, '\u001b]0;pwn\u0007', 'the escapes did decode into real characters')
+  for (const color of [false, true]) {
+    const printed = view.formatLine(items[0], {color, colorOf: () => 36})
+    const bare = printed.replace(/\u001b\[(?:36|0)m/g, '')
+    assert.ok(!/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u2028\u2029‪-‮⁦-⁩]/.test(bare), JSON.stringify(bare))
+    assert.match(bare, /pwn/i)
+  }
 })
 
 test('garbage frames are skipped, not fatal', () => {

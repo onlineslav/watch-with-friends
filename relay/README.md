@@ -34,7 +34,7 @@ The same checkbox also streams each log line as it happens, so a developer can w
 
 - **Apps** connect to `/live?role=app&from=<username>` with no credentials, like `/telemetry`. The object tells them `{"watching": true|false}`; they send batches (about a second apart, deflated, 64 KB at most) only while someone is watching. Idle sockets are kept alive by `setWebSocketAutoResponse` ("ping" is answered without waking the object), so they cost nothing while it hibernates.
 - **Readers** (`npm run diagnostics -- --live [scope]`) connect to `/live?role=view` with `Authorization: Bearer <gh auth token>`. The Worker asks GitHub once per connection (cached a minute, by the token's hash) whether that token can read `DIAGNOSTICS_REPO`: no token or a bad one is 401, a valid one without access is 403, and a GitHub outage or rate limit is 503. `GET /live?role=view` without an upgrade is the same check on its own.
-- Caps per object: 64 apps, 8 readers, 64 KB per frame, 5 frames a second per socket. The existing ten-requests-a-minute limit applies to the upgrade request too.
+- Caps per object: 64 apps, 8 readers, 64 KB per frame, 5 frames a second per socket. The existing ten-requests-a-minute limit applies to the upgrade request too. A reader whose last ping (they send one every 15 s) is older than 40 s is treated as gone and closed, so a laptop that slept does not hold a slot or keep apps streaming.
 
 One-time deploy (the first deploy that includes live telemetry creates the Durable Object class; no new secret):
 

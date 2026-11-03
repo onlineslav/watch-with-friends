@@ -158,7 +158,7 @@ app.whenReady().then(async () => {
       await run(`window.api.logEvents([{at: Date.now(), mono: ${i}, level: 'info', scope: 'e2e', event: 'film', data: {i: ${i}}}])`)
       await pause(600)
     }
-    await pause(3000)
+    await pause(4500) // the reader holds lines 3 s to put two people in order
     assert.match(printed, new RegExp(`${USER} +e2e/film \\{"i":103`), `the viewer printed the lines:\n${printed}`)
     const rows = printed.trim().split('\n').filter((row) => row.includes('e2e/film'))
     assert.ok(rows.length >= 4)

@@ -30,6 +30,7 @@ function room() {
     acceptWebSocket(socket, tags) { socket.tags = tags; sockets.push(socket) },
     getWebSockets: (tag) => sockets.filter((socket) => socket.tags.includes(tag)),
     setWebSocketAutoResponse() {},
+    getWebSocketAutoResponseTimestamp: (socket) => (socket.lastPing ? new Date(socket.lastPing) : null),
   }
   const originals = {...platform}
   platform.pair = () => ({client: {isClient: true}, server: new FakeSocket()})
@@ -288,4 +289,50 @@ test('the Durable Object is declared SQLite-backed, the only kind the free plan 
   assert.deepEqual(parsed.migrations, [{tag: 'v1', new_sqlite_classes: ['LiveHub']}])
   assert.deepEqual(parsed.durable_objects.bindings, [{name: 'LIVE', class_name: 'LiveHub'}])
   assert.ok(!JSON.stringify(parsed.migrations).includes('"new_classes"'))
+})
+
+test('a reader that went quiet without closing (a sleeping laptop) stops counting', async () => {
+  const r = setup()
+  const github = stubGitHub()
+  const now = Date.now
+  let clock = 1_800_000_000_000
+  Date.now = () => clock
+  try {
+    const app = await connect(r.env, appRequest())
+    const asleep = await connect(r.env, viewRequest())
+    const awake = await connect(r.env, viewRequest())
+    assert.deepEqual(app.texts.at(-1), { watching: true })
+    // Both connected 50 s ago; only one has pinged since (the runtime records the auto-response).
+    clock += 50_000
+    awake.lastPing = clock - 10_000
+    r.hub.webSocketMessage(app, new Uint8Array([1, 2]).buffer)
+    assert.equal(asleep.closed.code, 1001, 'the silent reader is closed')
+    assert.equal(awake.closed, null, 'the one that pinged is kept')
+    assert.equal(awake.frames.length, 1, 'and gets the frame')
+    assert.equal(asleep.frames.length, 0)
+    // When the last reader goes quiet the apps are told to stop streaming.
+    clock += 50_000
+    r.hub.webSocketMessage(app, new Uint8Array([1, 2]).buffer)
+    assert.equal(awake.closed.code, 1001)
+    assert.deepEqual(app.texts.at(-1), { watching: false })
+    assert.equal(awake.frames.length, 1)
+  } finally { Date.now = now; github.restore(); r.restore() }
+})
+
+test('stale readers do not hold the reader slots', async () => {
+  const r = setup()
+  const github = stubGitHub()
+  const now = Date.now
+  let clock = 1_800_000_000_000
+  Date.now = () => clock
+  try {
+    const readers = []
+    for (let i = 0; i < 8; i++) readers.push(await connect(r.env, viewRequest()))
+    assert.equal((await live(viewRequest(), r.env)).status, 503, 'full')
+    clock += 41_000
+    for (const reader of readers.slice(0, 7)) reader.lastPing = clock - 5_000
+    const admitted = await live(viewRequest(), r.env)
+    assert.equal(admitted.status, 101, 'the eighth, silent for 41 s, gave up its slot')
+    assert.equal(readers[7].closed.code, 1001)
+  } finally { Date.now = now; github.restore(); r.restore() }
 })

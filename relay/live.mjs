@@ -25,6 +25,9 @@ const MAX_FRAME = 64 * 1024
 const MAX_FRAMES_PER_SECOND = 5
 const MAX_NAME = 80
 const OPEN = 1
+// A reader pings every 15 s. One whose last word (a ping, or its connecting) is older than this is
+// gone: a laptop that slept sends no close frame, and the object would otherwise count it for minutes.
+const READER_STALE_MS = 40_000
 
 const ALLOW_FOR_MS = 60_000
 const DENY_FOR_MS = 15_000
@@ -127,8 +130,26 @@ export class LiveHub {
     platform.autoResponse(ctx)
   }
 
+  // When the socket last said anything the runtime can see: a ping answered by the auto-response (which
+  // never wakes this object) or the moment it connected.
+  lastHeard(socket) {
+    const pinged = this.ctx.getWebSocketAutoResponseTimestamp?.(socket)
+    return Math.max(pinged ? new Date(pinged).getTime() : 0, socket.deserializeAttachment()?.at ?? 0)
+  }
+
+  // Open sockets with this tag. Readers gone quiet are closed here, wherever readers are counted or
+  // admitted, and apps are told to stop if that leaves nobody watching.
   open(tag, except = null) {
-    return this.ctx.getWebSockets(tag).filter((socket) => socket !== except && socket.readyState === OPEN)
+    let sockets = this.ctx.getWebSockets(tag).filter((socket) => socket !== except && socket.readyState === OPEN)
+    if (tag === 'view') {
+      const stale = sockets.filter((socket) => Date.now() - this.lastHeard(socket) > READER_STALE_MS)
+      if (stale.length) {
+        for (const socket of stale) { this.rates.delete(socket); try { socket.close(1001, 'No ping') } catch {} }
+        sockets = sockets.filter((socket) => !stale.includes(socket))
+        if (!sockets.length) this.tell(this.open('app'), {watching: false})
+      }
+    }
+    return sockets
   }
 
   tell(sockets, message) {
@@ -146,7 +167,7 @@ export class LiveHub {
     if (role === 'app' ? apps.length >= MAX_APPS : viewers.length >= MAX_VIEWERS) return json({error: 'Too many connections'}, 503, {'Retry-After': '60'})
     const {client, server} = platform.pair()
     this.ctx.acceptWebSocket(server, [role])
-    server.serializeAttachment({role, from})
+    server.serializeAttachment({role, from, at: Date.now()})
     if (role === 'app') {
       server.send(JSON.stringify({watching: viewers.length > 0}))
       this.tell(viewers, {join: from})

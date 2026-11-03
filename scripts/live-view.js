@@ -19,7 +19,11 @@ const {execFileSync} = require('node:child_process')
 const {decodeBatch, stripControl, unwrapRelayFrame} = require('../shared/live')
 
 const DEFAULT_URL = 'https://synced-video-relay.watch-with-friends.workers.dev'
-const HOLD_MS = 1000
+// A line reaches the reader about 2.5 s after it happened (the app's batching, the one-a-second batch,
+// the socket), and two people's batches can differ by that much. Lines are therefore printed in order
+// of their own timestamps once they are LAG_MS old, or have waited HOLD_MS, whichever comes first.
+const LAG_MS = 3000
+const HOLD_MS = 3000
 const PING_EVERY_MS = 15_000
 const PONG_WITHIN_MS = 10_000
 const COLORS = [36, 33, 35, 32, 34, 91, 96, 93]
@@ -42,17 +46,23 @@ function parseArgs(args, env = {}) {
 // `telemetry` matches every event of that scope, `telemetry/host-sample` one event.
 const wanted = (line, scopes) => !scopes.length || scopes.some((scope) => (scope.includes('/') ? scope === `${line.sc}/${line.ev}` : scope === line.sc))
 
-// Lines wait here until they are `holdMs` old, then leave in order of their own timestamps.
-function createHold({holdMs = HOLD_MS} = {}) {
+// Lines wait here, kept in order of their own timestamps. A line qualifies once it is `lagMs` old by
+// its own clock or has been held `holdMs`; everything ahead of the last qualifying line is released
+// with it, so what is printed never goes back in time, within a release or across them (unless a line
+// arrives later than the hold allows for).
+function createHold({holdMs = HOLD_MS, lagMs = LAG_MS} = {}) {
   let items = []
   let order = 0
+  const key = (item) => item.at || item.receivedAt
   return {
-    add(item, now) { items.push({...item, order: order++, receivedAt: now}) },
+    add(item, now) {
+      items.push({...item, order: order++, receivedAt: now})
+      items.sort((a, b) => key(a) - key(b) || a.order - b.order)
+    },
     release(now) {
-      const ready = items.filter((item) => now - item.receivedAt >= holdMs)
-      if (!ready.length) return []
-      items = items.filter((item) => now - item.receivedAt < holdMs)
-      return ready.sort((a, b) => a.at - b.at || a.order - b.order)
+      let last = -1
+      items.forEach((item, index) => { if ((item.at && item.at <= now - lagMs) || now - item.receivedAt >= holdMs) last = index })
+      return last < 0 ? [] : items.splice(0, last + 1)
     },
     get size() { return items.length },
   }
@@ -93,13 +103,17 @@ const clock = (at) => {
 }
 
 function formatLine({label, line, text, at}, {color = false, width = 24, colorOf = () => 0} = {}) {
-  const name = label.length > width ? `${label.slice(0, width - 1)}…` : label.padEnd(width)
-  const tag = color ? `\u001b[${colorOf(label)}m${name}\u001b[0m` : name
-  if (!line) return `${clock(at)} ${tag} ${text}`
+  // Everything from the wire is stripped after it has been parsed and serialized again, and before any
+  // colour is added: a C1 or bidi character written as a JSON unicode escape only becomes a real
+  // character when parsed, and JSON.stringify re-escapes just the C0 range.
+  const plain = stripControl(label)
+  const shown = plain.length > width ? `${plain.slice(0, width - 1)}…` : plain.padEnd(width)
+  const tag = color ? `\u001b[${colorOf(label)}m${shown}\u001b[0m` : shown
+  if (!line) return `${clock(at)} ${tag} ${stripControl(text)}`
   const {t, m, lv, sc, ev, ...rest} = line
   const level = lv && lv !== 'info' ? ` ${String(lv).toUpperCase()}` : ''
   const body = Object.keys(rest).length ? ` ${JSON.stringify(rest)}` : ''
-  return `${clock(at)} ${tag} ${stripControl(`${sc}/${ev}`)}${level}${body}`
+  return `${clock(at)} ${tag} ${stripControl(`${sc}/${ev}${level}${body}`)}`
 }
 
 function wsUrl(base, role = 'view') {
@@ -180,22 +194,23 @@ function listen(options, token, {WebSocketImpl, hold, err, out, color, colorOf})
     const socket = new WebSocketImpl(wsUrl(options.url), {headers: {Authorization: `Bearer ${token}`}})
     socket.binaryType = 'arraybuffer'
     const finish = () => {
-      clearTimeout(ping)
+      clearInterval(ping)
       clearTimeout(pong)
       try { socket.close() } catch {}
       resolve(opened)
     }
-    const arm = () => {
-      clearTimeout(ping)
-      clearTimeout(pong)
-      ping = setTimeout(() => {
+    // A ping every 15 s no matter what else arrives: the Worker treats a reader whose last ping is
+    // older than about 40 s as gone (a laptop that slept sends no close). Any message counts as an answer.
+    const startPings = () => {
+      ping = setInterval(() => {
         try { socket.send('ping') } catch { return finish() }
+        clearTimeout(pong)
         pong = setTimeout(() => { err('No answer from the Worker; reconnecting.'); finish() }, PONG_WITHIN_MS)
       }, PING_EVERY_MS)
     }
-    socket.addEventListener('open', () => { opened = true; arm(); err('Connected. Waiting for apps with telemetry on...') })
+    socket.addEventListener('open', () => { opened = true; startPings(); err('Connected. Waiting for apps with telemetry on...') })
     socket.addEventListener('message', (event) => {
-      arm()
+      clearTimeout(pong)
       if (typeof event.data === 'string') {
         if (event.data === 'pong') return
         let message
@@ -214,4 +229,4 @@ function listen(options, token, {WebSocketImpl, hold, err, out, color, colorOf})
   })
 }
 
-module.exports = {DEFAULT_URL, HOLD_MS, authorize, createHold, formatLine, httpUrl, linesFromFrame, parseArgs, run, wanted, wsUrl}
+module.exports = {DEFAULT_URL, HOLD_MS, LAG_MS, authorize, createHold, formatLine, httpUrl, linesFromFrame, parseArgs, run, wanted, wsUrl}

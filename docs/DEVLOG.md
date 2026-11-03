@@ -8,3 +8,4 @@
   (simultaneous shares, whiteboard, Ableton window audio, sending the log) were skipped.
 - `docs/PLAN.md` doesn't exist; the milestone's Must work list stands in for it.
 - M1.2 verified (69ca220, workflow-builder, 1 attempt after a usage-limit pause; ~260k tokens). Sample cost 1.39ms host / 0.98ms viewer, down from 4.2/4.0ms.
+- M1.1 verified (3c8609d, 7c26f5e; workflow-builder, 2 attempts; audit 2 MEDIUM + 1 LOW, all fixed). Worker deployed (version 7a1a52ac), 0.8.0 uploads checked. ~410k tokens incl. pre-mortem and audit.

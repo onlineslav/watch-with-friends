@@ -25,7 +25,7 @@ Allowed to be rough:
   upload keeps working.
 
 ### M1.1 Live telemetry stream [must-work] [wire]
-Status: in progress
+Status: verified
 Story: While Lenna and I are watching, I run one command and see both our telemetry lines as they happen, about two
 seconds behind, so I can change something and see the effect right away.
 Done when:
@@ -67,7 +67,16 @@ control-character stripping only; labels are the claimed username). The orchestr
 audit passes.
 Out of scope: a web dashboard.
 Gate: no
-Evidence:
+Evidence: 3c8609d + 7c26f5e (attempt 2 fixed 2 MEDIUM audit findings: per-person blocks instead of wall-clock
+interleave; decoded JSON escapes reaching the terminal; plus the LOW stale-reader drop). Orchestrator reruns: `npm test`
+340/340; `npm run test:live` (real local workerd + real GitHub auth) 8 PASS, line delay 0.4–1.5s from main, checkbox
+off closes the socket in 62ms, zero frames with zero readers; `test:live-rate` worst 0.87 kbps (1 peer) / 1.38 kbps
+(host, 3 peers), raw JSON would be ~5.2/12.6 kbps; `test:logging` live line byte-identical and redacted (`…/film.mkv`);
+`test:network` 43 PASS. Deployed 2026-11-03 (version 7a1a52ac): `/live` 401 without a token, 200 with Aya's `gh` token;
+0.8.0-format `POST /telemetry` 200 (committed `telemetry/deploycheck-0000-0000/2026-11-03/064731833.log.gz`);
+`/credentials` 503 "Relay is not configured" (no TURN, as before); `npm run diagnostics -- --live` connects. Note:
+apps stream only from the next release; 0.8.0 copies only archive. LOW (audit): DO hibernation itself only observable
+in the Cloudflare dashboard after real use.
 
 ### M1.2 Comprehensive measurements
 Status: verified
@@ -105,7 +114,7 @@ Decided: machine numbers in one `machine-sample` per tick; slow facts in change-
 re-check at the milestone audit with 3+ viewers.
 
 ### M1.3 Session scorecard and release comparison
-Status: todo
+Status: in progress
 Story: After a watch session I run one command and get a short scorecard per person, and can see whether a new
 version is better or worse than the last one.
 Done when:

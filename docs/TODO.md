@@ -176,7 +176,7 @@ Gate: no
 Evidence:
 
 ### M1.9 Session context and "something's wrong" marks [wire]
-Status: todo
+Status: in progress
 Added: Aya, 2026-11-03 ("I want everything that would be useful"). Built right after M1.4, before the next release,
 so Lenna's first live session has it.
 Story: When Lenna or I notice something bad, one key press marks the moment in both our logs, and the log already

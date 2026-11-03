@@ -370,11 +370,14 @@ Done when:
   in `%TEMP%` when a run fails; ~319 of them filled the disk (ENOSPC). Clean up on failure and on start.
 - (M1.6 builder) Intermittent `test:network` player error: "Failed to set 'timestampOffset' on 'SourceBuffer': still
   processing appendBuffer or remove" (`renderer/player.mjs` seek race) at "playlist progress ≈ 8 s".
+- (orchestrator) Intermittent `test:network` failures at "Timed out: __test.session.link?.receiver?.height === 360"
+  (quality ladder, seen on old code too) and the playlist item menu `:popover-open` (`renderPlaylist` re-renders and
+  closes the menu). Make both honest or fixed.
 Gate: no
 Evidence:
 
 ### M1.11 Second file silent for viewers [must-work] [wire]
-Status: in progress
+Status: verified
 Added: orchestrator, 2026-11-03, from the M1.6 builder's bench finding; confirmed real by the M1.6 audit. Built right
 after M1.6's fixes by the same builder.
 Story: When I open a second film in the same session, my friends hear it, not just see it.
@@ -413,7 +416,18 @@ Done when:
   fails for only some peers, fall back to `addTrack` for those peers only. Known LOW, not fixing: against 0.8.x
   sharers, detached `sendrecv` sections still build up slowly until both ends run this build.
 Gate: no
-Evidence:
+Evidence: 05fa480 (attempt 1, Sonnet: one capture per element, clones), 485a105 (attempt 2, Sonnet: stop transceivers,
+`replaceTrack` on a source change), eb574cf + 8412df7 (attempt 3, workflow-builder-strong: stop only negotiated
+transceivers so a glare rollback can't leave a stuck one; never stop a detached one later, which had regressed the
+0.8.0 glare). Orchestrator reruns on 8412df7: `npm test` 458/458; `npm run test:network` 49 PASS (one other run failed
+at the pre-existing "height === 360" quality step, filed on M1.7), "after 11 files on one connection: 2 transceivers,
+3 m-sections, offer 8.0–8.6 KB" (before: +~10 KB per file, over the 64 KiB `@_signal` budget at file 7);
+`npm run test:compat` 10/10; new host → v0.8.0 viewer glare 5/5 (`check-compat.js --host=new --runs=5`, 343–348ms);
+glare probe settles in 7 offers (v2: 280). Builder bench `--variant=reopen --publishes=10`: viewer beep RMS 0.354 and
+stereo 0.50 after every file (before the fix: silence from file 2). Audits: 3 (HIGH SDP growth, MEDIUM glare
+rollback, all fixed). Known, not fixed: the Chromium "RTP extension ID reassignment" glare when both ends add
+different media kinds at the same mid in one round trip (CLAUDE.md); against 0.8.x sharers detached sections can
+still build up slowly until both ends run this build.
 
 ### M1.8 Real session review with Lenna [feel]
 Status: todo

@@ -1,10 +1,13 @@
-## What's new in 0.8.1
+## What's new in 0.8.2
 
 Windows users and Mac users on 0.5.3 or later receive this release through the in-app updater. Mac users on 0.5.2 or earlier should install the DMG below once to enable future in-app updates.
 
-- **Sound and picture line up.** When someone shared a window with its own app's sound, the sound could run well ahead of the picture, or WebRTC's lip-sync could give up entirely. That's fixed. Films are also tighter: sound now lands about 15ms after the picture, down from about 45ms.
-- **Mark a bad moment.** Press **X** in a room when something looks or sounds wrong (Shift+X to add a short note, or use the flag button in the controls). The moment is marked for everyone in the room, so the developer can see exactly what happened then.
-- **Better problem reports.** With **Send telemetry for development** on (Settings → Having problems?), the developer can now watch the connection live while you're watching together, and the log says more about what went wrong: audio dropouts, your audio device type, crashes, and whether your network or the other person's was the bottleneck. File names, network addresses and people's names in device names are still removed first. It's still off unless you turn it on.
+- **Stereo sound for viewers.** Until now everyone watching heard mono, even though the host was sending stereo. Films and shares now arrive in full stereo. (Watching a host who is still on an older version stays mono until they update.)
+- **The second film has sound.** When the host opened another file, or the playlist moved to the next item, viewers could see the picture but hear nothing. Fixed.
+- **No more dropping out after a few films.** Every film opened in one evening made the connection a little heavier, and around the seventh one everyone watching got disconnected. That no longer builds up.
+- **Smarter audio on a congested connection.** If the host's upload is genuinely full, sound steps down to 128 kbps instead of breaking up, and comes back on its own. With **Keep audio quality** on (the default) it's never lowered.
+
+Also in 0.8.1: sound and picture line up, the **X** key marks a bad moment, and better problem reports. See the 0.8.1 release for details.
 
 ## Download
 

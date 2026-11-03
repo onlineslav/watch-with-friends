@@ -222,6 +222,13 @@ Likely failures:
 Out of scope: on-demand speed test and Wi-Fi vs cable (Aya: first two methods only), Wi-Fi signal strength,
 join-timing breakdown, Chromium audio underrun counts (later, if needed).
 Gate: no
+Audit (56e0306): wire claims verified (old peers drop `mark` before any handler; old hosts accept `at`). To fix
+(queued after M1.5 to avoid two builders in `renderer/app.js`): MEDIUM `scripts/bottleneck.js:117-131` sums long-task
+ms over a session and checks host-computer before viewer-network, so long sessions blame the wrong computer (compare
+a rate; never pick host-computer while the other link is full); MEDIUM `renderer/app.js:4805` Shift+X types "X" into
+the note box (needs `preventDefault`); LOW device labels can carry first names ("Lenna's AirPods") — Decided: strip
+the possessive prefix before logging; LOW fallback text says "neither link filled" when the viewer's edge RTT is
+missing. LOW (not fixing now): the "marked in everyone's log" toast shows even when a 0.8.0 peer drops it.
 Evidence:
 
 ### M1.10 Release 0.8.1 with live telemetry

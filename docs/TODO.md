@@ -374,6 +374,16 @@ Done when:
   (quality ladder, seen on old code too) and the playlist item menu `:popover-open` (`renderPlaylist` re-renders and
   closes the menu). Make both honest or fixed.
 Gate: no
+Progress (attempt 1, Sonnet; continued by a fresh builder): done — rejoin black screen (cadf4d8: stale peer stream
+rebuilt from the receivers, `renderer/peer-stream.mjs`; `setParameters` re-read and retried, `sender-parameters.mjs`;
+`--rejoin-loop` before: fails at 1, after: 75/76 then 0 failures), temp folders cleaned on pass/fail and stale ones on
+start (da7c8f7), deterministic bench-net loss test (8469cdb), 0.8.2 Mac CI rejoin handshake timeout (88de987: after
+`@_leave` only a presence frame may re-attach a peer for 5s; `--churn-loop` under load before 5 failures/~500, after
+0/720), SourceBuffer `timestampOffset` race (b411068, `renderer/source-buffer.mjs` `whenIdle`) and honest waits for the
+quality, ceiling and download-sound steps. Orchestrator reruns on b411068: `npm test` 479/479, `test:network` 51 PASS,
+`test:compat` 10/10. Left: video smoothness (bench fps/jitter at 24/30/60 and a 60fps share, `venc` hardware check,
+loss-burst recovery ≤10s, no freeze >500ms on keyframe requests); share-tile audio and playlist-popover flakes not
+reproduced.
 Evidence:
 
 ### M1.11 Second file silent for viewers [must-work] [wire]
@@ -428,6 +438,19 @@ stereo 0.50 after every file (before the fix: silence from file 2). Audits: 3 (H
 rollback, all fixed). Known, not fixed: the Chromium "RTP extension ID reassignment" glare when both ends add
 different media kinds at the same mid in one round trip (CLAUDE.md); against 0.8.x sharers detached sections can
 still build up slowly until both ends run this build.
+
+### M1.12 Looped film goes silent for viewers [must-work]
+Status: todo
+Added: orchestrator, 2026-11-03, from the M1.7 builder (suspected, not proven).
+Story: When I loop a film, my friends keep hearing it on every repeat.
+Done when:
+- Reproduced or ruled out: with Loop on, the host's captured stream ended up empty (`captured: []`, only the published
+  video) after a couple of repeats; the `ended` handler (`renderer/app.js` ~4917) seeks back and plays without
+  republishing, and M1.11 now keeps one `captureStream()` per element whose tracks may end on `ended`.
+- If real: fixed, and `test:network` or the bench loops a short film ≥5 times asserting the viewer's audio level each
+  repeat (and the "loop restarts must not look like pauses" rule in CLAUDE.md still holds).
+Gate: no
+Evidence:
 
 ### M1.8 Real session review with Lenna [feel]
 Status: todo

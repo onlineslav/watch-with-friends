@@ -241,12 +241,16 @@ accept the optional `telemetry.at`. Decided (builder): mark key `X`, Shift+X foc
 15s otherwise; `window/fullscreen`/`visibility` lines only smoke-tested.
 
 ### M1.10 Release 0.8.1 with live telemetry
-Status: in progress
+Status: needs Aya
 Added: Aya, 2026-11-03 (approved "build them right after M1.4, before the release").
 Done when: M1.1–M1.4 and M1.9 are verified; a 0.8.1 release is cut the usual way (CI builds both platforms,
 auto-update picks it up); after install, `npm run diagnostics -- --live` shows Aya's own lines.
 Gate: no
-Evidence:
+Evidence: released 2026-11-03, https://github.com/onlineslav/watch-with-friends/releases/tag/v0.8.1 (9 assets: Windows
+setup + blockmap + latest.yml, Mac arm64/x64 dmg + zip + appcasts). Tag `v0.8.1` → 20b3a54 = 51e5ba4 + three CI-only
+commits: the 2s sample-cost assertion in `check-network.js` is report-only on CI runners (`SAMPLE_COST_LIMIT_MS=report`;
+they read 2.16ms Windows, 4.3–7.6ms Intel Mac on code that costs 1.4ms locally) and stays a 2ms gate locally.
+Not yet merged into `share-whole-app` (waits for M1.6's commit). Waiting on: Aya's check 4 (her own live lines).
 
 ### M1.5 Audio in sync with the picture [feel]
 Status: needs Aya
@@ -370,6 +374,9 @@ Evidence:
    If lips are off only on Bluetooth headphones, that's device latency the app can't see.
 3. **M1.9 mark key:** in a room press X (a toast shows on both ends); press Shift+X, type a note, Enter. Afterwards
    `npm run diagnostics -- --report` lists both marks.
+4. **M1.10 live view:** after your app updates to 0.8.1 (it relaunches on its own when you're not in a room), tick
+   "Send telemetry for development", open a room, then run `npm run diagnostics -- --live` here: your own lines appear
+   within about 3s.
 
 ## Later (filed from Aya's notes, not cards yet)
 

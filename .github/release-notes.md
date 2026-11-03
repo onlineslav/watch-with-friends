@@ -1,15 +1,10 @@
-## What's new in 0.7.1
-
-Reliability fixes for watching together.
+## What's new in 0.8.0
 
 Windows users and Mac users on 0.5.3 or later receive this release through the in-app updater. Mac users on 0.5.2 or earlier should install the DMG below once to enable future in-app updates.
 
-- **Friends no longer sometimes get a black screen.** When someone started playing or sharing, a friend's connection could occasionally miss the video entirely until they left and rejoined. Connections now recover on their own.
-- **No more false "The host could not play this media."** Pausing straight after opening a file ended the session with that error; it no longer does.
-- **The playlist's ••• menu stays open.** It could close by itself, and keyboard focus could jump, whenever the playlist updated (for example when a friend's progress changed).
-- **A tidier diagnostic log.** A harmless network message that could repeat thousands of times per session (on computers with a VPN, for example) is now logged once, so the log keeps what matters when you send it for help.
+- **Help the developer fix problems without sending files.** Settings → Having problems? has a new checkbox, **Send telemetry for development**. It's off unless you turn it on. When it's on, the app's diagnostic log is uploaded to the developer automatically: every 15 minutes and right after you leave a room. It's the same log the "Save diagnostics" button saves: connection quality, who joined, and anything that failed. File names and network addresses are removed before anything is written. Untick it at any time to stop.
 
-Also in 0.7.0: share a whole app with its plugin windows, share minimized windows, change window without stopping, and a much smoother app. See the 0.7.0 release for details.
+Also in 0.7.1: friends no longer sometimes get a black screen, no more false "The host could not play this media," and a steadier playlist menu. See the 0.7.1 release for details.
 
 ## Download
 

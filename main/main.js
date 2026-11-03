@@ -122,11 +122,13 @@ const pickFile = (event, name, extensions) => pickFiles(event, name, extensions)
 // Machine load for the diagnostic log (main/machine.js). A window that is in a room gets a reading
 // pushed every 2 seconds; nothing is asked of the renderer and nothing waits on it.
 const machineSamplers = new Map()
-// One for the whole computer, running while any window is in a room (main/net-probe.js).
+// One for the whole computer (main/net-probe.js), running while any window is in a room and only with
+// "Send telemetry for development" on: it sends pings to 1.1.1.1, which nobody else asked for.
 const netProbe = createNetProbe({
   record: (...args) => log.record(...args),
   binaryPath: () => (app.isPackaged ? path.join(process.resourcesPath, 'win-net-probe.exe') : path.join(__dirname, '..', 'native', 'win-net-probe', 'win-net-probe.exe')),
 })
+const syncNetProbe = () => (machineSamplers.size && telemetry().enabled ? netProbe.start() : netProbe.stop())
 let cpuSpeedLimit = null
 let machineStatic = null
 
@@ -154,7 +156,7 @@ function setMachineSampling(contents, active) {
   if (!active) {
     existing?.stop()
     machineSamplers.delete(contents.id)
-    if (!machineSamplers.size) netProbe.stop()
+    syncNetProbe()
     return
   }
   if (existing) return
@@ -165,7 +167,7 @@ function setMachineSampling(contents, active) {
   machineSamplers.set(contents.id, sampler)
   contents.once('destroyed', () => setMachineSampling({id: contents.id}, false))
   sampler.start()
-  netProbe.start()
+  syncNetProbe()
   recordMachineStatic().catch(() => {})
 }
 
@@ -347,7 +349,11 @@ function registerIpc() {
   })
   ipcMain.handle('log:events', (_event, entries) => log.recordBatch(entries))
   ipcMain.handle('telemetry:status', () => telemetry().status())
-  ipcMain.handle('telemetry:set', (_event, options) => telemetry().set(options))
+  ipcMain.handle('telemetry:set', async (_event, options) => {
+    const status = await telemetry().set(options)
+    syncNetProbe()
+    return status
+  })
   ipcMain.handle('log:save', async (event, {note} = {}) => {
     const result = await dialog.showSaveDialog(BrowserWindow.fromWebContents(event.sender), {
       title: 'Save diagnostics',

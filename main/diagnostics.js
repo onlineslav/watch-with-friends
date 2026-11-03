@@ -155,6 +155,7 @@ function createUploader({log, settingsFile, endpoint, send = createSender(), rec
   }
 
   return {
+    get enabled() { return settings.enabled },
     start: schedule,
     stop() {
       clearInterval(interval)

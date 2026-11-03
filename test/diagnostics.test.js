@@ -100,8 +100,10 @@ test('uploads are off until turned on, and filed under the username', async () =
   assert.equal(await uploader.upload(), false)
   assert.equal(sent.length, 0, 'nothing leaves the machine while it is off')
   assert.deepEqual(await uploader.status(), {enabled: false, available: true, lastSentAt: null, lastError: null})
+  assert.equal(uploader.enabled, false, 'read at once by main, which runs the network probe only while it is on')
 
   await uploader.set({enabled: true, from: 'aya#abcd-1234'})
+  assert.equal(uploader.enabled, true)
   assert.equal(await uploader.upload(), true)
   uploader.stop()
   assert.equal(sent.length, 1)

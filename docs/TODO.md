@@ -402,6 +402,16 @@ Done when:
   sees an ended receiver track instead of a muted one).
 - (audit, LOW) `unpublishStream` also calls `session.room.removeTrack(t)` for each published clone; with `sink` null
   the capture's `addtrack` listener stops new video tracks itself.
+- (re-audit of 485a105, MEDIUM, confirmed in an Electron probe) Stopping a transceiver that was only in an unanswered
+  offer, then a polite-side rollback on glare, leaves it stopped with no `mid`: endless `negotiationneeded`, and
+  `addSender`'s idle search picks it (`direction = 'sendrecv'` throws), so every later film/share to that peer fails
+  silently and connection reuse carries it across rooms. Fix: stop only once negotiated (`currentDirection != null &&
+  !== 'sendrecv'`), else detach and stop on the next return to `stable`; `addSender` skips stopped transceivers; same
+  rules in `stopSendersOf`; `test/transport.test.mjs` covers add → offer out → stop → colliding remote offer → rollback.
+- (re-audit, LOW) Correct the `signal()` guard comments (rejecting offers keep their codec lines in Electron 44) and
+  the `release`/`unpublishStream` comments (the room's `removeTrack` does find `addStream` senders); when `replaceTrack`
+  fails for only some peers, fall back to `addTrack` for those peers only. Known LOW, not fixing: against 0.8.x
+  sharers, detached `sendrecv` sections still build up slowly until both ends run this build.
 Gate: no
 Evidence:
 

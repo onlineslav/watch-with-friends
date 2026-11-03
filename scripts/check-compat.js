@@ -22,6 +22,10 @@
 //
 //   npm run test:compat                      against v0.8.0
 //   npm run test:compat -- --tag=v0.8.1
+//   npm run test:compat -- --host=new --runs=5   one direction only (the host's side), several times over
+//
+// A glare that does not settle prints both ends' transceivers (mid/direction/currentDirection/sent track) and
+// signalling states before it fails, so a failing run says what got stuck.
 const {app, BrowserWindow, ipcMain} = require('electron')
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
@@ -37,6 +41,9 @@ const {prepare} = require('./old-tree')
 const root = path.resolve(__dirname, '..')
 const tagArg = process.argv.find((arg) => arg.startsWith('--tag='))
 const tag = tagArg ? tagArg.split('=')[1] : 'v0.8.0'
+const option = (name) => process.argv.find((arg) => arg.startsWith(`--${name}=`))?.split('=')[1]
+const hostSides = option('host') ? [option('host')] : ['old', 'new']
+const runs = Number(option('runs') || 1)
 
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'synced-compat-'))
 app.setPath('userData', path.join(temporary, 'profile'))
@@ -140,7 +147,7 @@ async function openWindow(env, name, side) {
   const win = new BrowserWindow({show: false, width: 1280, height: 720, webPreferences: {partition: `compat-${side}-${name}`, backgroundThrottling: false, autoplayPolicy: 'no-user-gesture-required', preload: path.join(temporary, 'preload.js')}})
   win.webContents.setAudioMuted(true)
   assert.equal(win.webContents.isAudioMuted(), true)
-  win.webContents.on('console-message', (details) => { if (details.level === 'error') console.error(`${name}(${side}): ${details.message}`) })
+  win.webContents.on('console-message', (details) => { if (details.level === 'error' || details.level === 'warning' || details.level === 2 || details.level === 3) console.error(`${name}(${side}) ${details.level}: ${String(details.message).slice(0, 400)}`) })
   await win.loadFile(path.join(env.dirs[side], 'index.html'))
   await until(win, 'window.__test && !document.getElementById("welcome").hidden', 30000, `${name} welcome screen`)
   await run(win, `document.getElementById('handle').value=${JSON.stringify(name)}; document.getElementById('welcome-name').value=${JSON.stringify(name)}; document.getElementById('welcome-form').dispatchEvent(new Event('submit', {cancelable:true}));`)
@@ -162,6 +169,38 @@ async function listen(win, ms = 4500) {
 }
 
 const signalingStates = (win) => run(win, 'Object.values(__test.session.room.getPeers()).map((pc) => pc.signalingState)')
+// Diagnostics for a glare that does not settle: every description applied on the connection, with each
+// section's mid, kind, port and direction, and the transceivers after it.
+const GLARE_RECORDER = `(() => {
+  const pc = window.__glarePc = Object.values(__test.session.room.getPeers())[0]
+  const log = window.__glareLog = []
+  const t0 = performance.now()
+  const shape = () => pc.getTransceivers().map((t) => (t.mid ?? '-') + ':' + t.receiver.track.kind[0] + ':' + t.direction + '/' + (t.currentDirection ?? '-') + (t.sender.track ? '+' : ''))
+  const sections = (sdp) => (sdp || '').split(/\\r?\\nm=/).slice(1).map((m) => m.split(' ')[0][0] + m.split(' ')[1] + ':' + ((m.match(/a=mid:(\\S+)/) || [])[1]) + ':' + ((m.match(/a=(sendrecv|sendonly|recvonly|inactive)/) || [])[1] || '?'))
+  log.push(Math.round(performance.now() - t0) + ' start ' + pc.signalingState + ' ' + shape().join(' '))
+  for (const name of ['setLocalDescription', 'setRemoteDescription']) {
+    const original = pc[name].bind(pc)
+    pc[name] = async (description) => {
+      const at = Math.round(performance.now() - t0)
+      try {
+        const result = await original(description)
+        const applied = name === 'setLocalDescription' ? pc.localDescription : pc.remoteDescription
+        log.push(at + ' ' + name.slice(3, 8) + ' ' + (description?.type || 'auto') + ' ok [' + (description?.type === 'rollback' ? '' : sections(applied?.sdp).join(' ')) + '] -> ' + pc.signalingState + ' ' + shape().join(' '))
+        return result
+      } catch (error) {
+        log.push(at + ' ' + name.slice(3, 8) + ' ' + (description?.type || 'auto') + ' FAILED ' + error.message.slice(0, 160))
+        throw error
+      }
+    }
+  }
+  pc.addEventListener('negotiationneeded', () => log.push(Math.round(performance.now() - t0) + ' negotiationneeded ' + shape().join(' ')))
+  return true
+})()`
+const connectionShape = (win) => run(win, `JSON.stringify(Object.values(__test.session.room.getPeers()).map((pc) => ({
+  state: pc.signalingState, connection: pc.connectionState, same: pc === window.__glarePc, peers: __test.session.peers.size,
+  before: window.__glarePc && window.__glarePc.getTransceivers().map((t) => (t.mid ?? '-') + ':' + t.receiver.track.kind + ':' + t.direction + '/' + (t.currentDirection ?? '-')), beforeState: window.__glarePc && window.__glarePc.connectionState,
+  transceivers: pc.getTransceivers().map((t) => (t.mid ?? '-') + ':' + t.receiver.track.kind + ':' + t.direction + '/' + (t.currentDirection ?? '-') + ':' + (t.sender.track ? t.sender.track.readyState : 'no-track')),
+})))`)
 
 async function direction(env, hostSide, viewerSide, index) {
   const label = `${hostSide} host -> ${viewerSide} viewer`
@@ -221,11 +260,20 @@ async function direction(env, hostSide, viewerSide, index) {
     await run(viewer, '__bench.installWindow({fps: 30, flashFrames: 3, events: []}); __test.shareSettings.audioDeviceId = "none"; true')
     const viewerId = await run(viewer, '__test.selfId')
     const started = Date.now()
+    await Promise.all([host, viewer].map((win) => run(win, GLARE_RECORDER)))
     await Promise.all([
       run(host, '__test.publishStream(); true'),
       run(viewer, "__test.startShare({id: 'window:4242:0', name: 'Compat window'}); true"),
     ])
-    await until(host, `__test.tileViews.has(${JSON.stringify(viewerId)}) && __test.tileViews.get(${JSON.stringify(viewerId)}).video.readyState >= 3`, 30000, 'the share reaches the host')
+    try {
+      await until(host, `__test.tileViews.has(${JSON.stringify(viewerId)}) && __test.tileViews.get(${JSON.stringify(viewerId)}).video.readyState >= 3`, 30000, 'the share reaches the host')
+    } catch (error) {
+      console.error(`${label}: glare did not settle. host ${await connectionShape(host)}`)
+      console.error(`${label}: viewer ${await connectionShape(viewer)}`)
+      for (const [name, win] of [['host', host], ['viewer', viewer]]) console.error(`${label}: ${name} log:\n  ${(await run(win, 'window.__glareLog || []')).join('\n  ')}`)
+      console.error(`${label}: host tiles ${await run(host, `JSON.stringify([...__test.tileViews.keys()])`)}, errors ${JSON.stringify([...await run(host, '__test.errors'), ...await run(viewer, '__test.errors')])}`)
+      throw error
+    }
     const settled = Date.now() - started
     await pause(3000)
     for (const win of [host, viewer]) {
@@ -243,7 +291,7 @@ async function direction(env, hostSide, viewerSide, index) {
 }
 
 app.whenReady().then(async () => {
-  const watchdog = setTimeout(() => { console.error('Compatibility check timed out'); app.exit(1) }, 8 * 60 * 1000)
+  const watchdog = setTimeout(() => { console.error('Compatibility check timed out'); app.exit(1) }, 8 * 60 * 1000 * runs)
   let exitCode = 0
   try {
     const oldRoot = prepare(tag)
@@ -255,11 +303,23 @@ app.whenReady().then(async () => {
     ipcMain.handle('screenshare:select', () => true)
     console.log(`Compatibility check against ${tag}: every window muted and off-screen; nothing is played aloud.`)
     let index = 0
-    for (const [hostSide, viewerSide] of [['old', 'new'], ['new', 'old']]) {
-      const checks = await direction(env, hostSide, viewerSide, ++index)
-      for (const line of checks) console.log(`PASS: ${hostSide} host -> ${viewerSide} viewer, ${line}`)
-      await pause(2000)
+    const failed = []
+    for (let n = 0; n < runs; n++) {
+      for (const hostSide of hostSides) {
+        const viewerSide = hostSide === 'new' ? 'old' : 'new'
+        try {
+          const checks = await direction(env, hostSide, viewerSide, ++index)
+          for (const line of checks) console.log(`PASS: ${hostSide} host -> ${viewerSide} viewer, ${line}`)
+        } catch (error) {
+          // One direction failing does not stop the others, so --runs=N gives a pass count.
+          console.error(`FAIL: ${hostSide} host -> ${viewerSide} viewer (run ${n + 1}): ${error.message}`)
+          failed.push(`${hostSide} host, run ${n + 1}`)
+        }
+        await pause(2000)
+      }
     }
+    if (runs > 1) console.log(`${runs * hostSides.length - failed.length} of ${runs * hostSides.length} directions passed`)
+    if (failed.length) exitCode = 1
   } catch (error) {
     console.error(error)
     exitCode = 1

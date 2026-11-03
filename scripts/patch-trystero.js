@@ -405,11 +405,13 @@ if (!stopPeer.includes(stopMarker)) {
 // offer collides with it), it was left stopped and without a mid for good: in no offer, so nothing takes it away,
 // and negotiation was "needed" after every round (83 times in 2s in the probe, each a full offer and answer;
 // 280 offers in a 5s run), and addSender's idle search did not skip stopped transceivers (setting a stopped one's
-// direction throws InvalidStateError, which aborts addStream for every track after it). The rules now live in shared/transceivers.mjs (copied beside peer.mjs
-// above), which renderer/app.js uses too for the senders it takes off itself: stop right away only when
-// currentDirection is sendonly or inactive (negotiated, and the other end does not send on it), otherwise detach
-// and, if never negotiated, stop it once it is; never reuse a stopped transceiver. Applied on top of v2, so a
-// fresh install (v2 then v3) and an install already at v2 end up byte-identical.
+// direction throws InvalidStateError, which aborts addStream for every track after it). The rules now live in
+// shared/transceivers.mjs (copied beside peer.mjs above on every run, so a change there needs no new marker),
+// which renderer/app.js uses too for the senders it takes off itself: stop only when currentDirection is sendonly
+// or inactive (negotiated, and the other end does not send on it), otherwise only detach, and never stop that one
+// later (a copy from before M1.11 may have put its share on it meanwhile; see there); never reuse a stopped
+// transceiver. Applied on top of v2, so a fresh install (v2 then v3) and an install already at v2 end up
+// byte-identical.
 const stopV3Marker = '// watch-with-friends stop transceivers v3\n'
 let stopV3Peer = fs.readFileSync(peerPath, 'utf8')
 if (!stopV3Peer.includes(stopV3Marker)) {

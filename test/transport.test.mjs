@@ -733,8 +733,10 @@ test('a transceiver whose offer is not answered yet is only detached (it may sti
   peer.destroy()
 })
 
-test('a transceiver detached before it was negotiated is stopped once it is, unless the other end now sends on it', async () => {
-  for (const [negotiated, stopped] of [['inactive', true], ['sendonly', true], ['recvonly', false], ['sendrecv', false]]) {
+test('a transceiver detached before it was negotiated stays detached, however it is negotiated later', async () => {
+  // A copy from before M1.11 puts its share on our receive-only section right then (native addTrack), so a stop
+  // once it is negotiated rejected the section with that share on it (test:compat's glare, 2 of 6 runs).
+  for (const negotiated of ['inactive', 'sendonly', 'recvonly', 'sendrecv']) {
     const peer = createPeer(true, {rtcPolyfill: FakeConnection, trickleIce: true})
     const pc = peer.connection
     await settle()
@@ -744,14 +746,13 @@ test('a transceiver detached before it was negotiated is stopped once it is, unl
     peer.removeTrack(audio)
     assert.equal(pc.transceivers[0].stopped, false, 'detached, not stopped')
     pc.signalingState = 'have-local-offer'
-    pc.signalingState = 'stable' // rolled back: still nothing negotiated, so still not stopped
+    pc.signalingState = 'stable' // rolled back
     assert.equal(pc.transceivers[0].stopped, false)
     pc.signalingState = 'have-local-offer'
     pc.transceivers[0].currentDirection = negotiated // offered again, and answered
     pc.signalingState = 'stable'
-    // recvonly/sendrecv: Chromium gave the detached transceiver to the other end's next section of its kind (seen in
-    // the Electron probe), so it now carries the other end's sound; stopping it would end that.
-    assert.equal(pc.transceivers[0].stopped, stopped, `negotiated ${negotiated}: ${stopped ? 'stopped' : 'left alone'}`)
+    assert.equal(pc.transceivers[0].stopped, false, `negotiated ${negotiated}: left alone`)
+    assert.equal(pc.detached.length, 1)
     peer.destroy()
   }
 })
@@ -830,7 +831,7 @@ test('glare: a track taken off while its offer is out, then a colliding offer th
     assert.equal(b.needed, settledAt, `${publishAt}: and not once more after it settled`)
     assert.equal(b.getTransceivers().filter((t) => t.stopping).length, 0, 'no stopped transceiver is left behind')
     if (!second) {
-      assert.ok(offered.removed, 'the detached transceiver got a section, was stopped once it was negotiated, and is gone')
+      assert.ok(!offered.removed && offered.sender.track === null && offered.direction === 'recvonly', 'the detached transceiver got a section and stays detached (receive-only)')
       second = {kind: 'audio', id: 'b-film-2'}
       assert.doesNotThrow(() => pair.b.addTrack(second, {id: 'b-2'}), 'the next film can be added')
       await untilSettled(pair)

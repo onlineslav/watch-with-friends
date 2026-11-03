@@ -11,8 +11,13 @@
 // offer collides with it) a stopped one is left with no mid, in no offer, and nothing ever takes it away:
 // negotiation was "needed" after every round, 83 times in 2s (280 offers in a 5s run), for as long as the
 // connection lasted, and a reused connection carries it from room to room.
-
-const STOP_LATER = Symbol.for('watch-with-friends.stopWhenNegotiated') // one per connection, whichever copy of this module made it
+//
+// One that was never negotiated is therefore only detached, and stays detached: it is not stopped later either.
+// A first version stopped it once its section had been negotiated, and that broke a copy from before M1.11 (the
+// test:compat glare, 2 of 6 runs): such a copy's native addTrack puts its share on our receive-only section in that
+// very window, and the later stop rejected the section with the share on it (nothing ever reached the host). Left
+// detached, the section is what carries that share, as it did before; at worst one stays per publish taken off
+// within a round trip of being made (a role change at the moment a film starts, or the glare rollback above).
 
 export const isStopped = (t) => t.stopped === true || t.direction === 'stopped' || t.currentDirection === 'stopped'
 
@@ -21,29 +26,8 @@ export const isStopped = (t) => t.stopped === true || t.direction === 'stopped' 
 // other end's next section of its kind), and stopping it would end that picture or sound too.
 export const canStop = (t) => !isStopped(t) && (t.currentDirection === 'sendonly' || t.currentDirection === 'inactive')
 
-// A transceiver detached before it was negotiated is stopped the next time the connection is stable with its
-// section negotiated, if it is still unused then. After a rollback it is offered again (receive-only), answered,
-// then stopped and rejected: two short rounds, then nothing.
-function stopLater(pc, transceiver) {
-  let pending = pc[STOP_LATER]
-  if (!pending) {
-    pending = pc[STOP_LATER] = new Set()
-    pc.addEventListener('signalingstatechange', () => {
-      if (pc.signalingState !== 'stable') return
-      for (const t of pending) {
-        if (isStopped(t) || t.sender.track) pending.delete(t)
-        else if (t.currentDirection != null) {
-          pending.delete(t)
-          if (canStop(t)) try { t.stop() } catch {}
-        }
-      }
-    })
-  }
-  pending.add(transceiver)
-}
-
 // Takes a sender's track off: stops its transceiver when that is safe, otherwise detaches it (removeTrack: the
-// direction becomes recvonly or inactive) and, if it was never negotiated, stops it once it is.
+// direction becomes recvonly or inactive).
 export function stopSender(pc, sender) {
   const transceiver = pc.getTransceivers().find((t) => t.sender === sender)
   if (transceiver && canStop(transceiver)) {
@@ -53,7 +37,6 @@ export function stopSender(pc, sender) {
     } catch {}
   }
   try { pc.removeTrack(sender) } catch {}
-  if (transceiver && !isStopped(transceiver) && transceiver.currentDirection == null) stopLater(pc, transceiver)
 }
 
 // Puts a track on with a transceiver of our own (addTransceiver), never one the other end made (native addTrack

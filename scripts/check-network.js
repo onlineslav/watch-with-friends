@@ -368,7 +368,7 @@ async function fixtures() {
   const source = fs.readFileSync(path.join(root, 'renderer/app.js'), 'utf8') + `
     window.__test = {
       get session() { return session }, get identity() { return identity },
-      friendNetwork, enterRoom, leaveRoom, hostFile, startShare, stopShare, shareSettings, tileViews, control, receiveImage, shownImage, selectSubtitle, markMoment, logAudioDevice,
+      friendNetwork, enterRoom, leaveRoom, hostFile, startShare, stopShare, shareSettings, tileViews, control, publishStream, receiveImage, shownImage, selectSubtitle, markMoment, logAudioDevice,
       primeDiscovery: (kind) => joinRoom({...network.config(), appId: APP_ID}, kind + ':startup-probe'),
       addToPlaylist, playItem, playNext, playable, orderedItems, moveInPlaylist, removeFromPlaylist, refreshAvailability, setPlaylistOpen,
       get history() { return roomHistory },
@@ -898,8 +898,20 @@ app.whenReady().then(async () => {
       const shape = JSON.parse(await hostConnections())
       for (const one of shape) assert.equal(one.audioSenders, 1, `after the loop: one live audio sender per peer (${JSON.stringify(one)})`)
       for (const win of [a, b]) assert.equal(await run(win, 'window.__notPlaying'), 0, 'a loop restart never reaches a viewer as a pause')
+      // M1.12 attempt 2: after a loop the capture's track list is empty, and a publish that is not a new file (a claim bump
+      // when a returning peer brings newer history, a preview becoming live) used to send the picture alone. Twice in a
+      // row: the second publish carries what the first carried.
+      for (let again = 1; again <= 2; again++) {
+        for (const win of [a, b]) await run(win, 'window.__srcBefore = document.getElementById("remote-video").srcObject; true')
+        await run(c, '__test.publishStream()')
+        await Promise.all([a, b].map((win) => until(win, '(() => { const v = document.getElementById("remote-video"); return v.srcObject && v.srcObject !== window.__srcBefore && v.srcObject.getAudioTracks().some((t) => t.readyState === "live" && !t.muted) })()', 20000, `a viewer gets the sound again after republish ${again} of the looped film`)))
+        await pause(1500)
+        await Promise.all([a, b].map((win) => until(win, '__test.audioLevel() > 0.01', 4000, `a viewer hears the looped film after republish ${again}`)))
+        const shape = JSON.parse(await hostConnections())
+        for (const one of shape) assert.equal(one.audioSenders, 1, `after republish ${again}: one live audio sender per peer (${JSON.stringify(one)})`)
+      }
       await run(c, '__test.control("loop", false)')
-      console.log('PASS: A looped film is heard by both viewers on every one of six repeats and never shows as paused')
+      console.log('PASS: A looped film is heard by both viewers on every one of six repeats and never shows as paused, and still after it is published again twice')
     }
     await run(c, `__test.hostFile(${JSON.stringify(path.join(temporary, 'missing.mp4'))})`)
     await Promise.all([a, b].map((win) => until(win, 'Boolean(__test.session.remote?.error) && document.getElementById("spinner").hidden')))

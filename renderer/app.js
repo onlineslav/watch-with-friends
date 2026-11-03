@@ -1397,9 +1397,19 @@ function afterPublish(what, promises, peer = null) {
 
 function publishStream() {
   if (session.preview) return
-  unpublishStream()
   const video = ui.localVideo
   const capture = captureElement(video)
+  // After a loop Chromium has taken the capture's tracks out of its list (see captureElement) while the clones made
+  // from them still carry the film's sound, so a publish that builds its stream from that list alone, the claim bump
+  // in broadcastState or activatePreview, sent viewers the picture and no sound until the next file (M1.12).
+  // Whatever audio clone the last publish of this capture had that is still alive, and that the capture has no live
+  // track to replace, is published again instead of being stopped with the old stream. (Video comes from the
+  // frame generator, which is made anew.)
+  const carried = []
+  if (session.stream && session.streamClones?.capture === capture && !capture.stream.getAudioTracks().some((track) => track.readyState === 'live')) {
+    for (const [source, clone] of session.streamClones.map) if (clone.kind === 'audio' && clone.readyState === 'live') carried.push([source, clone])
+  }
+  unpublishStream(new Set(carried.map(([, clone]) => clone)))
   const frames = player.media?.video ? captureVideoFrames(video) : null
   const usable = (track) => !(frames && track.kind === 'video')
 
@@ -1450,10 +1460,17 @@ function publishStream() {
     stream.addTrack(clone)
     afterPublish(`film-${clone.kind}`, session.room.addTrack(clone, stream, {metadata: {claimedAt: session.claimedAt}}))
   }
+  for (const [source, clone] of carried) {
+    clones.set(source, clone)
+    stream.addTrack(clone)
+    source.addEventListener('ended', () => retire(source), {once: true})
+    clone.addEventListener('ended', () => retire(source), {once: true})
+  }
   for (const track of capture.stream.getTracks()) {
     const clone = adopt(track)
     if (clone) stream.addTrack(clone)
   }
+  session.streamClones = {capture, map: clones}
   capture.sink = {
     add(track) {
       if (session.stream !== stream) return
@@ -1487,10 +1504,11 @@ function publishStream() {
   if (session.peers.size) afterPublish('film', session.room.addStream(stream, {metadata: {claimedAt: session.claimedAt}}))
 }
 
-function unpublishStream() {
+function unpublishStream(keep = null) {
   const stream = session.stream
   if (!stream) return
   session.stream = null
+  session.streamClones = null
   if (elementCapture) elementCapture.sink = null
   try {
     session.room?.removeStream(stream) // takes off every track now in it, through the patched peer's stopSender
@@ -1499,7 +1517,7 @@ function unpublishStream() {
   // these now. For the ones that came with the stream this finds nothing, which is fine: removeStream took them.
   for (const track of stream.getTracks()) try { session.room?.removeTrack(track) } catch {}
   // Only what was published: the clones and the frame generator. The capture itself is kept (see captureElement).
-  stream.getTracks().forEach((track) => track.stop())
+  stream.getTracks().forEach((track) => { if (!keep?.has(track)) track.stop() })
   session.captured = null
 }
 

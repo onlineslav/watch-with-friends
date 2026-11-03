@@ -233,7 +233,7 @@ Gate: no
 Evidence:
 
 ### M1.5 Audio in sync with the picture [feel]
-Status: todo
+Status: in progress
 Story: When I host, my friends hear the sound exactly when they see it, for films and screen shares.
 Done when:
 - `npm run bench` shows |offset| ≤ 40ms (median) for a film and a share, and the before/after numbers are on the card.

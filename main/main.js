@@ -8,6 +8,7 @@ const appAudio = require('./app-audio')
 const appWindows = require('./app-windows')
 const shareSources = require('./share-sources')
 const {loadIceServers} = require('./turn')
+const diagnostics = require('./diagnostics')
 const updater = require('./updater')
 const {focusWindow} = require('./startup')
 const {watchZoom, zoomFactor} = require('./zoom')
@@ -59,6 +60,15 @@ const systemInfo = () => ({
 
 const turnConfigPath = () =>
   app.isPackaged ? path.join(process.resourcesPath, 'turn.json') : path.join(__dirname, '..', 'config', 'turn.json')
+
+// Development telemetry (main/diagnostics.js). Created on first use so registerIpc works without
+// start(), as the logging check uses it.
+let uploader = null
+const telemetry = () => (uploader ??= diagnostics.createUploader({
+  log,
+  settingsFile: path.join(app.getPath('userData'), 'telemetry.json'),
+  endpoint: () => diagnostics.loadEndpoint(turnConfigPath()),
+}))
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -268,6 +278,7 @@ function registerIpc() {
   ipcMain.on('app:in-room', (event, inRoom) => {
     updater.setInRoom(inRoom)
     if (!inRoom) {
+      telemetry().upload()
       const store = downloadStores.get(event.sender.id)
       downloadStores.delete(event.sender.id)
       if (store) event.sender.removeListener('destroyed', store.onDestroyed)
@@ -275,6 +286,8 @@ function registerIpc() {
     }
   })
   ipcMain.handle('log:events', (_event, entries) => log.recordBatch(entries))
+  ipcMain.handle('telemetry:status', () => telemetry().status())
+  ipcMain.handle('telemetry:set', (_event, options) => telemetry().set(options))
   ipcMain.handle('log:save', async (event, {note} = {}) => {
     const result = await dialog.showSaveDialog(BrowserWindow.fromWebContents(event.sender), {
       title: 'Save diagnostics',
@@ -323,6 +336,7 @@ function start() {
     watchStalls()
     registerYouTube()
     registerIpc()
+    telemetry().start()
     createWindow()
     // warm up so the first transcode starts instantly, and record which encoder this machine got
     media.detectCapabilities().then(

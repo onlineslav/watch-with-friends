@@ -15,3 +15,15 @@ This is an anonymous service: anyone who knows the endpoint can request expiring
 For a private local relay, put `{"iceServers":[{"urls":"turn:YOUR-HOST:3478","username":"YOUR-USER","credential":"YOUR-CREDENTIAL"}]}` in the application's user-data `turn.json`. Static credentials are never accepted by the packaging hook. Development can also load that local configuration from `config/turn.json`, but the build rejects it.
 
 No deployment is created by building or testing this repository. If a previous installer shipped a Cloudflare minting token, revoke it separately; changing the code cannot revoke installed copies.
+
+## Development telemetry
+
+The same Worker's `/telemetry` route receives logs from apps whose owner ticked Settings → "Send telemetry for development" (off by default). Each upload is committed to a private GitHub repository as `telemetry/<username>/<day>/<time>.log.gz`. The app never holds the token; it only knows the address.
+
+One-time setup:
+
+1. Create a fine-grained GitHub token at <https://github.com/settings/personal-access-tokens/new>: repository access "Only select repositories" → `watch-with-friends-diagnostics`, permission **Contents: Read and write**, nothing else.
+2. From this directory: `npx wrangler login`, then `npx wrangler secret put DIAGNOSTICS_GITHUB_TOKEN` (paste the token), then `npx wrangler deploy`. `DIAGNOSTICS_REPO` is set in `wrangler.jsonc`.
+3. Add the route to the build's config: `{"telemetry":"https://YOUR-WORKER.workers.dev/telemetry"}` (beside `endpoint` if you use TURN). For CI that's the `TURN_CONFIG` repository secret; for a local build, `config/turn.json`.
+
+Reading: `npm run diagnostics` from the repository root. Anyone with read access to the diagnostics repository can run it with their own `gh` login. Uploads share the ten-requests-a-minute limit with `/credentials`; an app uploads at most every few minutes.

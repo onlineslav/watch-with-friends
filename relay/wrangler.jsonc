@@ -2,6 +2,11 @@
   "name": "synced-video-relay",
   "main": "worker.mjs",
   "compatibility_date": "2026-09-14",
+  "vars": {
+    // Private repository that receives development telemetry. The token that writes to it is a
+    // secret: npx wrangler secret put DIAGNOSTICS_GITHUB_TOKEN
+    "DIAGNOSTICS_REPO": "onlineslav/watch-with-friends-diagnostics"
+  },
   "ratelimits": [{
     "name": "RATE_LIMITER",
     "namespace_id": "71004",

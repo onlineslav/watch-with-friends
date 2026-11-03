@@ -177,6 +177,8 @@ const ui = {
   diagnosticsNote: $('diagnostics-note'),
   diagnosticsStatus: $('diagnostics-status'),
   saveDiagnostics: $('save-diagnostics'),
+  sendTelemetry: $('send-telemetry'),
+  telemetryStatus: $('telemetry-status'),
   settingsBack: $('settings-back'),
   addFriend: $('add-friend'),
   friendUsername: $('friend-username'),
@@ -1982,6 +1984,7 @@ async function updateWelcome() {
 function finishWelcome(next, mode) {
   identity = next
   roomHistory = new RoomHistory(localStorage, identity.username)
+  window.api.setTelemetry({from: identity.username}).catch(() => {}) // the name its uploads are filed under
   renderSavedRooms()
   welcome = null
   ui.startup.hidden = true
@@ -3814,7 +3817,8 @@ function showSettings(open, {save = false} = {}) {
     ui.newUsername.disabled = inRoom
     ui.newUsername.title = inRoom ? 'Leave the room to change your username' : ''
     populateAudioDevices({probe: true}) // pick up a virtual audio device installed since the list was last built
-    if (ui.settings.hidden) settingsSnapshot = {zoom, name: myName, share: {...shareSettings}}
+    if (ui.settings.hidden) settingsSnapshot = {zoom, name: myName, share: {...shareSettings}, telemetry: ui.sendTelemetry.checked}
+    refreshTelemetry()
   } else if (settingsSnapshot && !ui.settings.hidden) {
     const before = settingsSnapshot
     settingsSnapshot = null
@@ -3827,6 +3831,7 @@ function showSettings(open, {save = false} = {}) {
       ui.profileName.value = myName
       syncNameSave(ui.profileName)
       updateShareSettings(before.share, {restart: false})
+      if (ui.sendTelemetry.checked !== before.telemetry) setTelemetry(before.telemetry)
     }
   }
   ui.settings.hidden = !open
@@ -3838,7 +3843,7 @@ function settingsChanged() {
   if (!before) return false
   const typed = cleanDisplayName(ui.profileName.value)
   return zoom !== before.zoom || myName !== before.name || Boolean(typed && typed !== before.name) ||
-    JSON.stringify(shareSettings) !== JSON.stringify(before.share)
+    JSON.stringify(shareSettings) !== JSON.stringify(before.share) || ui.sendTelemetry.checked !== before.telemetry
 }
 
 // Escape, the close button and the backdrop ask first when there's something to lose.
@@ -4214,6 +4219,25 @@ ui.saveDiagnostics.addEventListener('click', async () => {
 })
 
 ui.newUsername.addEventListener('click', () => showWelcome('change'))
+
+// Development telemetry: main owns the setting (it uploads at launch, before this page exists) and
+// does the uploading; this only shows and flips it. A build with nowhere to send disables the box.
+const TELEMETRY_HINT = ui.telemetryStatus.textContent
+function showTelemetry(status) {
+  ui.sendTelemetry.checked = Boolean(status?.enabled)
+  ui.sendTelemetry.disabled = !status?.available
+  const ago = status?.lastSentAt ? Math.max(0, Math.round((Date.now() - status.lastSentAt) / 60000)) : null
+  ui.telemetryStatus.textContent =
+    !status?.available ? 'This build has nowhere to send telemetry. Save the file instead.'
+    : status.enabled && status.lastError ? `On. The last upload failed (${status.lastError}); it retries in 15 minutes.`
+    : status.enabled && ago != null ? `On. Last sent ${ago < 1 ? 'just now' : `${ago} min ago`}.`
+    : status.enabled ? 'On. The first upload goes out in a few seconds.'
+    : TELEMETRY_HINT
+}
+const refreshTelemetry = () => window.api.telemetryStatus().then(showTelemetry, () => showTelemetry(null))
+const setTelemetry = (enabled) => window.api.setTelemetry({enabled, from: identity?.username}).then(showTelemetry, () => refreshTelemetry())
+ui.sendTelemetry.addEventListener('change', () => setTelemetry(ui.sendTelemetry.checked))
+refreshTelemetry()
 
 for (const button of ui.openButtons) {
   button.addEventListener('click', async () => {

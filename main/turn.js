@@ -12,9 +12,14 @@ function cleanIceServers(value) {
   })
 }
 
+// `endpoint` issues TURN credentials; `telemetry` receives development telemetry (main/diagnostics.js).
+// Both are routes on the same Worker, and both are addresses only.
+const PUBLIC_KEYS = ['endpoint', 'telemetry']
 function validatePublicConfig(config) {
-  if (!config || typeof config !== 'object' || Array.isArray(config) || Object.keys(config).some((key) => key !== 'endpoint')) throw new Error('Packaged TURN config may contain only an HTTPS credential endpoint. Do not package API tokens or static credentials.')
-  if (config.endpoint !== undefined && (typeof config.endpoint !== 'string' || !/^https:\/\//.test(config.endpoint) || new URL(config.endpoint).username || new URL(config.endpoint).password)) throw new Error('The credential endpoint must use HTTPS without embedded credentials')
+  if (!config || typeof config !== 'object' || Array.isArray(config) || Object.keys(config).some((key) => !PUBLIC_KEYS.includes(key))) throw new Error('Packaged TURN config may contain only HTTPS endpoints. Do not package API tokens or static credentials.')
+  for (const key of PUBLIC_KEYS) {
+    if (config[key] !== undefined && (typeof config[key] !== 'string' || !/^https:\/\//.test(config[key]) || new URL(config[key]).username || new URL(config[key]).password)) throw new Error(`The ${key} endpoint must use HTTPS without embedded credentials`)
+  }
   return config
 }
 

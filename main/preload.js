@@ -40,6 +40,8 @@ contextBridge.exposeInMainWorld('api', {
   setInRoom: (inRoom) => ipcRenderer.send('app:in-room', inRoom),
   logEvents: (entries) => ipcRenderer.invoke('log:events', entries),
   saveDiagnostics: (options) => ipcRenderer.invoke('log:save', options),
+  telemetryStatus: () => ipcRenderer.invoke('telemetry:status'),
+  setTelemetry: (options) => ipcRenderer.invoke('telemetry:set', options),
   checkForUpdate: () => ipcRenderer.invoke('update:check'),
   retryUpdate: () => ipcRenderer.invoke('update:retry'),
   onUpdate: (handler) => {

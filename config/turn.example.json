@@ -1,3 +1,4 @@
 {
-  "endpoint": "https://your-credential-service.example/credentials"
+  "endpoint": "https://your-credential-service.example/credentials",
+  "telemetry": "https://your-credential-service.example/telemetry"
 }

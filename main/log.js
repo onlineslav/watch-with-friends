@@ -18,6 +18,7 @@ const FLUSH_MS = 1000
 const PENDING_LIMIT = 4000
 const NAME = 'watch-with-friends.log'
 const PREVIOUS = 'watch-with-friends.1.log'
+const CURSOR = 'upload-cursor.json'
 
 const pending = createRing(PENDING_LIMIT)
 let directory = null
@@ -47,6 +48,7 @@ function start({dir, info = {}} = {}) {
   } catch {
     size = 0
   }
+  loadCursor()
   record('app', 'launch', info)
   flush()
 }
@@ -89,7 +91,82 @@ function rotate(incoming) {
     fs.rmSync(previousPath(), {force: true})
     fs.renameSync(filePath(), previousPath())
     size = 0
+    // What was uploaded of the current file is now what was uploaded of the previous one.
+    cursor = {previous: cursor.current, current: 0}
+    rotations++
+    // No file yet means nothing was ever uploaded; the cursor still says "everything" without one.
+    if (fs.existsSync(cursorPath())) saveCursor()
   } catch {}
+}
+
+// Telemetry uploads (main/diagnostics.js) send only what they haven't sent before. The cursor is the
+// byte offset already uploaded in each file, kept beside the log so a crash or a quit resumes from
+// it on the next launch instead of sending the same hours again. `previous: null` means the
+// previous file is fully sent. With no cursor file yet (telemetry just turned on), everything in
+// both files counts as unsent.
+let cursor = {previous: 0, current: 0}
+let rotations = 0
+const cursorPath = () => (directory ? path.join(directory, CURSOR) : null)
+
+function loadCursor() {
+  try {
+    const saved = JSON.parse(fs.readFileSync(cursorPath(), 'utf8'))
+    cursor = {
+      previous: Number.isSafeInteger(saved.previous) && saved.previous >= 0 ? saved.previous : null,
+      current: Number.isSafeInteger(saved.current) && saved.current >= 0 ? saved.current : 0,
+    }
+  } catch {
+    cursor = {previous: 0, current: 0}
+  }
+}
+
+function saveCursor() {
+  try { fs.writeFileSync(cursorPath(), JSON.stringify(cursor)) } catch {}
+}
+
+const fileSize = (file) => {
+  try { return fs.statSync(file).size } catch { return 0 }
+}
+
+function readRange(file, from, to) {
+  if (to <= from) return ''
+  const buffer = Buffer.alloc(to - from)
+  const fd = fs.openSync(file, 'r')
+  try { fs.readSync(fd, buffer, 0, buffer.length, from) } finally { fs.closeSync(fd) }
+  return buffer.toString('utf8')
+}
+
+// Everything written since the last committed upload, oldest first, at most `maxBytes` (the newest
+// part is kept: a backlog that big is old news, the end of it is not). Lines are written whole and
+// this reads synchronously up to the size at this moment, so a chunk never ends mid-line.
+// commit() is called only once the upload succeeded; a rotation in between is accounted for.
+function takeUnsent({maxBytes = 2 * MAX_FILE_BYTES} = {}) {
+  flush()
+  if (!directory) return null
+  const previousSize = fileSize(previousPath())
+  const currentSize = fileSize(filePath())
+  // An offset past the end means the file was replaced behind our back; start that file over.
+  const previousFrom = cursor.previous == null ? previousSize : cursor.previous > previousSize ? 0 : cursor.previous
+  const currentFrom = cursor.current > currentSize ? 0 : cursor.current
+  let text = ''
+  try {
+    text = readRange(previousPath(), previousFrom, previousSize) + readRange(filePath(), currentFrom, currentSize)
+  } catch {
+    return null
+  }
+  if (!text.trim()) return null
+  if (Buffer.byteLength(text) > maxBytes) {
+    const tail = Buffer.from(text).subarray(-maxBytes).toString('utf8')
+    text = tail.slice(tail.indexOf('\n') + 1)
+  }
+  const taken = rotations
+  return {
+    text,
+    commit() {
+      cursor = rotations === taken ? {previous: null, current: currentSize} : {previous: currentSize, current: cursor.current}
+      saveCursor()
+    },
+  }
 }
 
 function flush() {
@@ -133,7 +210,9 @@ function exportTo(targetPath, {note = ''} = {}) {
   return targetPath
 }
 
-const defaultExportName = (now = new Date()) =>
+const headerInfo = () => ({...header})
+
+const defaultExportName =(now = new Date()) =>
   `watch-with-friends-${now.toISOString().slice(0, 16).replace(/[-:]/g, '').replace('T', '-')}.log`
 
-module.exports = {MAX_FILE_BYTES, defaultExportName, exportTo, filePath, flush, record, recordBatch, start, stop}
+module.exports = {MAX_FILE_BYTES, defaultExportName, exportTo, filePath, flush, headerInfo, record, recordBatch, start, stop, takeUnsent}

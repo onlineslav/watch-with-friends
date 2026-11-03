@@ -19,6 +19,8 @@ import {
 } from './lib.mjs'
 import {captureVideoFrames} from './frames.mjs'
 import {StreamPlayer} from './player.mjs'
+import {repairedStream} from './peer-stream.mjs'
+import {applySenderParameters} from './sender-parameters.mjs'
 import {YouTubePlayer} from './youtube.mjs'
 import {parseYouTubeUrl, droppedYouTubeUrl} from '../shared/youtube.mjs'
 import {isStopped, stopSender} from '../shared/transceivers.mjs'
@@ -1529,9 +1531,9 @@ async function tuneSenders() {
       for (const sender of pc.getSenders()) {
         if (session !== current || current.closed) return
         const track = sender.track
-        const params = sender.getParameters()
-        if (!track || !params.encodings?.length || !current.stream?.getTracks().includes(track)) continue
-        const encoding = params.encodings[0]
+        if (!track || !current.stream?.getTracks().includes(track)) continue
+        const first = sender.getParameters()
+        if (!first.encodings?.length) continue
         // A screen share's audio uses the configurable Settings bitrate (up to Opus's own
         // practical ceiling); file/image hosting keeps the fixed default, unaffected.
         const audioStep = audioLadder.enabled && !shareSettings.audioFirst ? person(peerId).audio?.step ?? 0 : 0
@@ -1546,26 +1548,33 @@ async function tuneSenders() {
         // against video and is marked for priority on the network, so the picture gives way, not
         // the sound. Off puts it back to WebRTC's default, 'low', the same as video.
         const audioPriority = shareSettings.audioFirst ? 'high' : 'low'
-        const audioSet = track.kind !== 'audio' || (encoding.priority === audioPriority && encoding.networkPriority === audioPriority)
         // setParameters runs once per change, not once per pass: a pass that finds the sender already
         // there (as read back, or as this function last set it, for what the browser does not read back) skips it.
         const wanted = track.kind === 'video' ? `${maxBitrate}/${scale}/${degradation}` : `${maxBitrate}/${audioPriority}`
-        if (encoding.maxBitrate === maxBitrate && audioSet && (track.kind !== 'video' || (encoding.scaleResolutionDownBy === scale && params.degradationPreference === degradation))) continue
-        if (appliedParameters.get(sender) === wanted && encoding.maxBitrate === maxBitrate) continue
-        encoding.maxBitrate = maxBitrate
-        if (track.kind === 'video') {
-          encoding.scaleResolutionDownBy = scale
-          params.degradationPreference = degradation
-        } else {
-          encoding.priority = audioPriority
-          encoding.networkPriority = audioPriority
+        // Edits fresh parameters; false when they already are what is wanted.
+        const edit = (params) => {
+          const encoding = params.encodings?.[0]
+          if (!encoding) return false
+          const audioSet = track.kind !== 'audio' || (encoding.priority === audioPriority && encoding.networkPriority === audioPriority)
+          if (encoding.maxBitrate === maxBitrate && audioSet && (track.kind !== 'video' || (encoding.scaleResolutionDownBy === scale && params.degradationPreference === degradation))) return false
+          if (appliedParameters.get(sender) === wanted && encoding.maxBitrate === maxBitrate) return false
+          encoding.maxBitrate = maxBitrate
+          if (track.kind === 'video') {
+            encoding.scaleResolutionDownBy = scale
+            params.degradationPreference = degradation
+          } else {
+            encoding.priority = audioPriority
+            encoding.networkPriority = audioPriority
+          }
+          return true
         }
-        await sender.setParameters(params).then(() => {
+        await applySenderParameters(sender, edit, first).then((result) => {
+          if (!result.changed) return
           appliedParameters.set(sender, wanted)
-          logEvent('telemetry', 'send-parameters-applied', {peer: peerId, kind: track.kind, maxBitrate, scale: track.kind === 'video' ? scale : null, ...(track.kind === 'audio' && {audioStep})})
+          logEvent('telemetry', 'send-parameters-applied', {peer: peerId, kind: track.kind, maxBitrate, scale: track.kind === 'video' ? scale : null, ...(track.kind === 'audio' && {audioStep}), ...(result.retried && {retried: true})})
         }, (error) => {
           appliedParameters.delete(sender)
-          logWarn('telemetry', 'send-parameters-failed', {peer: peerId, kind: track.kind, maxBitrate, scale: track.kind === 'video' ? scale : null, message: error.message})
+          logWarn('telemetry', 'send-parameters-failed', {peer: peerId, kind: track.kind, maxBitrate, scale: track.kind === 'video' ? scale : null, message: error.message, name: error.name})
         })
       }
     }
@@ -2064,9 +2073,23 @@ function receiveState(value, peerId) {
   render()
 }
 
+// Checks the stream held for a peer against what its connection receives (peer-stream.mjs) and swaps in a stream
+// built from the receivers when the room's is stale. Cheap: a few property reads per receiver.
+function refreshPeerStream(peerId) {
+  const entry = session.peerStreams.get(peerId)
+  const receivers = session.room?.getPeers()[peerId]?.getReceivers?.()
+  if (!entry || !receivers) return entry
+  const stream = repairedStream(entry.stream, receivers.map((receiver) => receiver.track))
+  if (stream !== entry.stream) {
+    logEvent('media', 'peer-stream-repaired', {peer: peerId, had: entry.stream.getTracks().map((track) => track.kind), now: stream.getTracks().map((track) => track.kind)})
+    entry.stream = stream
+  }
+  return entry
+}
+
 function attachRemoteStream() {
   if (session.role !== 'viewer' || session.remote?.youtubeId || session.remote?.screen) return
-  const entry = session.peerStreams.get(session.hostId)
+  const entry = refreshPeerStream(session.hostId)
   const stream = entry?.claimedAt === session.remote?.claimedAt ? entry.stream : null
   if (stream && ui.remoteVideo.srcObject !== stream) {
     detachRemoteStream()
@@ -3544,6 +3567,7 @@ const tileName = (tile) => (tile.self ? 'You' : person(tile.peerId).name || 'Joi
 function renderShares() {
   const self = session.screen && session.stream ? {name: session.screen.name, audio: session.screen.audio, stream: session.stream} : null
   const hostScreen = session.role === 'viewer' ? session.remote?.screen : null
+  for (const peerId of session.peerStreams.keys()) refreshPeerStream(peerId)
   const tiles = session.room && !session.closed ? shareTiles({self, shares: session.shares, hostId: session.hostId, hostScreen, streams: session.peerStreams}) : []
   session.shareView = shareView(session.shareView, tiles)
   const keys = new Set(tiles.map((tile) => tile.key))

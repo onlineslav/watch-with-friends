@@ -14,6 +14,7 @@ const diagnostics = require('../main/log')
 const {prepareYouTube, registerYouTube} = require('../main/youtube')
 prepareYouTube()
 const checkYouTube = process.argv.includes('--youtube')
+const rejoinLoop = Number((process.argv.find((arg) => arg.startsWith('--rejoin-loop=')) || '').split('=')[1]) || 3
 // --live-rate=N: N people in one room, the host playing a film, and the live telemetry stream measured
 // per person for 60 seconds (M1.1). Nothing else is checked.
 const liveRatePeople = Number((process.argv.find((arg) => arg.startsWith('--live-rate=')) || '').split('=')[1]) || 0
@@ -32,7 +33,7 @@ const connectionDump = `JSON.stringify({self: __test.selfId, role: __test.sessio
   published: __test.session.stream?.getTracks().map((t) => t.kind + ':' + t.readyState) ?? null,
   peers: Object.entries(__test.session.room?.getPeers() || {}).map(([id, pc]) => ({id, inSession: __test.session.peers.has(id), conn: pc.connectionState, ice: pc.iceConnectionState, sig: pc.signalingState,
     senders: pc.getSenders().map((s) => s.track ? s.track.kind + ':' + s.track.readyState : 'none'),
-    receivers: pc.getReceivers().map((r) => r.track.kind + ':' + r.track.readyState + (r.track.muted ? ':muted' : '')),
+    receivers: pc.getReceivers().map((r) => r.track.kind + ':' + r.track.readyState + (r.track.muted ? ':muted' : '') + '#' + r.track.id.slice(0, 6)),
     transceivers: pc.getTransceivers().map((t) => (t.mid ?? '-') + ':' + t.direction + '/' + (t.currentDirection ?? '-'))}))})`
 async function until(win, condition, timeoutMs = publicDiscovery ? 90000 : 15000) {
   const start = Date.now()
@@ -47,7 +48,7 @@ async function until(win, condition, timeoutMs = publicDiscovery ? 90000 : 15000
     if (other.isDestroyed()) continue
     console.error(`${name} connections: ` + await run(other, connectionDump).catch((error) => error.message))
   }
-    console.error(await run(win, `JSON.stringify({friends:__test.friendNetwork.list(), role:__test.session.role, peers:[...__test.session.peers], remote:__test.session.remote, connection:__test.session.connection, video:{ready:document.getElementById('remote-video').readyState, frames:document.getElementById('remote-video').getVideoPlaybackQuality().totalVideoFrames}, streams:[...__test.session.peerStreams].map(([id, entry]) => ({id, claimedAt:entry.claimedAt, tracks:entry.stream.getTracks().map(t => ({kind:t.kind, muted:t.muted, state:t.readyState}))})), errors:__test.errors})`))
+    console.error(await run(win, `JSON.stringify({friends:__test.friendNetwork.list(), role:__test.session.role, peers:[...__test.session.peers], remote:__test.session.remote, connection:__test.session.connection, video:{ready:document.getElementById('remote-video').readyState, frames:document.getElementById('remote-video').getVideoPlaybackQuality().totalVideoFrames}, streams:[...__test.session.peerStreams].map(([id, entry]) => ({id, stream:entry.stream.id.slice(0, 6), claimedAt:entry.claimedAt, tracks:entry.stream.getTracks().map(t => ({kind:t.kind, muted:t.muted, state:t.readyState, id:t.id.slice(0, 6)}))})), errors:__test.errors})`))
   assert.fail(`Timed out: ${condition}`)
 }
 
@@ -899,6 +900,20 @@ app.whenReady().then(async () => {
     await until(a, '__test.session.role === "viewer" && !__test.session.preview && document.getElementById("remote-video").readyState >= 3')
     assert.equal(await run(b, '__test.session.claimedAt'), liveClaim, 'returning previews cannot take over a live host')
     console.log('PASS: Reopening restores the last video paused at its saved timestamp; Play shares it and existing hosts take precedence')
+    // M1.7: a viewer who leaves and rejoins a room whose host is playing must get the picture again, not only
+    // the sound (0.8.0 CI once got audio but no video after a rejoin, the host's setParameters rejected).
+    // --rejoin-loop=N repeats it N times (default 3); the picture counts only once frames are decoded.
+    await run(b, '__test.control("loop", true)') // a long loop must not run past the end of the 30 s film
+    for (let i = 1; i <= rejoinLoop; i++) {
+      await run(a, '__test.leaveRoom()')
+      if (i % 2) await until(b, '__test.session.peers.size === 0') // alternate: the host sees the departure, or the return is quick
+      await run(a, '__test.enterRoom("RESTORE1")')
+      await until(a, '__test.session.role === "viewer" && document.getElementById("remote-video").readyState >= 3')
+      const frames = await run(a, 'document.getElementById("remote-video").getVideoPlaybackQuality().totalVideoFrames')
+      await until(a, `document.getElementById("remote-video").getVideoPlaybackQuality().totalVideoFrames > ${frames + 5} && !document.getElementById("remote-video").paused`)
+      if (rejoinLoop > 3) console.log(`rejoin ${i}/${rejoinLoop} ok`)
+    }
+    console.log(`PASS: A viewer rejoining a live host's room gets picture and sound again (${rejoinLoop} times)`)
     for (const win of windows) assert.deepEqual(await run(win, '__test.errors'), [])
     console.log('PASS: Two leave/rejoin cycles retain friends and produce no renderer exceptions')
 

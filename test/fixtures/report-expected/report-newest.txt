@@ -1,0 +1,36 @@
+Session report, day 2026-10-01 (newest day; give a day or "all" for others)
+
+Room FIXT-ROOM   2026-10-01 20:00:00 to 20:01:02 UTC (1m 02s), 3 people
+  Host   host-one#0000-0000 (0.9.0)   CPU peak 188% of one core (renderer 55, gpu 120, main 8, other 5)
+  Viewer viewer-two#0000-0000 (0.9.0)
+
+  viewer-three#0000-0000 watching host-one#0000-0000   [host's log only (viewer's log missing); 28 playing samples = 56s]
+    RTT               typical 86 ms, worst 264 ms
+    Loss              average 1.07%, worst 8.6% (video, per 2s)
+    Frozen            ~3.6% (of samples with a freeze; no freeze durations in this log)
+    Audio concealed   –
+    A/V offset        –
+    Video bitrate     received – / target 2.29 Mbps
+    Audio bitrate     received – / target 256 kbps
+    Encode / decode   encode 3.8 ms / 4.5 ms (typical / worst), decode –
+    Encoder limited   by cpu 2.1%, by bandwidth 6.4% of time
+    CPU peak          viewer –
+    Quality decisions no bitrate changes; target 1.69 Mbps-4.00 Mbps
+      per sample      settling 24, inactive 2, loss 2, freezes 1, recovery 1
+
+  viewer-two#0000-0000 watching host-one#0000-0000   [viewer's log + host's log; 28 playing samples = 56s]
+    RTT               typical 66 ms, worst 244 ms
+    Loss              average 0.97%, worst 8.5% (video, per 2s)
+    Frozen            1.1% of playing time
+    Audio concealed   0.63%
+    A/V offset        +77 ms   [av+delay]
+    Video bitrate     received 2.14 Mbps / target 2.29 Mbps
+    Audio bitrate     received 115 kbps / target 256 kbps
+    Encode / decode   encode 3.8 ms / 4.5 ms (typical / worst), decode 2.4 ms / 2.8 ms
+    Encoder limited   by cpu 2.1%, by bandwidth 6.4% of time
+    CPU peak          viewer 51% of one core (renderer 25, gpu 20, main 4, other 2)
+    Quality decisions 2 bitrate changes (1 up, 1 down); down loss x1, up recovery x1; target 1.69 Mbps-4.00 Mbps
+      per sample      settling 24, inactive 2, loss 2, freezes 1, recovery 1
+
+  A/V offset: positive = sound behind the picture; an estimate. [av] = difference of the two tracks' estimated playout clocks (s.av);
+  [delay] = audio jitter buffer + playout + Web Audio output latency, minus video jitter buffer. Audio target = Settings' audio bitrate.

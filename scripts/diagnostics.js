@@ -11,6 +11,11 @@
 //   npm run diagnostics -- aya       only folders starting with "aya"
 //   DIAGNOSTICS_REPO=owner/name      a different repository
 //   npm run diagnostics -- --live [scope]   watch everyone's lines as they happen (scripts/live-view.js)
+//   npm run diagnostics -- --report [username] [day]   scorecard per session and viewer, host and viewer
+//                                    logs of one room paired (scripts/session-report.js); newest day by default,
+//                                    a YYYY-MM-DD day or "all" to pick
+//   npm run diagnostics -- --compare [username] [day]  the same numbers grouped by app version
+//                                    (--report/--compare fetch first; --no-fetch or --dir <path> read what is there)
 
 const {execFileSync} = require('node:child_process')
 const fs = require('node:fs')
@@ -22,6 +27,7 @@ const root = path.resolve(__dirname, '..')
 const clone = path.join(root, 'work', 'diagnostics-repo')
 const out = path.join(root, 'work', 'diagnostics')
 const filter = (process.argv[2] || '').toLowerCase()
+const reporting = process.argv.includes('--report') || process.argv.includes('--compare')
 
 const run = (command, args, options = {}) => execFileSync(command, args, {stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', ...options})
 
@@ -31,16 +37,14 @@ function sync() {
     else run('gh', ['repo', 'clone', REPO, clone, '--', '--depth', '1', '--quiet'])
   } catch (error) {
     const detail = String(error.stderr || error.message).trim().split('\n').pop()
-    console.error(`Could not fetch ${REPO}: ${detail}`)
-    console.error('You need `gh auth login` with access to that repository.')
-    process.exit(1)
+    throw new Error(`Could not fetch ${REPO}: ${detail}\nYou need \`gh auth login\` with access to that repository.`)
   }
 }
 
 const list = (dir) => (fs.existsSync(dir) ? fs.readdirSync(dir).sort() : [])
 
-function unpack() {
-  const people = list(path.join(clone, 'telemetry')).filter((name) => name.startsWith(filter))
+function unpack(only = filter) {
+  const people = list(path.join(clone, 'telemetry')).filter((name) => name.startsWith(only))
   const rows = []
   for (const person of people) {
     for (const day of list(path.join(clone, 'telemetry', person))) {
@@ -60,7 +64,7 @@ function unpack() {
 }
 
 function archive() {
-  sync()
+  try { sync() } catch (error) { console.error(error.message); process.exit(1) }
   const rows = unpack()
   if (!rows.length) {
     console.log(filter ? `No telemetry from anyone matching "${filter}" yet.` : 'No telemetry has arrived yet.')
@@ -73,6 +77,10 @@ function archive() {
 
 if (process.argv.includes('--live')) {
   require('./live-view').run(process.argv.slice(2)).then((code) => process.exit(code), (error) => { console.error(error.message); process.exit(1) })
+} else if (reporting) {
+  // Every person's files are unpacked, whatever the name filter: a report pairs a host's file with its viewers'.
+  const code = require('./session-report').run(process.argv.slice(2), {defaultDir: out, fetchArchive: () => { sync(); unpack('') }})
+  process.exitCode = code
 } else {
   archive()
 }

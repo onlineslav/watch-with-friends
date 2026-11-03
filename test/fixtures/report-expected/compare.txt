@@ -1,0 +1,25 @@
+Comparison by app version, all 2 days, 4 sessions
+
+                              0.8.0           0.9.0            0.9.0 vs 0.8.0
+Logged sessions               2               2
+Viewer time playing           44s             56s
+Host time (per viewer)        1m 28s          1m 52s
+RTT typical / worst           36 ms / 214 ms  66 ms / 244 ms   worse
+Loss avg / worst              1.21% / 8.50%   0.97% / 8.50%    better
+Frozen                        ~4.5%           1.1%             better
+Audio concealed               –               0.63%            –
+A/V offset                    –               +77 ms           –
+Video received                2.14 Mbps       2.14 Mbps        –
+Video target                  2.29 Mbps       2.29 Mbps        –
+Video recv/target             93%             93%              same
+Audio received                115 kbps        115 kbps         –
+Audio target                  –               256 kbps         –
+Encode typical / worst        –               3.8 ms / 4.5 ms  –
+Decode typical / worst        –               2.4 ms / 2.8 ms  –
+CPU peak (viewer)             –               51%              –
+CPU peak (host)               –               188%             –
+Bitrate cuts / viewer-hour    40.9            32.1             better
+Bitrate raises / viewer-hour  40.9            32.1             –
+
+Each column pools every sample logged by that build. Viewer rows come from viewers' logs, encode/targets/bitrate cuts from hosts' logs.
+Last column: newest build against the one before it ("same" = change under 10% and under a small fixed amount). Rows without a verdict are not judged (bitrates). "–" = not measured by that build.

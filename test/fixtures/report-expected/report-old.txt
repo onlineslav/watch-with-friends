@@ -1,0 +1,33 @@
+Session report, day 2026-09-20
+
+Room FIXT-ROOM   2026-09-20 19:00:00 to 19:00:50 UTC (50s), 3 people
+  Host   host-one#0000-0000 (0.8.0)   CPU peak –
+  Viewer viewer-two#0000-0000 (0.8.0)
+
+  viewer-three#0000-0000 watching host-one#0000-0000   [host's log only (viewer's log missing); 22 playing samples = 44s]
+    RTT               typical 56 ms, worst 234 ms
+    Loss              average 1.31%, worst 8.6% (video, per 2s)
+    Frozen            ~4.5% (of samples with a freeze; no freeze durations in this log)
+    Audio concealed   –
+    A/V offset        –
+    Video bitrate     received – / target 2.29 Mbps
+    Audio bitrate     received – / target –
+    Encode / decode   encode – (typical / worst), decode –
+    Encoder limited   –
+    CPU peak          viewer –
+    Quality decisions no bitrate changes; target 1.69 Mbps-4.00 Mbps
+      per sample      settling 18, inactive 2, loss 2, freezes 1, recovery 1
+
+  viewer-two#0000-0000 watching host-one#0000-0000   [viewer's log + host's log; 22 playing samples = 44s]
+    RTT               typical 36 ms, worst 214 ms
+    Loss              average 1.21%, worst 8.5% (video, per 2s)
+    Frozen            ~4.5% (of samples with a freeze; no freeze durations in this log)
+    Audio concealed   –
+    A/V offset        –
+    Video bitrate     received 2.14 Mbps / target 2.29 Mbps
+    Audio bitrate     received 115 kbps / target –
+    Encode / decode   encode – (typical / worst), decode –
+    Encoder limited   –
+    CPU peak          viewer –
+    Quality decisions 2 bitrate changes (1 up, 1 down); down loss x1, up recovery x1; target 1.69 Mbps-4.00 Mbps
+      per sample      settling 18, inactive 2, loss 2, freezes 1, recovery 1

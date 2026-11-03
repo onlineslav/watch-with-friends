@@ -2,6 +2,7 @@
 // buffered range restarts ffmpeg at the new position; everything else is plain <video>.
 import CODECS from '../shared/codecs.json'
 import {errorMessage} from './lib.mjs'
+import {whenIdle} from './source-buffer.mjs'
 
 const BUFFER_AHEAD_SECONDS = 45
 const KEEP_BEHIND_SECONDS = 15
@@ -144,6 +145,8 @@ export class StreamPlayer extends EventTarget {
       this.ffmpegSpeed = null
       await this.resetBuffer(session.mime)
       if (generation !== this.generation) return
+      await whenIdle(this.sourceBuffer) // a remove or append of the last session may still be running
+      if (generation !== this.generation) return
       this.sourceBuffer.timestampOffset = session.offset
       this.video.currentTime = Math.max(seconds, session.offset)
       this.emit('session')
@@ -166,9 +169,10 @@ export class StreamPlayer extends EventTarget {
       buffer.changeType(mime)
       this.mime = mime
     }
+    await whenIdle(buffer) // abort() queues an updateend of its own; remove() must not start before the buffer is idle
     if (buffer.buffered.length) {
       buffer.remove(0, Infinity)
-      await once(buffer, 'updateend')
+      await whenIdle(buffer)
     }
   }
 
@@ -202,7 +206,7 @@ export class StreamPlayer extends EventTarget {
       if (generation !== this.generation) return
       try {
         this.sourceBuffer.appendBuffer(chunk)
-        await once(this.sourceBuffer, 'updateend')
+        await whenIdle(this.sourceBuffer)
         this.skipLeadingGap()
         return
       } catch (err) {
@@ -226,7 +230,7 @@ export class StreamPlayer extends EventTarget {
     const end = this.video.currentTime - KEEP_BEHIND_SECONDS
     if (!buffer || buffer.updating || !buffer.buffered.length || buffer.buffered.start(0) >= end - 1) return
     buffer.remove(0, end)
-    await once(buffer, 'updateend')
+    await whenIdle(buffer)
   }
 
   bufferedAhead() {

@@ -22,6 +22,7 @@ jobs:
             command: npm run dist:mac -- --x64 --publish never
             artifact: mac-intel
             arch: x64
+            cost_limit: '6'
     runs-on: ${{ matrix.os }}
     env:
       TURN_CONFIG: ${{ secrets.TURN_CONFIG }}
@@ -39,6 +40,8 @@ jobs:
         run: npm run test:connections
       - name: Check streaming recovery and exported diagnostics
         run: npm run test:network
+        env:
+          SAMPLE_COST_LIMIT_MS: ${{ matrix.cost_limit }}
       - name: Add TURN relay config
         if: env.TURN_CONFIG != ''
         shell: bash

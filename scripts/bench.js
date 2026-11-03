@@ -11,6 +11,10 @@
 //   reopen     (only with --variant=reopen) a host opens the clip, then opens a second and a third file (copies of
 //          it); the viewer must hear the beeps of each (RMS >= 0.1) and decode them in stereo
 //
+//   loop       (only with --variant=loop) a host opens a short clip (two beeps, 5.5s) with Loop on; the viewer's beeps are
+//          counted on every repeat (--repeats=N, default 8) and the viewer must hear both each time, with the
+//          host never looking paused and no new publish per repeat (M1.12)
+//
 // Nothing is audible: every window is muted and the output gain feeds only a tap that reaches the
 // destination through a gain of zero. Real renderer code over local discovery, like check-network.js.
 //
@@ -75,6 +79,7 @@ const options = {
   audioLadder: String(flag('audio-ladder', 'on')),
   audioFirst: String(flag('audio-first', 'on')),
   label: String(flag('label', '')).replace(/[^A-Za-z0-9._-]/g, ''),
+  repeats: Math.max(1, Number(flag('repeats', 8))), // --variant=loop: how many times the short film loops
   publishes: Math.max(1, Number(flag('publishes', 3))), // --variant=republish / reopen: how many times the film is published
 }
 const {createNetwork} = require('./bench-net')
@@ -83,7 +88,7 @@ const degraded = options.loss > 0 || options.linkKbps > 0 // not a sync run: the
 assert.ok(options.loss >= 0 && options.loss < 100 && options.linkKbps >= 0, '--loss is a percent, --link-kbps a number')
 assert.ok(['on', 'off'].includes(options.audioLadder) && ['on', 'off'].includes(options.audioFirst), '--audio-ladder and --audio-first are on or off')
 const variants = options.variant === 'all' ? ['film', 'share'] : [options.variant]
-assert.ok(variants.every((v) => ['film', 'share', 'republish', 'reopen'].includes(v)), '--variant is film, share, republish, reopen or all')
+assert.ok(variants.every((v) => ['film', 'share', 'republish', 'reopen', 'loop'].includes(v)), '--variant is film, share, republish, reopen, loop or all')
 
 const scratch = require('./temp-dirs').create('synced-bench-', {keep: Boolean(flag('keep', false)) || Boolean(process.env.KEEP_TEMP)})
 const temporary = scratch.dir
@@ -541,12 +546,105 @@ async function runShare(env, runIndex) {
 
 const spread = (values) => (values.length ? lib.round(Math.max(...values) - Math.min(...values), 1) : null)
 
+// M1.12: a short film on Loop. Every repeat, the viewer must hear both beeps (RMS >= 0.1), the host must never
+// look paused (to itself or, through state, to the viewer), and a repeat must not republish the stream: the
+// capture's audio track is the same live one throughout.
+async function runLoop(env, runIndex) {
+  const {host, viewer} = await connectedPair(`loop${runIndex}`, 'loophost', 'loopviewer')
+  try {
+    await applySendOptions(host)
+    await Promise.all([run(host, '__bench.installTap()'), run(viewer, '__bench.installTap()')])
+    const schedule = lib.makeSchedule({seed: options.seed, count: 2, first: 1, minGap: 1.5, maxGap: 1.5})
+    const clip = path.join(temporary, `bench-loop-${runIndex}.mkv`)
+    execFileSync(require('ffmpeg-static'), lib.clipArgs(schedule, clip), {windowsHide: true, timeout: 60000})
+    await run(host, `(() => {
+      const v = document.getElementById('local-video')
+      const t0 = performance.now()
+      const log = []
+      const note = (what) => log.push([Math.round(performance.now() - t0), what])
+      window.__loop = {started: false, ended: 0, loadedmetadata: 0, pausedSamples: 0, viewerPausedSamples: 0, samples: 0, log}
+      v.addEventListener('ended', () => window.__loop.ended++)
+      v.addEventListener('loadedmetadata', () => window.__loop.loadedmetadata++)
+      v.addEventListener('playing', () => { window.__loop.started = true })
+      for (const type of ['ended', 'pause', 'play', 'playing', 'seeking', 'seeked', 'emptied', 'waiting']) v.addEventListener(type, () => note(type + ' t=' + v.currentTime.toFixed(2)))
+      // The capture's tracks: what each does at the end of the film (read through session.captured, which publishStream sets).
+      const watched = new WeakSet()
+      setInterval(() => {
+        if (!window.__loop.started) return // the film is still opening: not a loop restart
+        window.__loop.samples++
+        const st = __test.getState()
+        if (st.playing === false) { window.__loop.pausedSamples++; note('state.playing=false paused=' + v.paused + ' ended=' + v.ended + ' t=' + v.currentTime.toFixed(2)) }
+        const stream = __test.session.captured
+        if (stream && !watched.has(stream)) {
+          watched.add(stream)
+          stream.addEventListener('addtrack', (e) => note('capture addtrack ' + e.track.kind))
+          stream.addEventListener('removetrack', (e) => note('capture removetrack ' + e.track.kind + ' ' + e.track.readyState))
+        }
+        for (const track of stream ? stream.getTracks() : []) {
+          if (watched.has(track)) continue
+          watched.add(track)
+          for (const type of ['ended', 'mute', 'unmute']) track.addEventListener(type, () => note('capture ' + track.kind + ' ' + type))
+        }
+      }, 40)
+      return true
+    })()`)
+    await run(viewer, `(() => { window.__loop = {viewerPausedSamples: 0, started: false}; setInterval(() => { const r = __test.session.remote; if (r && r.playing) window.__loop.started = true; else if (r && window.__loop.started) window.__loop.viewerPausedSamples++ }, 40); return true })()`)
+    await run(host, `__test.hostFile(${JSON.stringify(clip)})`)
+    await run(host, '__test.control("loop", true)')
+    await until(viewer, 'document.getElementById("remote-video").getVideoPlaybackQuality().totalVideoFrames > 24', 45000, 'viewer receives video')
+    const hostShape = '(() => { const s = __test.session; const live = (t) => ({kind: t.kind, state: t.readyState, muted: t.muted}); return JSON.stringify({captured: s.captured ? s.captured.getTracks().map(live) : null, published: s.stream ? s.stream.getTracks().map(live) : null, loadedmetadata: window.__loop.loadedmetadata}) })()'
+    const viewerShape = '(() => { const v = document.getElementById("remote-video"); return JSON.stringify({tracks: v.srcObject ? v.srcObject.getTracks().map((t) => ({kind: t.kind, state: t.readyState, muted: t.muted})) : null}) })()'
+    const stages = []
+    let before = JSON.parse(await run(viewer, '__bench.collect().then(JSON.stringify)')).levels.length
+    for (let repeat = 1; repeat <= options.repeats; repeat++) {
+      await until(host, `window.__loop.ended >= ${repeat}`, 30000, `the clip ends the ${repeat}th time`)
+      await pause(300)
+      const levels = JSON.parse(await run(viewer, '__bench.collect().then(JSON.stringify)')).levels
+      const mine = levels.slice(before).map((l) => l.rms)
+      before = levels.length
+      stages.push({repeat, beeps: mine.length, beepRms: lib.round(lib.median(mine), 3), host: JSON.parse(await run(host, hostShape)), viewer: JSON.parse(await run(viewer, viewerShape))})
+    }
+    const counters = await run(host, 'JSON.stringify(window.__loop)').then(JSON.parse)
+    const viewerPaused = (await run(viewer, 'window.__loop.viewerPausedSamples')) | 0
+    // A different film after the loop (opening it is not a loop restart, so the paused counters above are read first): the viewer must hear it too (the loop's detached capture tracks are let go, not kept).
+    const next = clip.replace(/.mkv$/, '-next.mkv')
+    fs.copyFileSync(clip, next)
+    const beforeNext = JSON.parse(await run(viewer, '__bench.collect().then(JSON.stringify)')).levels.length
+    await run(host, `__test.hostFile(${JSON.stringify(next)})`)
+    await pause(9000)
+    const nextLevels = JSON.parse(await run(viewer, '__bench.collect().then(JSON.stringify)')).levels.slice(beforeNext).map((l) => l.rms)
+    const afterNext = {beeps: nextLevels.length, beepRms: lib.round(lib.median(nextLevels), 3), host: JSON.parse(await run(host, hostShape))}
+    const errors = [...await run(host, '__test.errors'), ...await run(viewer, '__test.errors')]
+    // The first pass of the loop has the viewer's start-up in it: judged from the second repeat on.
+    const judged = stages.filter((s) => s.repeat >= 2)
+    const problems = [
+      ...judged.filter((s) => !(s.beeps >= 2 && s.beepRms >= 0.1)).map((s) => `repeat ${s.repeat}: the viewer heard ${s.beeps} of 2 beeps, median RMS ${s.beepRms} (under 0.1 is silence)`),
+      ...(counters.pausedSamples > 0 ? [`the host looked paused in ${counters.pausedSamples} of ${counters.samples} samples during the loop`] : []),
+      ...(viewerPaused > 0 ? [`the viewer was told the film was paused in ${viewerPaused} samples during the loop`] : []),
+      ...(!(afterNext.beeps >= 2 && afterNext.beepRms >= 0.1) ? [`after the loop a different film was opened and the viewer heard ${afterNext.beeps} beep(s), median RMS ${afterNext.beepRms}`] : []),
+      ...(stages.length < options.repeats ? ['the loop did not run every repeat'] : []),
+    ]
+    return {variant: 'loop', stages, afterNext, counters, events: counters.log, viewerPausedSamples: viewerPaused, pageErrors: errors, problems}
+  } finally {
+    host.destroy()
+    viewer.destroy()
+    require('../main/media').stopAll()
+  }
+}
+
 function summarizeRepublish(allRuns) {
   const runs = allRuns.filter((r) => !r.failed)
   const count = Math.max(0, ...runs.map((r) => r.stages.length))
   const at = (n) => runs.map((r) => r.stages[n]?.separation).filter(Number.isFinite)
   const rms = (n) => runs.map((r) => r.stages[n]?.beepRms).filter(Number.isFinite)
   return {runs: runs.length, failedRuns: allRuns.length - runs.length, sections: runs.map((r) => r.stages.at(-1)?.shape?.sections ?? null), offerBytes: runs.map((r) => r.stages.at(-1)?.shape?.offerBytes ?? null), separation: Array.from({length: count}, (_, i) => i + 1).map((publish) => ({publish, perRun: at(publish - 1), median: lib.round(lib.median(at(publish - 1)), 3), beepRms: {perRun: rms(publish - 1), median: lib.round(lib.median(rms(publish - 1)), 3)}}))}
+}
+
+// A loop run is a pass or an invalid run; what is summarised is the quietest repeat anywhere.
+function summarizeLoop(allRuns) {
+  const runs = allRuns.filter((r) => !r.failed)
+  const stages = runs.flatMap((r) => r.stages.filter((s) => s.repeat >= 2))
+  return {runs: runs.length, failedRuns: allRuns.length - runs.length, repeatsJudged: stages.length, quietestBeepRms: lib.round(Math.min(...stages.map((s) => s.beepRms).filter(Number.isFinite)), 3), fewestBeeps: Math.min(...stages.map((s) => s.beeps))}
 }
 
 function summarizeVariant(allRuns) {
@@ -578,6 +676,21 @@ function printReport(report) {
   console.log(`\n=== Benchmark ${report.version} ${report.date}${report.options.quick ? ' (quick: not a result)' : ''} [${mode}] ===`)
   for (const [variant, runs] of Object.entries(report.variants)) {
     const s = report.summary[variant]
+    if (variant === 'loop') {
+      console.log(`
+--- loop: ${runs.length} run(s) ---`)
+      console.log(`  ${s.repeatsJudged} repeat(s) judged (the first is start-up): fewest beeps heard in one repeat ${s.fewestBeeps} of 2, quietest repeat's median beep RMS ${s.quietestBeepRms} (a beep reads 0.35, silence 0)`)
+      runs.forEach((r, i) => {
+        if (r.failed) return console.log(`  run ${i + 1}: FAILED ${r.failed}`)
+        console.log(`  run ${i + 1}: ${r.stages.map((x) => `#${x.repeat} ${x.beeps} beeps rms ${x.beepRms}`).join('; ')}`)
+        const last = r.stages.at(-1)
+        if (process.env.LOOP_EVENTS) console.log(r.events.map((e) => e.join(' ')).join('\n'))
+        console.log(`         then a different film: ${r.afterNext.beeps} beeps, rms ${r.afterNext.beepRms}, published ${JSON.stringify(r.afterNext.host.published)}
+         after the last repeat: host capture ${JSON.stringify(last.host.captured)}, published ${JSON.stringify(last.host.published)}, viewer ${JSON.stringify(last.viewer.tracks)}; loadedmetadata ${last.host.loadedmetadata}x, ended ${r.counters.ended}x, paused samples host ${r.counters.pausedSamples}/${r.counters.samples} viewer ${r.viewerPausedSamples}`)
+        for (const problem of r.problems) console.log(`         INVALID: ${problem}`)
+      })
+      continue
+    }
     if (variant === 'republish' || variant === 'reopen') {
       console.log(`\n--- ${variant}: ${runs.length} run(s) ---`)
       console.log(`  viewer L/R separation after each publish (0.5 is stereo, 0 is mono): ${s.separation.map((x) => x.median).join(', ')}  (lowest of any run: ${Math.min(...s.separation.flatMap((x) => x.perRun))})`)
@@ -637,7 +750,7 @@ app.whenReady().then(async () => {
       for (let i = 1; i <= options.runs; i++) {
         console.log(`${variant} run ${i}/${options.runs} ...`)
         try {
-          variantsOut[variant].push(await (variant === 'film' ? runFilm(env, i) : variant === 'republish' || variant === 'reopen' ? runRepublish(env, i, variant) : runShare(env, i)))
+          variantsOut[variant].push(await (variant === 'film' ? runFilm(env, i) : variant === 'loop' ? runLoop(env, i) : variant === 'republish' || variant === 'reopen' ? runRepublish(env, i, variant) : runShare(env, i)))
         } catch (error) {
           console.error(error)
           variantsOut[variant].push({variant, failed: String(error.message || error), problems: [`the run failed: ${error.message}`]})
@@ -656,7 +769,7 @@ app.whenReady().then(async () => {
       },
       mode: {loss: options.loss, linkKbps: options.linkKbps, audioLadder: options.audioLadder, audioFirst: options.audioFirst, tree: options.tree ? path.basename(options.tree) : null, network: network && {kind: 'UDP relays (scripts/bench-net.js)', stats: network.stats}},
       variants: variantsOut,
-      summary: Object.fromEntries(Object.entries(variantsOut).map(([k, runs]) => [k, k === 'republish' || k === 'reopen' ? summarizeRepublish(runs) : summarizeVariant(runs)])),
+      summary: Object.fromEntries(Object.entries(variantsOut).map(([k, runs]) => [k, k === 'republish' || k === 'reopen' ? summarizeRepublish(runs) : k === 'loop' ? summarizeLoop(runs) : summarizeVariant(runs)])),
     }
     const dir = path.join(root, 'work', 'bench')
     fs.mkdirSync(dir, {recursive: true})

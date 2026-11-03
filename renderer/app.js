@@ -1336,8 +1336,15 @@ const RETIRED_CLONE_MS = 5000
 
 function captureElement(video) {
   if (elementCapture?.video === video) return elementCapture
-  const capture = {video, stream: video.captureStream(), sink: null}
+  const capture = {video, stream: video.captureStream(), sink: null, detached: new Set()}
   capture.stream.addEventListener('addtrack', ({track}) => {
+    // A track that left the stream (see removetrack below) and is now followed by one of its kind is the old file's.
+    for (const old of [...capture.detached]) {
+      if (old.kind !== track.kind) continue
+      capture.detached.delete(old)
+      capture.sink?.remove(old)
+      old.stop()
+    }
     // A new file adds its audio track to the capture and leaves the last file's in it, live and silent
     // (Chromium 152: one more per file, never ended): every audio track before the new one is stale.
     const audio = capture.stream.getAudioTracks()
@@ -1350,7 +1357,12 @@ function captureElement(video) {
     if (capture.sink) capture.sink.add(track)
     else if (track.kind === 'video' && typeof MediaStreamTrackGenerator === 'function') track.stop() // nobody publishes: the picture is the frame generator's
   })
-  capture.stream.addEventListener('removetrack', ({track}) => capture.sink?.remove(track))
+  // Restarting a film that has ended (Loop) makes Chromium end its capture tracks and take them out of the stream's
+  // list, with no 'ended' event and nothing added back; the clones made from them go on carrying the element's picture
+  // and sound (bench: all repeats heard). Retiring them here silenced every viewer five seconds into the second repeat
+  // (M1.12). So a track that left the stream stays published until the track of its kind that replaces it arrives
+  // (addtrack above), or until its clone itself ends.
+  capture.stream.addEventListener('removetrack', ({track}) => capture.detached.add(track))
   return (elementCapture = capture)
 }
 
@@ -1431,6 +1443,7 @@ function publishStream() {
     if (clone.kind === 'video') clone.contentHint = 'motion'
     clones.set(source, clone)
     source.addEventListener('ended', () => retire(source), {once: true})
+    clone.addEventListener('ended', () => retire(source), {once: true})
     return clone
   }
   const send = (clone) => {

@@ -442,14 +442,16 @@ async function fixtures() {
   execFileSync(require('ffmpeg-static'), ['-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440', '-t', '30', '-c:a', 'aac', sound], {windowsHide: true, timeout: 15000})
   const picture = path.join(temporary, 'picture.png')
   execFileSync(require('ffmpeg-static'), ['-v', 'error', '-f', 'lavfi', '-i', 'color=c=blue:size=64x64', '-frames:v', '1', picture], {windowsHide: true, timeout: 15000})
-  return {video, picture, sound}
+  const short = path.join(temporary, 'short.mp4') // M1.12: a film short enough to loop many times in a few seconds
+  execFileSync(require('ffmpeg-static'), ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=320x180:rate=24', '-f', 'lavfi', '-i', 'sine=frequency=440', '-t', '2.5', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', short], {windowsHide: true, timeout: 15000})
+  return {video, picture, sound, short}
 }
 
 app.whenReady().then(async () => {
   const windows = []
   const watchdog = setTimeout(() => { console.error('Network integration check timed out'); finish(1) }, publicDiscovery || checkYouTube ? 240000 : 180000)
   try {
-    const {video, picture, sound} = await fixtures()
+    const {video, picture, sound, short} = await fixtures()
     diagnostics.start({dir: path.join(temporary, 'logs'), info: {version: app.getVersion()}})
     require('../main/main').registerIpc()
     ipcMain.removeHandler('net:ice-servers')
@@ -877,6 +879,28 @@ app.whenReady().then(async () => {
     console.log(`  after 11 files on one connection: ${final.map((s) => `${s.transceivers} transceivers, ${s.sections} m-sections, offer ${s.offerBytes} bytes`).join(' | ')} (largest offer seen ${largest} bytes; a signalling message may be 65536)`)
     assert.ok(largest < 32768, `the offer stays far below the 64 KiB signalling limit (${largest} bytes)`)
     console.log('PASS: Ten more files on one connection are each audible to both viewers, with bounded transceivers, one live audio sender per peer and a small offer')
+    // M1.12: a film on Loop kept playing for the host but went silent for viewers about five seconds after its first
+    // repeat (Chromium takes the capture's tracks out of the stream when a finished film restarts, and the app let
+    // the published copies go). Six repeats of a 2.5 s film: each viewer hears it in every one, never sees a pause,
+    // and keeps one live audio sender.
+    {
+      const claimBefore = await run(a, '__test.session.remote.claimedAt')
+      await run(c, `__test.hostFile(${JSON.stringify(short)})`)
+      await Promise.all([a, b].map((win) => until(win, heardFrom(c, claimBefore), 45000, 'viewers hear the short film')))
+      await run(c, '__test.control("loop", true)')
+      await run(c, 'window.__loops = 0; document.getElementById("local-video").addEventListener("ended", () => window.__loops++); true')
+      for (const win of [a, b]) await run(win, 'window.__notPlaying = 0; setInterval(() => { if (__test.session.remote && !__test.session.remote.playing) window.__notPlaying++ }, 50); true')
+      for (let repeat = 1; repeat <= 6; repeat++) {
+        await until(c, `window.__loops >= ${repeat}`, 20000, `the short film ends for the ${repeat}th time`)
+        await pause(1200) // into the new repeat, past the restart's own gap
+        await Promise.all([a, b].map((win) => until(win, '__test.audioLevel() > 0.01', 2500, `a viewer hears repeat ${repeat + 1} of the looped film`)))
+      }
+      const shape = JSON.parse(await hostConnections())
+      for (const one of shape) assert.equal(one.audioSenders, 1, `after the loop: one live audio sender per peer (${JSON.stringify(one)})`)
+      for (const win of [a, b]) assert.equal(await run(win, 'window.__notPlaying'), 0, 'a loop restart never reaches a viewer as a pause')
+      await run(c, '__test.control("loop", false)')
+      console.log('PASS: A looped film is heard by both viewers on every one of six repeats and never shows as paused')
+    }
     await run(c, `__test.hostFile(${JSON.stringify(path.join(temporary, 'missing.mp4'))})`)
     await Promise.all([a, b].map((win) => until(win, 'Boolean(__test.session.remote?.error) && document.getElementById("spinner").hidden')))
     console.log('PASS: A failed host file reaches both viewers as a terminal error')

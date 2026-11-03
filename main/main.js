@@ -4,6 +4,7 @@ const os = require('node:os')
 const {app, BrowserWindow, dialog, ipcMain, powerMonitor, screen, session, shell, desktopCapturer} = require('electron')
 const log = require('./log')
 const machine = require('./machine')
+const {createNetProbe} = require('./net-probe')
 const media = require('./media')
 const appAudio = require('./app-audio')
 const appWindows = require('./app-windows')
@@ -121,6 +122,11 @@ const pickFile = (event, name, extensions) => pickFiles(event, name, extensions)
 // Machine load for the diagnostic log (main/machine.js). A window that is in a room gets a reading
 // pushed every 2 seconds; nothing is asked of the renderer and nothing waits on it.
 const machineSamplers = new Map()
+// One for the whole computer, running while any window is in a room (main/net-probe.js).
+const netProbe = createNetProbe({
+  record: (...args) => log.record(...args),
+  binaryPath: () => (app.isPackaged ? path.join(process.resourcesPath, 'win-net-probe.exe') : path.join(__dirname, '..', 'native', 'win-net-probe', 'win-net-probe.exe')),
+})
 let cpuSpeedLimit = null
 let machineStatic = null
 
@@ -148,16 +154,18 @@ function setMachineSampling(contents, active) {
   if (!active) {
     existing?.stop()
     machineSamplers.delete(contents.id)
+    if (!machineSamplers.size) netProbe.stop()
     return
   }
   if (existing) return
   const sampler = machine.createSampler({
-    deps: {getMetrics: () => app.getAppMetrics(), systemMemory: () => process.getSystemMemoryInfo(), power: machinePower, edgeRtt: () => liveSender?.edgeRtt() ?? null},
+    deps: {getMetrics: () => app.getAppMetrics(), systemMemory: () => process.getSystemMemoryInfo(), power: machinePower, edgeRtt: () => liveSender?.edgeRtt() ?? null, netProbe: () => netProbe.take()},
     send: (reading) => { if (!contents.isDestroyed()) contents.send('machine:sample', reading) },
   })
   machineSamplers.set(contents.id, sampler)
   contents.once('destroyed', () => setMachineSampling({id: contents.id}, false))
   sampler.start()
+  netProbe.start()
   recordMachineStatic().catch(() => {})
 }
 

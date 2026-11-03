@@ -9,6 +9,7 @@ native/mac-app-audio/mac-app-audio
 native/win-app-audio/win-app-audio.exe
 native/win-app-windows/win-app-windows.exe
 native/win-share-sources/win-share-sources.exe
+native/win-net-probe/win-net-probe.exe
 
 # local diagnostics and scratch output
 logs/

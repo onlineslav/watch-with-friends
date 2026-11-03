@@ -88,6 +88,10 @@
         {
           "from": "native/win-share-sources/win-share-sources.exe",
           "to": "win-share-sources.exe"
+        },
+        {
+          "from": "native/win-net-probe/win-net-probe.exe",
+          "to": "win-net-probe.exe"
         }
       ],
       "files": [

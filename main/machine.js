@@ -32,7 +32,7 @@ function summarizeMetrics(metrics) {
 
 // One reading. Anything the platform can't tell is left out, never guessed: thermal state is macOS
 // only, and the CPU speed limit arrives as an event on macOS and Windows.
-function readMachine({getMetrics, systemMemory, power, edgeRtt}) {
+function readMachine({getMetrics, systemMemory, power, edgeRtt, netProbe}) {
   const reading = {p: summarizeMetrics(getMetrics())}
   try {
     const free = Number(systemMemory?.().free)
@@ -54,6 +54,12 @@ function readMachine({getMetrics, systemMemory, power, edgeRtt}) {
   try {
     const edge = edgeRtt?.()
     if (Number.isFinite(edge) && edge >= 0) reading.er = edge
+  } catch {}
+  // Pings to this computer's router and to the internet since the last reading (main/net-probe.js):
+  // {gw: {n, lost?, avg?, max?}, net: {...}}; absent when nothing was probed.
+  try {
+    const probes = netProbe?.()
+    if (probes) reading.np = probes
   } catch {}
   return reading
 }

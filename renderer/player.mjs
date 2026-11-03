@@ -27,6 +27,7 @@ export class StreamPlayer extends EventTarget {
     this.forceTranscode = false
     this.transcoding = false
     this.encoder = null
+    this.ffmpegSpeed = null // ffmpeg's own speed against real time, for the diagnostic log
     this.sessionId = null
     this.mediaSource = null
     this.sourceBuffer = null
@@ -140,6 +141,7 @@ export class StreamPlayer extends EventTarget {
       this.sessionId = session.id
       this.transcoding = session.transcoding
       this.encoder = session.encoder
+      this.ffmpegSpeed = null
       await this.resetBuffer(session.mime)
       if (generation !== this.generation) return
       this.sourceBuffer.timestampOffset = session.offset
@@ -181,6 +183,7 @@ export class StreamPlayer extends EventTarget {
         }
         const result = await window.api.pull(sessionId)
         if (generation !== this.generation) return
+        if (result.speed != null) this.ffmpegSpeed = result.speed
         if (result.chunk) {
           await this.append(generation, result.chunk)
           continue

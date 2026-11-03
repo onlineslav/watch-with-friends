@@ -4,6 +4,8 @@
 //
 // requestVideoFrameCallback is frame-accurate but only fires ~1/s while the window is
 // minimized, so a fast poll takes over whenever callbacks stall.
+import {frameSpacing} from './machine.mjs'
+
 const STALL_MS = 100
 const POLL_MS = 10
 
@@ -18,7 +20,9 @@ export function captureVideoFrames(video) {
   let lastMediaTimestamp = null
 
   const send = ({onlyIfNew}) => {
-    if (writing || !video.videoWidth) return
+    // A presented frame lost to a write still in flight counts; the fast poll just trying again does not.
+    if (writing) return onlyIfNew ? undefined : frameSpacing.skip()
+    if (!video.videoWidth) return
     let frame
     try {
       frame = new VideoFrame(video)
@@ -32,6 +36,7 @@ export function captureVideoFrames(video) {
     frame.close()
     // getSettings() on a generated track has no size; tuneSenders reads this instead.
     generator.frameSize = {width: stamped.displayWidth, height: stamped.displayHeight}
+    frameSpacing.mark(performance.now())
     writing = true
     writer
       .write(stamped)
@@ -47,9 +52,17 @@ export function captureVideoFrames(video) {
   }
   video.requestVideoFrameCallback(onFrame)
 
+  // The gap after a pause or seek is the viewer's doing, not a stall in the pipeline.
+  const forgetLast = () => frameSpacing.reset()
+  frameSpacing.reset()
+  video.addEventListener('pause', forgetLast)
+  video.addEventListener('seeking', forgetLast)
+
   const poll = setInterval(() => {
     if (generator.readyState === 'ended') {
       clearInterval(poll)
+      video.removeEventListener('pause', forgetLast)
+      video.removeEventListener('seeking', forgetLast)
       writer.close().catch(() => {})
       return
     }

@@ -87,7 +87,14 @@ import {
   isTroubled,
   nextSteady,
   readStats,
+  readDetail,
+  detailDelta,
+  linkFacts,
+  parseOpusFmtp,
+  omitNull,
+  round,
 } from './telemetry.mjs'
+import {LongTaskTally, watchLongTasks, frameSpacing, freshMachine, settingsTag} from './machine.mjs'
 
 const APP_ID = 'synced-video-player-7c1e4b-v2'
 const STATE_INTERVAL_MS = 1000
@@ -1474,7 +1481,7 @@ function logSendQuality(peerId, stats, before, after, context) {
     relayed: stats.relayed,
     capacity: stats.capacity ?? null,
     sender: stats.outbound,
-    receiver: after.receiver,
+    receiver: after.receiver && {...after.receiver, delayMs: round(after.receiver.delayMs)},
     bitrate: after.quality?.bitrate ?? null,
     scale: after.quality?.scale ?? null,
     calmMs: after.quality?.calmMs ?? null,
@@ -1502,6 +1509,68 @@ function logSendQuality(peerId, stats, before, after, context) {
   }
 }
 
+// ---------- Measurements beyond the connection (M1.2) ----------
+//
+// Everything here only writes to the diagnostic log. Per-connection numbers ride in the 2s
+// host-sample / viewer-sample lines; things that belong to the machine rather than a peer go in one
+// machine-sample line per tick (a host with seven viewers would otherwise repeat them seven times);
+// facts that rarely change (encoder, candidate types, negotiated Opus) go in a `link` line that is
+// written when they change. Absent stats are left out of the line, never written as NaN.
+
+const longTasks = new LongTaskTally()
+let longTasksTried = false
+let machineLatest = null
+window.api.onMachineSample?.((reading) => { machineLatest = {reading, at: performance.now()} })
+
+const currentSettingsTag = () => settingsTag({priority: sharePriority(shareSettings.priority).value, audioBitrate: shareAudioBitrate(shareSettings.audioBitrate), audioFirst: shareSettings.audioFirst})
+
+// What a viewer's sample adds: audio health (a), A/V sync inputs (s, with the Web Audio output latency
+// the received sound plays through) and decoder cost (v).
+function viewerDetail(delta) {
+  const ms = (seconds) => (Number.isFinite(seconds) && seconds > 0 ? round(seconds * 1000, 1) : null)
+  const sync = omitNull({...delta?.s, out: ms(audio?.outputLatency), base: ms(audio?.baseLatency)})
+  return omitNull({a: delta?.a, s: sync, v: delta?.v}) || {}
+}
+
+// The slow-changing facts about one connection, written when they first appear and when they change.
+// The SDP is only parsed again when its text changes.
+function logLinkFacts(peerId, p, pc, detail) {
+  if (!pc) return
+  // Each description getter copies the whole SDP, so it is only re-read when the streams change (a
+  // renegotiation brings new ones) and every 30 seconds in case it changed without that.
+  const streams = `${detail?.audioIn?.ssrc}/${detail?.videoIn?.ssrc}/${detail?.videoOut?.ssrc}`
+  if (!p.opus || p.opus.streams !== streams || ++p.opus.age >= 15) {
+    const local = pc.localDescription?.sdp ?? null
+    const remote = pc.remoteDescription?.sdp ?? null
+    p.opus = p.opus && p.opus.local === local && p.opus.remote === remote ? {...p.opus, streams, age: 0} : {local, remote, streams, age: 0, parsed: {local: parseOpusFmtp(local), remote: parseOpusFmtp(remote)}}
+  }
+  const facts = linkFacts(detail, p.opus.parsed)
+  const key = facts ? JSON.stringify(facts) : null
+  if (!key || key === p.linkKey) return
+  p.linkKey = key
+  logEvent('telemetry', 'link', {peer: peerId, ...facts})
+}
+
+// One line per tick about this computer: per-process CPU/memory pushed by main (p: main, renderer,
+// GPU and other processes as [cpu%, MB]; free MB; on battery; thermal state; OS CPU speed limit),
+// renderer long tasks, and the host's pipeline (ffmpeg speed against real time, seconds buffered
+// ahead, spacing of frames forwarded to WebRTC) while it plays a file.
+function logMachineSample(cost) {
+  const host = isHost() && player.media && player.loaded ? omitNull({
+    ff: player.ffmpegSpeed,
+    ahead: round(player.bufferedAhead(), 1),
+    fr: player.media.video ? frameSpacing.take() : null,
+  }) : null
+  const machine = freshMachine(machineLatest, performance.now())
+  logEvent('telemetry', 'machine-sample', {
+    role: session.role,
+    ...machine,
+    lt: longTasks.take(),
+    ...(host && {host}),
+    cost: round(cost, 2),
+  })
+}
+
 // Every couple of seconds: measure the connection to everyone in the room. Viewers also adapt
 // their buffer and report what they're receiving so the host can see it.
 async function sampleConnection() {
@@ -1509,17 +1578,31 @@ async function sampleConnection() {
   const room = current.room
   if (!room || current.sampling || current.closed) return
   current.sampling = true
+  // Main-thread time this function spends in its own code (not waiting on getStats), logged with the
+  // machine sample so the cost of measuring is itself measured.
+  let spent = 0
+  const started = performance.now()
   try {
+  if (!longTasksTried) { longTasksTried = true; watchLongTasks(longTasks) }
   const pcs = room.getPeers()
   const audioOnly = isHost() ? Boolean(player.media && !player.media.video) : Boolean(current.remote?.audioOnly)
-  const readings = new Map(
-    await Promise.all(Object.entries(pcs).map(async ([id, pc]) => [id, await pc.getStats().then((report) => readStats(report, {audioOnly}), () => null)])),
-  )
+  const pending = Object.entries(pcs).map(async ([id, pc]) => [id, await pc.getStats().then((report) => {
+    const t = performance.now()
+    // Walking an RTCStatsReport builds a fresh object per entry on every pass; do it once for both readers.
+    try { const entries = Array.from(report.values()); return {...readStats(entries, {audioOnly}), detail: readDetail(entries)} } finally { spent += performance.now() - t }
+  }, () => null)])
+  spent += performance.now() - started
+  const readings = new Map(await Promise.all(pending))
   if (session.room !== room) return
+  const resumed = performance.now()
+  const deltas = new Map()
   for (const [id, stats] of readings) {
     if (stats && session.peers.has(id)) {
       const p = person(id)
       Object.assign(p, {rttMs: stats.rttMs, relayed: stats.relayed})
+      deltas.set(id, detailDelta(p.lastDetail, stats.detail))
+      p.lastDetail = stats.detail
+      logLinkFacts(id, p, pcs[id], stats.detail)
       if (isShareSender(id) && stats.inbound) {
         // Low-latency policy for live shares. Freezes are ignored: a still screen sends few frames.
         const delta = inboundDelta(p.shareInbound, stats.inbound)
@@ -1564,11 +1647,12 @@ async function sampleConnection() {
           sentBitrateBps: sent?.bitrateBps ?? null,
           sendIntervalMs: sent?.intervalMs ?? null,
           audioSentBitrateBps: audioSent?.bitrateBps ?? null,
-          feedbackAtMs: p.receiverAt ?? null,
+          feedbackAtMs: round(p.receiverAt),
           feedbackAgeMs: p.receiverAt != null ? Math.round(Math.max(0, performance.now() - p.receiverAt)) : null,
           feedbackFresh: Boolean(p.receiver && p.receiverAt !== before?.receiverAt),
           playback,
           source: {width: dimensions.width ?? null, height: dimensions.height ?? null},
+          ...omitNull({e: deltas.get(id)?.e, set: currentSettingsTag()}),
         })
       }
     }
@@ -1621,6 +1705,7 @@ async function sampleConnection() {
       steady,
       jitterMs: stats.inbound.jitterMs,
       ...receiver,
+      delayMs: round(receiver.delayMs), // the wire keeps its precision; the log has no use for 14 digits
       sender: session.remote?.senders?.[selfId] || null,
       epoch: session.remote?.epoch ?? null,
       mediaKind: audioOnly ? 'audio' : 'video',
@@ -1634,11 +1719,15 @@ async function sampleConnection() {
         time: session.remote?.time ?? null,
         readyState: ui.remoteVideo.readyState,
       },
+      ...viewerDetail(deltas.get(peerId)),
+      set: currentSettingsTag(),
     })
     session.telemetryAction.send({receiver, hostId: session.hostId, claimedAt: session.remote.claimedAt}, {target: session.hostId, signal: session.lifetime.signal}).catch(() => {})
   } else {
     session.link = base
   }
+  spent += performance.now() - resumed
+  logMachineSample(spent)
   if (session.role === 'viewer' && session.hostId) {
     const hostId = session.hostId
     const claimedAt = session.remote?.claimedAt

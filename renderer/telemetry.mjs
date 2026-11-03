@@ -165,3 +165,182 @@ export function describePeer({self = false, rttMs = null, relayed = false, sende
   const text = [rttMs != null ? `${rttMs} ms` : null, quality, loss].filter(Boolean).join(' · ')
   return {level, text, detail}
 }
+
+// ---------- Measurements for the log (M1.2) ----------
+//
+// Everything below only feeds the diagnostic log; nothing here changes what the app does. Every
+// reading tolerates a stat that older Chromium or another platform doesn't have: it comes back
+// null, never NaN, and `omitNull` leaves it out of the line so a sample stays small.
+
+const num = (value) => (typeof value === 'number' && Number.isFinite(value) ? value : null)
+const label = (value) => (typeof value === 'string' && value ? value.slice(0, 48) : null)
+const flag = (value) => (typeof value === 'boolean' ? value : null)
+const kindOf = (stat) => stat.kind ?? stat.mediaType
+export const round = (value, places = 0) => (value == null || !Number.isFinite(value) ? null : Math.round(value * 10 ** places) / 10 ** places)
+
+// Counter movement between two readings; null if either is missing or the counter went backwards.
+const step = (previous, next, key) => {
+  const a = previous?.[key]
+  const b = next?.[key]
+  return a != null && b != null && b >= a ? b - a : null
+}
+// Average per unit of a (total, count) pair of counters between two readings.
+const perUnit = (previous, next, totalKey, countKey, scale = 1000) => {
+  const total = step(previous, next, totalKey)
+  const count = step(previous, next, countKey)
+  return total != null && count > 0 ? (total * scale) / count : null
+}
+
+// Drops null/undefined/NaN fields and empty groups, so absent stats cost no bytes. Arrays are kept whole.
+export function omitNull(value) {
+  if (Array.isArray(value)) return value
+  if (value == null || typeof value !== 'object') return typeof value === 'number' && !Number.isFinite(value) ? null : value ?? null
+  const out = {}
+  for (const [key, item] of Object.entries(value)) {
+    const clean = omitNull(item)
+    if (clean != null) out[key] = clean
+  }
+  return Object.keys(out).length ? out : null
+}
+
+// The stream that is still receiving: a replaced stream's stats can linger beside the live one.
+const newest = (a, b, recency) => {
+  if (!a) return b
+  const x = num(a[recency])
+  const y = num(b[recency])
+  if (x != null && y != null) return y > x ? b : a
+  return (num(b.packetsReceived) || 0) > (num(a.packetsReceived) || 0) ? b : a
+}
+
+// Raw counters and labels for the 2s sample's extra fields, read from the same getStats() report
+// readStats() gets. Counters stay raw; detailDelta() turns two readings into what happened between.
+export function readDetail(report) {
+  const byId = new Map()
+  report.forEach((s) => byId.set(s.id, s))
+  let audioIn = null
+  let videoIn = null
+  let videoOut = null
+  let playout = null
+  let pair = null
+  report.forEach((s) => {
+    const kind = kindOf(s)
+    if (s.type === 'inbound-rtp' && kind === 'audio') audioIn = newest(audioIn, s, 'lastPacketReceivedTimestamp')
+    else if (s.type === 'inbound-rtp' && kind === 'video') videoIn = newest(videoIn, s, 'lastPacketReceivedTimestamp')
+    else if (s.type === 'outbound-rtp' && kind === 'video') videoOut = !videoOut || (num(s.framesPerSecond) || 0) > (num(videoOut.framesPerSecond) || 0) ? s : videoOut
+    else if (s.type === 'media-playout' && kind === 'audio') playout = s
+    else if (s.type === 'candidate-pair' && s.nominated && s.state === 'succeeded') pair = s
+  })
+  const local = pair && byId.get(pair.localCandidateId)
+  const remote = pair && byId.get(pair.remoteCandidateId)
+  return {
+    audioIn: audioIn && {
+      ssrc: audioIn.ssrc,
+      received: num(audioIn.packetsReceived), lost: num(audioIn.packetsLost), jitter: num(audioIn.jitter),
+      concealed: num(audioIn.concealedSamples), silent: num(audioIn.silentConcealedSamples), samples: num(audioIn.totalSamplesReceived),
+      inserted: num(audioIn.insertedSamplesForDeceleration), removed: num(audioIn.removedSamplesForAcceleration),
+      jbDelay: num(audioIn.jitterBufferDelay), jbCount: num(audioIn.jitterBufferEmittedCount),
+      energy: num(audioIn.totalAudioEnergy), duration: num(audioIn.totalSamplesDuration), level: num(audioIn.audioLevel),
+      ept: num(audioIn.estimatedPlayoutTimestamp),
+    },
+    playout: playout && {delay: num(playout.totalPlayoutDelay), count: num(playout.totalSamplesCount)},
+    videoIn: videoIn && {
+      ssrc: videoIn.ssrc,
+      decoded: num(videoIn.framesDecoded), decodeTime: num(videoIn.totalDecodeTime),
+      freezeS: num(videoIn.totalFreezesDuration), pauseS: num(videoIn.totalPausesDuration),
+      pli: num(videoIn.pliCount), nack: num(videoIn.nackCount), fir: num(videoIn.firCount),
+      jbDelay: num(videoIn.jitterBufferDelay), jbCount: num(videoIn.jitterBufferEmittedCount),
+      ept: num(videoIn.estimatedPlayoutTimestamp),
+      decoder: label(videoIn.decoderImplementation), decoderHw: flag(videoIn.powerEfficientDecoder), codec: label(byId.get(videoIn.codecId)?.mimeType),
+    },
+    videoOut: videoOut && {
+      ssrc: videoOut.ssrc,
+      encoded: num(videoOut.framesEncoded), encodeTime: num(videoOut.totalEncodeTime),
+      pli: num(videoOut.pliCount), nack: num(videoOut.nackCount), fir: num(videoOut.firCount),
+      limitCpuS: num(videoOut.qualityLimitationDurations?.cpu), limitBandwidthS: num(videoOut.qualityLimitationDurations?.bandwidth),
+      limitOtherS: num(videoOut.qualityLimitationDurations?.other),
+      encoder: label(videoOut.encoderImplementation), encoderHw: flag(videoOut.powerEfficientEncoder), codec: label(byId.get(videoOut.codecId)?.mimeType),
+    },
+    link: pair && {
+      protocol: label(local?.protocol), local: label(local?.candidateType), remote: label(remote?.candidateType),
+      relay: label(local?.relayProtocol), tcp: label(local?.tcpType),
+    },
+  }
+}
+
+// What the audio and video did since the previous reading. A replaced stream (new ssrc) or a
+// reset counter is not comparable, so its deltas come back null while its current values stay.
+// Keys are short on purpose: this rides in a line written every 2 seconds.
+export function detailDelta(previous, next) {
+  const same = (a, b) => Boolean(a && b && a.ssrc === b.ssrc)
+  const audio = next?.audioIn
+  const before = same(previous?.audioIn, audio) ? previous.audioIn : null
+  const playoutBefore = before && previous.playout
+  const energy = step(before, audio, 'energy')
+  const duration = step(before, audio, 'duration')
+  const rms = energy != null && duration > 0 ? Math.sqrt(energy / duration) : audio?.level
+  const video = next?.videoIn
+  const videoBefore = same(previous?.videoIn, video) ? previous.videoIn : null
+  const out = next?.videoOut
+  const outBefore = same(previous?.videoOut, out) ? previous.videoOut : null
+  const millis = (key, from, to) => { const d = step(from, to, key); return d == null ? null : Math.round(d * 1000) }
+  const aJb = perUnit(before, audio, 'jbDelay', 'jbCount')
+  const vJb = perUnit(videoBefore, video, 'jbDelay', 'jbCount')
+  const skew = audio?.ept != null && video?.ept != null ? video.ept - audio.ept : null
+  return omitNull({
+    // Audio receive health: loss, jitter, what the decoder made up, and how it is time-stretching.
+    a: audio && {
+      lost: step(before, audio, 'lost'), rx: step(before, audio, 'received'), jit: round(audio.jitter != null ? audio.jitter * 1000 : null, 1),
+      conc: step(before, audio, 'concealed'), sil: step(before, audio, 'silent'), smp: step(before, audio, 'samples'),
+      ins: step(before, audio, 'inserted'), rem: step(before, audio, 'removed'),
+      jb: round(aJb, 1), lvl: round(rms, 3),
+    },
+    // A/V sync inputs: each track's own playout delay and the clock each claims to be playing at.
+    s: audio || video ? {
+      aEpt: round(audio?.ept), vEpt: round(video?.ept), av: round(skew),
+      aJb: round(aJb, 1), vJb: round(vJb, 1),
+      aPlay: round(perUnit(playoutBefore, next?.playout, 'delay', 'count'), 1),
+    } : null,
+    // Decoder cost and what the receiver asked the sender to resend or refresh.
+    v: video && {
+      dec: round(perUnit(videoBefore, video, 'decodeTime', 'decoded'), 1),
+      pli: step(videoBefore, video, 'pli'), nack: step(videoBefore, video, 'nack'), fir: step(videoBefore, video, 'fir'),
+      frz: millis('freezeS', videoBefore, video), pau: millis('pauseS', videoBefore, video),
+    },
+    // Encoder cost (host): ms per frame, time spent limited by cpu/bandwidth, and feedback received.
+    e: out && {
+      enc: round(perUnit(outBefore, out, 'encodeTime', 'encoded'), 1),
+      cpu: millis('limitCpuS', outBefore, out), bw: millis('limitBandwidthS', outBefore, out), oth: millis('limitOtherS', outBefore, out),
+      pli: step(outBefore, out, 'pli'), nack: step(outBefore, out, 'nack'), fir: step(outBefore, out, 'fir'),
+    },
+  })
+}
+
+// Opus as negotiated, read from a live SDP: the first audio section that is still in use and offers it.
+// The channel count comes from the rtpmap line and the rest from the fmtp parameters.
+export function parseOpusFmtp(sdp) {
+  if (typeof sdp !== 'string') return null
+  for (const section of sdp.split(/(?:^|\r?\n)m=/).slice(1)) {
+    const lines = section.split(/\r?\n/)
+    if (!lines[0].startsWith('audio ') || lines[0].startsWith('audio 0 ')) continue
+    const rtpmap = lines.map((l) => /^a=rtpmap:(\d+) opus\/48000(?:\/(\d+))?/i.exec(l)).find(Boolean)
+    if (!rtpmap) continue
+    const fmtp = lines.find((l) => l.startsWith(`a=fmtp:${rtpmap[1]} `))
+    const params = Object.fromEntries((fmtp?.slice(fmtp.indexOf(' ') + 1).split(';') || []).map((p) => p.trim().split('=')).filter(([k]) => k))
+    const read = (key) => (params[key] != null && params[key] !== '' && Number.isFinite(Number(params[key])) ? Number(params[key]) : null)
+    return omitNull({ch: rtpmap[2] ? Number(rtpmap[2]) : null, st: read('stereo'), sst: read('sprop-stereo'), br: read('maxaveragebitrate'), fec: read('useinbandfec'), dtx: read('usedtx'), cbr: read('cbr')})
+  }
+  return null
+}
+
+// The slow-changing facts about one connection, kept out of the 2s samples: logged once, and again
+// only when something here changes (an encoder switch, a new candidate pair, a renegotiated codec).
+export function linkFacts(detail, opus = null) {
+  return omitNull({
+    net: detail?.link && {p: detail.link.protocol, l: detail.link.local, r: detail.link.remote, rp: detail.link.relay, tcp: detail.link.tcp},
+    // Chromium only names the encoder/decoder (and says if it is hardware) when the page has capture permission,
+    // so the codec's mime type is kept too: it is always there.
+    venc: detail?.videoOut && {impl: detail.videoOut.encoder, hw: detail.videoOut.encoderHw, codec: detail.videoOut.codec},
+    vdec: detail?.videoIn && {impl: detail.videoIn.decoder, hw: detail.videoIn.decoderHw, codec: detail.videoIn.codec},
+    opus: omitNull({local: opus?.local, remote: opus?.remote}),
+  })
+}

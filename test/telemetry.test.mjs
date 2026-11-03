@@ -15,6 +15,11 @@ import {
   isTroubled,
   nextSteady,
   readStats,
+  readDetail,
+  detailDelta,
+  linkFacts,
+  omitNull,
+  parseOpusFmtp,
 } from '../renderer/telemetry.mjs'
 
 test('nextSteady only counts uninterrupted playback', () => {
@@ -165,4 +170,110 @@ test('describePeer summarizes each person in the room', () => {
 
   const me = describePeer({self: true, sender: {height: 720, fps: 30, limit: 'bandwidth'}})
   assert.deepEqual(me, {level: 'fair', text: '720p30', detail: 'Your upload speed is limiting picture quality.'})
+})
+
+// ---------- M1.2 measurements ----------
+
+const detailReport = (t, over = {}) => [
+  {id: 'pair', type: 'candidate-pair', nominated: true, state: 'succeeded', localCandidateId: 'l', remoteCandidateId: 'r'},
+  {id: 'l', type: 'local-candidate', candidateType: 'relay', protocol: 'udp', relayProtocol: 'tcp'},
+  {id: 'r', type: 'remote-candidate', candidateType: 'host', protocol: 'udp'},
+  {id: 'a-in', type: 'inbound-rtp', kind: 'audio', ssrc: 10, packetsReceived: 100 * t, packetsLost: 2 * t, jitter: 0.004 * t,
+    concealedSamples: 480 * t, silentConcealedSamples: 96 * t, totalSamplesReceived: 96000 * t, insertedSamplesForDeceleration: 10 * t,
+    removedSamplesForAcceleration: 20 * t, jitterBufferDelay: 2 * t, jitterBufferEmittedCount: 96000 * t,
+    totalAudioEnergy: 0.04 * t, totalSamplesDuration: 2 * t, audioLevel: 0.2, estimatedPlayoutTimestamp: 1_000_000 + t * 2000, ...over.audio},
+  {id: 'a-play', type: 'media-playout', kind: 'audio', totalPlayoutDelay: 4 * t, totalSamplesCount: 96000 * t},
+  {id: 'codec-h264', type: 'codec', mimeType: 'video/H264'},
+  {id: 'v-in', type: 'inbound-rtp', kind: 'video', codecId: 'codec-h264', ssrc: 11, framesDecoded: 48 * t, totalDecodeTime: 0.24 * t, totalFreezesDuration: 0.5 * t,
+    totalPausesDuration: 0, pliCount: t, nackCount: 5 * t, firCount: 0, jitterBufferDelay: 12 * t, jitterBufferEmittedCount: 48 * t,
+    estimatedPlayoutTimestamp: 1_000_120 + t * 2000, decoderImplementation: 'ExternalDecoder', powerEfficientDecoder: true, ...over.video},
+  {id: 'v-out', type: 'outbound-rtp', kind: 'video', codecId: 'codec-h264', ssrc: 12, framesPerSecond: 24, framesEncoded: 48 * t, totalEncodeTime: 0.48 * t,
+    pliCount: t, nackCount: 2 * t, firCount: 0, encoderImplementation: 'libx264', powerEfficientEncoder: false,
+    qualityLimitationDurations: {none: 1, cpu: 0.5 * t, bandwidth: 0.25 * t, other: 0}},
+]
+
+test('detailDelta reports audio health, A/V sync inputs, decoder and encoder cost between two readings', () => {
+  const d = detailDelta(readDetail(detailReport(1)), readDetail(detailReport(2)))
+  assert.deepEqual(d.a, {lost: 2, rx: 100, jit: 8, conc: 480, sil: 96, smp: 96000, ins: 10, rem: 20, jb: 0.0, lvl: 0.141})
+  assert.equal(d.a.jb, 0, 'rounded: 2s over 96000 samples is 0.02 ms')
+  assert.equal(d.s.aEpt, 1_004_000)
+  assert.equal(d.s.vEpt, 1_004_120)
+  assert.equal(d.s.av, 120, 'video plays 120 ms ahead of audio')
+  assert.equal(d.s.vJb, 250)
+  assert.equal(d.s.aPlay, 0)
+  assert.deepEqual(d.v, {dec: 5, pli: 1, nack: 5, fir: 0, frz: 500, pau: 0})
+  assert.deepEqual(d.e, {enc: 10, cpu: 500, bw: 250, oth: 0, pli: 1, nack: 2, fir: 0})
+})
+
+test('detailDelta never compares across a replaced stream or a reset counter', () => {
+  const first = readDetail(detailReport(2))
+  const replaced = detailDelta(first, readDetail(detailReport(3, {audio: {ssrc: 99}, video: {ssrc: 98}})))
+  assert.equal(replaced.a.lost, undefined, 'new audio ssrc: no delta')
+  assert.equal(replaced.a.jit, 12, 'current values still reported')
+  assert.equal(replaced.v?.pli, undefined)
+  const reset = detailDelta(first, readDetail(detailReport(1)))
+  assert.equal(reset.a.lost, undefined, 'counter went backwards')
+  assert.equal(reset.a.smp, undefined)
+  const firstSample = detailDelta(null, first)
+  assert.equal(firstSample.a.lost, undefined)
+  assert.equal(firstSample.a.lvl, 0.2, 'falls back to the instantaneous audioLevel')
+})
+
+test('every new reading tolerates missing stats: absent is left out, never NaN', () => {
+  assert.equal(detailDelta(null, readDetail([])), null)
+  const bare = readDetail([
+    {id: 'a', type: 'inbound-rtp', mediaType: 'audio', ssrc: 1, packetsReceived: 'many', jitter: NaN},
+    {id: 'v', type: 'inbound-rtp', kind: 'video', ssrc: 2},
+    {id: 'o', type: 'outbound-rtp', kind: 'video', ssrc: 3, framesEncoded: 10, totalEncodeTime: 0},
+  ])
+  assert.equal(bare.audioIn.received, null, 'a non-number counter is absent')
+  assert.equal(bare.link, null)
+  const d = detailDelta(bare, bare)
+  assert.ok(!JSON.stringify(d ?? {}).match(/NaN|Infinity/))
+  const json = JSON.stringify(omitNull({x: NaN, y: Infinity, z: {q: undefined}, ok: 0, no: false, list: [1]}))
+  assert.equal(json, '{"ok":0,"no":false,"list":[1]}')
+  assert.equal(readDetail([]).audioIn, null)
+  assert.equal(detailDelta(readDetail(detailReport(1)), readDetail(detailReport(1))).v.dec, undefined, 'no new frames: no per-frame figure')
+})
+
+test('readDetail picks the live audio stream over a stale one and reads the candidate pair', () => {
+  const stale = {id: 'old', type: 'inbound-rtp', kind: 'audio', ssrc: 1, packetsReceived: 5000, lastPacketReceivedTimestamp: 1000}
+  const live = {id: 'new', type: 'inbound-rtp', kind: 'audio', ssrc: 2, packetsReceived: 50, lastPacketReceivedTimestamp: 9000}
+  assert.equal(readDetail([stale, live]).audioIn.ssrc, 2)
+  assert.equal(readDetail([live, stale]).audioIn.ssrc, 2)
+  assert.deepEqual(readDetail(detailReport(1)).link, {protocol: 'udp', local: 'relay', remote: 'host', relay: 'tcp', tcp: null})
+})
+
+const SDP = [
+  'v=0', 'm=video 9 UDP/TLS/RTP/SAVPF 96', 'a=rtpmap:96 H264/90000',
+  'm=audio 0 UDP/TLS/RTP/SAVPF 111', 'a=rtpmap:111 opus/48000/2', 'a=fmtp:111 minptime=10;stereo=0',
+  'm=audio 9 UDP/TLS/RTP/SAVPF 63 111', 'a=rtpmap:63 red/48000/2', 'a=rtpmap:111 opus/48000/2',
+  'a=fmtp:111 minptime=10;useinbandfec=1;stereo=1;sprop-stereo=1;maxaveragebitrate=510000', '',
+].join('\r\n')
+
+test('parseOpusFmtp reads the negotiated Opus parameters from the first audio section in use', () => {
+  assert.deepEqual(parseOpusFmtp(SDP), {ch: 2, st: 1, sst: 1, br: 510000, fec: 1})
+  assert.equal(parseOpusFmtp('v=0\r\nm=audio 9 X 0\r\na=rtpmap:0 PCMU/8000\r\n'), null, 'no Opus')
+  assert.equal(parseOpusFmtp(null), null)
+  assert.deepEqual(parseOpusFmtp('m=audio 9 X 111\r\na=rtpmap:111 opus/48000/2\r\n'), {ch: 2}, 'no fmtp line: only the channel count')
+  assert.equal(parseOpusFmtp('m=audio 9 X 111\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 maxaveragebitrate=abc\r\n').br, undefined)
+})
+
+test('linkFacts gathers the slow-changing facts and is stable between identical readings', () => {
+  const detail = readDetail(detailReport(1))
+  const facts = linkFacts(detail, {local: parseOpusFmtp(SDP), remote: null})
+  assert.deepEqual(facts, {
+    net: {p: 'udp', l: 'relay', r: 'host', rp: 'tcp'},
+    venc: {impl: 'libx264', hw: false, codec: 'video/H264'},
+    vdec: {impl: 'ExternalDecoder', hw: true, codec: 'video/H264'},
+    opus: {local: {ch: 2, st: 1, sst: 1, br: 510000, fec: 1}},
+  })
+  assert.equal(JSON.stringify(facts), JSON.stringify(linkFacts(readDetail(detailReport(5)), {local: parseOpusFmtp(SDP)})), 'counters do not leak into the facts')
+  assert.equal(linkFacts(readDetail([])), null)
+})
+
+test('linkFacts still names the codec when Chromium withholds the encoder and decoder implementation', () => {
+  const facts = linkFacts(readDetail(detailReport(1).map((s) => ({...s, encoderImplementation: undefined, decoderImplementation: undefined, powerEfficientEncoder: undefined, powerEfficientDecoder: undefined}))))
+  assert.deepEqual(facts.venc, {codec: 'video/H264'})
+  assert.deepEqual(facts.vdec, {codec: 'video/H264'})
 })

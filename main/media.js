@@ -10,6 +10,8 @@ const {
   imageConvertArgs,
   imageMime,
   isSubtitleSidecar,
+  lastMessage,
+  parseProgress,
   parseWebVtt,
   planSession,
   subtitleExtractArgs,
@@ -118,6 +120,7 @@ async function startSession({filePath, start = 0, audioIndex = null, subtitleId 
   })
   proc.stderr.on('data', (buf) => {
     session.stderr = (session.stderr + buf).slice(-4000)
+    session.progress = parseProgress(session.stderr) ?? session.progress
   })
   proc.on('error', (err) => {
     session.error = err.message
@@ -126,7 +129,7 @@ async function startSession({filePath, start = 0, audioIndex = null, subtitleId 
   })
   proc.on('close', (code) => {
     session.done = true
-    if (code !== 0 && !session.killed) session.error = lastLine(session.stderr) || `ffmpeg exited with code ${code}`
+    if (code !== 0 && !session.killed) session.error = lastMessage(session.stderr) || `ffmpeg exited with code ${code}`
     wake()
   })
 
@@ -152,7 +155,8 @@ async function pull(id) {
     }
     session.size -= taken
     if (session.size < HIGH_WATER_BYTES / 2) session.proc.stdout.resume()
-    return {chunk: Buffer.concat(parts, taken)}
+    // `speed` is ffmpeg's own reading against real time, for the host's diagnostic log; null until it prints one.
+    return {chunk: Buffer.concat(parts, taken), speed: session.progress?.speed ?? null}
   }
   sessions.delete(id)
   return {done: true, error: session.error}

@@ -9,6 +9,7 @@ const path = require('node:path')
 const {pathToFileURL} = require('node:url')
 const {execFileSync} = require('node:child_process')
 const esbuild = require('esbuild')
+const {parseLine} = require('../shared/log')
 const diagnostics = require('../main/log')
 const {prepareYouTube, registerYouTube} = require('../main/youtube')
 prepareYouTube()
@@ -43,6 +44,105 @@ async function until(win, condition, timeoutMs = publicDiscovery ? 90000 : 15000
   }
     console.error(await run(win, `JSON.stringify({friends:__test.friendNetwork.list(), role:__test.session.role, peers:[...__test.session.peers], remote:__test.session.remote, connection:__test.session.connection, video:{ready:document.getElementById('remote-video').readyState, frames:document.getElementById('remote-video').getVideoPlaybackQuality().totalVideoFrames}, streams:[...__test.session.peerStreams].map(([id, entry]) => ({id, claimedAt:entry.claimedAt, tracks:entry.stream.getTracks().map(t => ({kind:t.kind, muted:t.muted, state:t.readyState}))})), errors:__test.errors})`))
   assert.fail(`Timed out: ${condition}`)
+}
+
+// M1.2: the samples carry what is needed to tell the network, the computer, the encoder and the audio
+// path apart, stay inside the line cap, and cost the page almost nothing. Reads the real log file.
+async function checkMeasurements(windows, host, viewer) {
+  const baseline = Boolean(process.env.MEASURE_BASELINE) // an older checkout has no new fields: cost only
+  if (!baseline) await checkFields(windows)
+  await checkCost(host, viewer, baseline)
+}
+
+async function checkFields(windows) {
+  const entries = () => { diagnostics.flush(); return fs.readFileSync(diagnostics.filePath(), 'utf8').trim().split('\n').map(parseLine).filter(Boolean) }
+  const lineLength = (entry) => Buffer.byteLength(JSON.stringify(entry))
+  const wanted = (all) => ({
+    viewer: all.filter((e) => e.ev === 'viewer-sample' && e.a && e.s && e.v).at(-1),
+    host: all.filter((e) => e.ev === 'host-sample' && e.e).at(-1),
+    machine: all.filter((e) => e.ev === 'machine-sample' && e.p && e.host?.ahead != null).at(-1),
+    link: all.find((e) => e.ev === 'link' && e.net && e.opus),
+    static: all.find((e) => e.sc === 'machine' && e.ev === 'static'),
+  })
+  let found = wanted([])
+  for (let i = 0; i < 40 && !(found.viewer && found.host && found.machine && found.link && found.static); i++) {
+    await pause(1000)
+    await Promise.all(windows.map((win) => run(win, '__test.flushLog()')))
+    found = wanted(entries())
+  }
+  const all = entries()
+  assert.ok(found.viewer, 'viewer-sample carries audio health (a), sync inputs (s) and decoder cost (v)')
+  assert.ok(found.host, 'host-sample carries encoder cost (e)')
+  assert.ok(found.machine, `machine-sample carries per-process load (p) and the host pipeline (ahead); last seen: ${JSON.stringify(all.filter((e) => e.ev === 'machine-sample').slice(-3))}`)
+  assert.ok(found.link, 'a link event records candidate types and the negotiated Opus parameters')
+  assert.ok(found.static, 'machine/static records GPU status and display refresh rate once')
+  assert.equal(found.viewer.set.af, 1)
+  assert.ok(['balanced', 'text', 'motion'].includes(found.viewer.set.pri))
+  assert.ok(typeof found.viewer.a.jit === 'number' && typeof found.viewer.a.rx === 'number' && 'conc' in found.viewer.a && 'ins' in found.viewer.a && 'rem' in found.viewer.a, 'audio: jitter, packets, concealment, stretching')
+  assert.ok(typeof found.viewer.s.aJb === 'number' && typeof found.viewer.s.vJb === 'number', 'audio and video jitter-buffer delay separately')
+  assert.ok(Array.isArray(found.machine.p.m) && Array.isArray(found.machine.p.r), 'CPU/memory for the main and renderer processes')
+  assert.ok(found.static.gpu.features && found.static.displays.length, 'GPU feature table and displays')
+  assert.ok(all.every((e) => !JSON.stringify(e).match(/NaN|Infinity|undefined/)), 'no NaN in any line')
+  const cap = Math.max(...all.filter((e) => ['viewer-sample', 'host-sample', 'machine-sample', 'link'].includes(e.ev)).map(lineLength))
+  assert.ok(cap < 4000, `longest sample line ${cap} bytes is under the 4000-byte cap`)
+  console.log(`MEASURE viewer-sample ${lineLength(found.viewer)} B: ${JSON.stringify(found.viewer)}`)
+  console.log(`MEASURE host-sample ${lineLength(found.host)} B: ${JSON.stringify(found.host)}`)
+  console.log(`MEASURE machine-sample ${lineLength(found.machine)} B: ${JSON.stringify(found.machine)}`)
+  console.log(`MEASURE host pipeline over time: ${JSON.stringify(all.filter((e) => e.ev === 'machine-sample' && e.host).map((e) => e.host))}`)
+  console.log(`MEASURE link ${lineLength(found.link)} B: ${JSON.stringify(found.link)}`)
+  console.log(`MEASURE link events (${all.filter((e) => e.ev === 'link').length}): ${JSON.stringify(all.filter((e) => e.ev === 'link').map((e) => ({m: e.m, peer: e.peer?.slice(0, 4), net: e.net, venc: e.venc, vdec: e.vdec, opus: e.opus})))}`)
+  const costs = (role) => all.filter((e) => e.ev === 'machine-sample' && e.role === role && e.cost != null).map((e) => e.cost).sort((x, y) => x - y)
+  for (const role of ['host', 'viewer']) {
+    const list = costs(role)
+    console.log(`MEASURE in-page JS time per tick (${role}, ${list.length} ticks, excludes getStats itself): median ${list[Math.floor(list.length / 2)]} ms, max ${list.at(-1)} ms`)
+  }
+  console.log(`MEASURE machine/static ${lineLength(found.static)} B`)
+  const viewerLines = all.filter((e) => e.self && e.self === found.viewer.self && ['viewer-sample', 'machine-sample'].includes(e.ev))
+  console.log(`MEASURE viewer per-2s bytes (viewer-sample + machine-sample): ${lineLength(found.viewer) + lineLength(found.machine)} B (${viewerLines.length} such lines logged)`)
+
+  console.log('PASS: Samples carry audio health, A/V sync inputs, codec cost, machine load, host pipeline, link facts and settings, inside the line cap')
+}
+
+async function checkCost(host, viewer, baseline) {
+  // Cost on the main thread: Chromium's own task time over 40 back-to-back samples, against 40 bare
+  // getStats() calls, then the new parsing alone on a real report. Host (two viewers) and viewer.
+  for (const [role, win] of [['host', host], ['viewer', viewer]]) {
+    const contents = win.webContents
+    contents.debugger.attach('1.3')
+    try {
+      await contents.debugger.sendCommand('Performance.enable')
+      const taskSeconds = async () => (await contents.debugger.sendCommand('Performance.getMetrics')).metrics.find((m) => m.name === 'TaskDuration').value
+      const measure = async (source) => {
+        await pause(300)
+        const before = await taskSeconds()
+        await run(win, source)
+        return ((await taskSeconds()) - before) * 1000 / 40
+      }
+      await run(win, '(async () => { while (__test.session.sampling) await new Promise((r) => setTimeout(r, 50)) })()')
+      const bare = await measure(`(async () => { const pcs = Object.values(__test.session.room.getPeers()); for (let i = 0; i < 40; i++) await Promise.all(pcs.map((pc) => pc.getStats())); })()`)
+      const full = await measure(`(async () => { for (let i = 0; i < 40; i++) { await __test.sampleConnection() } })()`)
+      const parse = JSON.parse(await run(win, `(async () => {
+        const pc = Object.values(__test.session.room.getPeers())[0]
+        const report = await pc.getStats()
+        const time = (fn) => { const t = performance.now(); for (let i = 0; i < 500; i++) fn(); return (performance.now() - t) / 500 }
+        const detail = __test.readDetail ? __test.readDetail(report) : null
+        return JSON.stringify({
+          old: time(() => __test.readStats(report)),
+          added: __test.readDetail ? time(() => { __test.readDetail(report); __test.detailDelta(detail, detail) }) : 0,
+          ept: [...report.values()].filter((s) => s.type === 'inbound-rtp').map((s) => [s.kind, typeof s.estimatedPlayoutTimestamp, s.estimatedPlayoutTimestamp, s.decoderImplementation, s.powerEfficientDecoder]),
+          keys: Object.fromEntries(['audio', 'video'].map((k) => [k, [...report.values()].filter((s) => s.type === 'inbound-rtp' && s.kind === k).flatMap((s) => Object.keys(s)).join(',')])),
+        })
+      })()`))
+      console.log(`MEASURE page profile (${role}, main-thread TaskDuration per call): getStats alone ${bare.toFixed(2)} ms, full sampleConnection ${full.toFixed(2)} ms; parsing per peer: readStats ${parse.old.toFixed(3)} ms, new readDetail+detailDelta ${parse.added.toFixed(3)} ms`)
+      if (role === 'viewer') console.log(`MEASURE inbound-rtp stats this Chromium exposes: ${JSON.stringify(parse.keys)}; estimatedPlayoutTimestamp/decoder values: ${JSON.stringify(parse.ept)}`)
+      assert.ok(parse.added < 2, 'the added parsing costs under 2 ms')
+      if (baseline) continue
+      assert.ok(full < 2, `the whole ${role} sample costs under 2 ms of main thread (${full.toFixed(2)} ms)`)
+    } finally {
+      contents.debugger.detach()
+    }
+  }
+  console.log('PASS: Samples cost under 2 ms of main thread on host and viewer')
 }
 
 async function fixtures() {
@@ -107,7 +207,7 @@ async function fixtures() {
         captured.addTrack(replacement);
         captured.dispatchEvent(new MediaStreamTrackEvent('addtrack', {track: replacement}));
       },
-      getState: hostState, sampleConnection, flushLog, youtube, selfId, errors: [],
+      getState: hostState, sampleConnection, flushLog, readStats, readDetail: typeof readDetail === 'function' ? readDetail : null, detailDelta: typeof detailDelta === 'function' ? detailDelta : null, youtube, selfId, errors: [],
     };
     // What opened and closed the playlist item menu, and the key/click events around it, for a
     // failure to explain itself (functions declared in app.js can be wrapped from here).
@@ -225,6 +325,7 @@ app.whenReady().then(async () => {
     }
     await run(a, `__test.hostFile(${JSON.stringify(video)})`)
     await until(b, '__test.session.link?.receiver?.height === 720')
+    await checkMeasurements(windows, a, b)
     await run(a, '__test.control("loop", true)')
     const qualityPeer = await run(b, '__test.selfId')
     await until(a, '!__test.session.sampling && !__test.session.tuning')

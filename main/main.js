@@ -1,8 +1,9 @@
 const path = require('node:path')
 const fs = require('node:fs')
 const os = require('node:os')
-const {app, BrowserWindow, dialog, ipcMain, session, shell, desktopCapturer} = require('electron')
+const {app, BrowserWindow, dialog, ipcMain, powerMonitor, screen, session, shell, desktopCapturer} = require('electron')
 const log = require('./log')
+const machine = require('./machine')
 const media = require('./media')
 const appAudio = require('./app-audio')
 const appWindows = require('./app-windows')
@@ -111,6 +112,49 @@ async function pickFiles(event, name, extensions, multiple = false) {
 }
 
 const pickFile = (event, name, extensions) => pickFiles(event, name, extensions).then((paths) => paths[0] || null)
+
+// Machine load for the diagnostic log (main/machine.js). A window that is in a room gets a reading
+// pushed every 2 seconds; nothing is asked of the renderer and nothing waits on it.
+const machineSamplers = new Map()
+let cpuSpeedLimit = null
+let machineStatic = null
+
+const machinePower = {
+  isOnBatteryPower: () => powerMonitor.isOnBatteryPower(),
+  getCurrentThermalState: () => powerMonitor.getCurrentThermalState(),
+  speedLimit: () => cpuSpeedLimit,
+}
+
+// Once per room entered, so the facts survive a log file that has rolled over since launch.
+async function recordMachineStatic() {
+  machineStatic ??= (async () => {
+    const info = await Promise.race([app.getGPUInfo('basic'), new Promise((resolve) => setTimeout(resolve, 3000, null))]).catch(() => null)
+    return {
+      gpu: machine.describeGpu(app.getGPUFeatureStatus(), info),
+      displays: machine.describeDisplays(screen.getAllDisplays(), screen.getPrimaryDisplay().id),
+      cpu: os.cpus()[0]?.model || null,
+    }
+  })()
+  log.record('machine', 'static', await machineStatic.catch((error) => ({error: error?.message})))
+}
+
+function setMachineSampling(contents, active) {
+  const existing = machineSamplers.get(contents.id)
+  if (!active) {
+    existing?.stop()
+    machineSamplers.delete(contents.id)
+    return
+  }
+  if (existing) return
+  const sampler = machine.createSampler({
+    deps: {getMetrics: () => app.getAppMetrics(), systemMemory: () => process.getSystemMemoryInfo(), power: machinePower},
+    send: (reading) => { if (!contents.isDestroyed()) contents.send('machine:sample', reading) },
+  })
+  machineSamplers.set(contents.id, sampler)
+  contents.once('destroyed', () => setMachineSampling({id: contents.id}, false))
+  sampler.start()
+  recordMachineStatic().catch(() => {})
+}
 
 function registerIpc() {
   // Our own picker runs in the renderer; this only ever grants a source screenshare:sources
@@ -277,6 +321,7 @@ function registerIpc() {
   })
   ipcMain.on('app:in-room', (event, inRoom) => {
     updater.setInRoom(inRoom)
+    setMachineSampling(event.sender, Boolean(inRoom))
     if (!inRoom) {
       telemetry().upload()
       const store = downloadStores.get(event.sender.id)
@@ -334,6 +379,7 @@ function start() {
     // app.getPath('logs') is only meaningful once the app name is settled, so the file opens here.
     log.start({dir: app.getPath('logs'), info: systemInfo()})
     watchStalls()
+    powerMonitor.on('speed-limit-change', (details) => { cpuSpeedLimit = Number.isFinite(details?.limit) ? details.limit : null })
     registerYouTube()
     registerIpc()
     telemetry().start()

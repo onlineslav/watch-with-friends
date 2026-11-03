@@ -121,7 +121,8 @@ function planSession({
   // previous keyframe. Aim just past the keyframe we want instead.
   const seekTo = copyCodec && keyframe != null && offset > 0 ? offset + 0.2 : offset
 
-  const args = ['-v', 'error', '-nostdin']
+  // -stats keeps the progress line (and its speed against real time) coming on stderr despite -v error.
+  const args = ['-v', 'error', '-stats', '-nostdin']
   if (seekTo > 0) args.push('-ss', seekTo.toFixed(3))
   // Burned-in subtitles are timed against the source timestamps.
   if (subtitle) args.push('-copyts')
@@ -252,6 +253,28 @@ function imageConvertArgs(filePath) {
   return ['-v', 'error', '-nostdin', '-i', filePath, '-frames:v', '1', '-c:v', 'png', '-f', 'image2pipe', 'pipe:1']
 }
 
+// ffmpeg prints a status line (`frame= 240 fps= 48 ... time=00:00:10.00 ... speed=2.01x`) to stderr
+// every half second, separated by carriage returns. The last complete reading says how fast the encode
+// is running against real time: under 1x it cannot keep up with playback, over 1x it has headroom.
+// `speed` is ffmpeg's own average since it started, so it eases toward 1x while the renderer's
+// backpressure holds ffmpeg back; the seconds buffered ahead say what that means for playback.
+function parseProgress(text) {
+  const last = (pattern) => Number([...String(text).matchAll(pattern)].at(-1)?.[1])
+  const speed = last(/speed=\s*(\d+(?:\.\d+)?)x/g)
+  const fps = last(/\bfps=\s*(\d+(?:\.\d+)?)/g)
+  const out = {
+    speed: Number.isFinite(speed) ? Math.round(speed * 100) / 100 : null,
+    fps: Number.isFinite(fps) ? Math.round(fps * 10) / 10 : null,
+  }
+  return out.speed == null && out.fps == null ? null : out
+}
+
+// The last real message on ffmpeg's stderr: progress lines (which end in a carriage return, not a
+// newline) are not it.
+function lastMessage(text) {
+  return String(text).split(/[\r\n]+/).map((line) => line.trim()).filter((line) => line && !/\bspeed=|^(?:frame|size)=/.test(line)).pop() || ''
+}
+
 module.exports = {
   ENCODER_ARGS,
   escapeFilterValue,
@@ -259,6 +282,8 @@ module.exports = {
   imageConvertArgs,
   imageMime,
   isSubtitleSidecar,
+  lastMessage,
+  parseProgress,
   parseWebVtt,
   planSession,
   subtitleExtractArgs,

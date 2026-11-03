@@ -5,6 +5,8 @@ const {
   imageConvertArgs,
   imageMime,
   isSubtitleSidecar,
+  lastMessage,
+  parseProgress,
   parseWebVtt,
   planSession,
   subtitleExtractArgs,
@@ -53,7 +55,7 @@ test('passes supported 8-bit video through and seeks to the keyframe', () => {
   assert.equal(plan.transcoding, false)
   assert.equal(plan.offset, 97.5)
   assert.equal(plan.mime, 'video/mp4; codecs="hvc1.1.6.L153.B0,mp4a.40.2"')
-  assert.deepEqual(plan.args.slice(3, 7), ['-ss', '97.700', '-i', 'C:\\Movies\\movie.mkv'])
+  assert.deepEqual(plan.args.slice(4, 8), ['-ss', '97.700', '-i', 'C:\\Movies\\movie.mkv'])
   assert.ok(plan.args.includes('copy'))
 })
 
@@ -147,4 +149,22 @@ test('encodes FLAC audio when Chromium supports it, AAC otherwise', () => {
   const withoutFlac = planSession({media: media8Bit, filePath: 'movie.mkv', audioIndex: 2, support: allSupported})
   assert.match(withoutFlac.mime, /mp4a\.40\.2"$/)
   assert.ok(withoutFlac.args.includes('aac'))
+})
+
+test('parseProgress reads ffmpeg speed against real time from its status lines', () => {
+  const line = (n, speed) => `frame=  ${n} fps= 48 q=-1.0 size=  512kB time=00:00:10.00 bitrate= 419.4kbits/s speed=${speed}x    `
+  assert.deepEqual(parseProgress(`${line(240, '2.01')}\r${line(264, '1.5')}\r`), {speed: 1.5, fps: 48})
+  assert.deepEqual(parseProgress(`${line(240, '0.8')}\rframe=  26`), {speed: 0.8, fps: 48}, 'a line cut mid-write is ignored')
+  assert.deepEqual(parseProgress('frame=1 fps=0.0 speed=N/A'), {speed: null, fps: 0})
+  assert.equal(parseProgress('Input #0, matroska,webm'), null)
+  assert.equal(parseProgress(''), null)
+  assert.equal(parseProgress(undefined), null)
+})
+
+test('lastMessage skips ffmpeg progress lines so a failure still reads as its error', () => {
+  const stats = 'frame=  240 fps= 48 q=-1.0 size=  512kB time=00:00:10.00 bitrate= 419.4kbits/s speed=2.01x    \r'
+  assert.equal(lastMessage(`${stats}${stats}Error while decoding stream #0:1: Invalid data found\r\n${stats}\n`), 'Error while decoding stream #0:1: Invalid data found')
+  assert.equal(lastMessage('Conversion failed!\n'), 'Conversion failed!')
+  assert.equal(lastMessage(stats), '')
+  assert.equal(lastMessage(''), '')
 })

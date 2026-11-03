@@ -1405,14 +1405,18 @@ function publishStream() {
   const video = ui.localVideo
   const capture = captureElement(video)
   // After a loop Chromium has taken the capture's tracks out of its list (see captureElement) while the clones made
-  // from them still carry the film's sound, so a publish that builds its stream from that list alone, the claim bump
-  // in broadcastState or activatePreview, sent viewers the picture and no sound until the next file (M1.12).
-  // Whatever audio clone the last publish of this capture had that is still alive, and that the capture has no live
-  // track to replace, is published again instead of being stopped with the old stream. (Video comes from the
-  // frame generator, which is made anew.)
+  // from them still carry the film's sound, so a publish that builds its stream from that list alone (the claim bump
+  // in broadcastState) sent viewers the picture and no sound until the next file (M1.12). Whatever audio clone the
+  // last publish of this capture had that is still alive, and that the capture has no live track to replace, is
+  // published again instead of being stopped with the old stream. (Video comes from the frame generator, which is
+  // made anew.) A preview going live never gets here with a stream: a preview publishes nothing, so there is
+  // nothing to carry and the capture's own tracks are used.
   const carried = []
   if (session.stream && session.streamClones?.capture === capture && !capture.stream.getAudioTracks().some((track) => track.readyState === 'live')) {
     for (const [source, clone] of session.streamClones.map) if (clone.kind === 'audio' && clone.readyState === 'live') carried.push([source, clone])
+    // The old publish lets go of what it hands over: its map no longer has them, so its retire listeners (still
+    // attached to these tracks) find nothing and cannot stop a clone the new stream now sends.
+    for (const [source] of carried) session.streamClones.map.delete(source)
   }
   unpublishStream(new Set(carried.map(([, clone]) => clone)))
   const frames = player.media?.video ? captureVideoFrames(video) : null

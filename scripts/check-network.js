@@ -890,10 +890,16 @@ app.whenReady().then(async () => {
       await run(c, '__test.control("loop", true)')
       await run(c, 'window.__loops = 0; document.getElementById("local-video").addEventListener("ended", () => window.__loops++); true')
       for (const win of [a, b]) await run(win, 'window.__notPlaying = 0; setInterval(() => { if (__test.session.remote && !__test.session.remote.playing) window.__notPlaying++ }, 50); true')
+      const decoded = () => Promise.all([a, b].map((win) => run(win, 'document.getElementById("remote-video").getVideoPlaybackQuality().totalVideoFrames')))
+      let framesBefore = await decoded()
       for (let repeat = 1; repeat <= 6; repeat++) {
         await until(c, `window.__loops >= ${repeat}`, 20000, `the short film ends for the ${repeat}th time`)
         await pause(1200) // into the new repeat, past the restart's own gap
         await Promise.all([a, b].map((win) => until(win, '__test.audioLevel() > 0.01', 2500, `a viewer hears repeat ${repeat + 1} of the looped film`)))
+        // The picture goes on too: each repeat (2.5 s at 24 fps) adds frames on both viewers, not just sound.
+        const framesNow = await decoded()
+        framesNow.forEach((n, i) => assert.ok(n - framesBefore[i] > 12, `viewer ${i ? 'b' : 'a'} decoded ${n - framesBefore[i]} frames during repeat ${repeat} of the looped film`))
+        framesBefore = framesNow
       }
       const shape = JSON.parse(await hostConnections())
       for (const one of shape) assert.equal(one.audioSenders, 1, `after the loop: one live audio sender per peer (${JSON.stringify(one)})`)
@@ -911,7 +917,7 @@ app.whenReady().then(async () => {
         for (const one of shape) assert.equal(one.audioSenders, 1, `after republish ${again}: one live audio sender per peer (${JSON.stringify(one)})`)
       }
       await run(c, '__test.control("loop", false)')
-      console.log('PASS: A looped film is heard by both viewers on every one of six repeats and never shows as paused, and still after it is published again twice')
+      console.log('PASS: A looped film is heard and its frames keep arriving for both viewers on every one of six repeats and never shows as paused, and still after it is published again twice')
     }
     await run(c, `__test.hostFile(${JSON.stringify(path.join(temporary, 'missing.mp4'))})`)
     await Promise.all([a, b].map((win) => until(win, 'Boolean(__test.session.remote?.error) && document.getElementById("spinner").hidden')))

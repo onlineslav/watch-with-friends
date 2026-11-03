@@ -4811,7 +4811,10 @@ document.addEventListener('keydown', (event) => {
   } else if (event.code === 'KeyM') {
     toggleMute()
   } else if (event.code === MARK_KEY) {
-    if (!event.repeat && !event.ctrlKey && !event.metaKey && !event.altKey) markFromUser({withNote: event.shiftKey})
+    if (!event.repeat && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      event.preventDefault() // Shift+X focuses the note box inside this very keydown: the key must not also be typed into it
+      markFromUser({withNote: event.shiftKey})
+    }
   } else {
     const kind = Object.keys(REACTIONS).find((k) => REACTIONS[k].key === event.code || REACTIONS[k].key === `Digit${event.key}`)
     if (kind && !event.repeat) react(kind)

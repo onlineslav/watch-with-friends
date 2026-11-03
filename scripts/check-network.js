@@ -153,6 +153,12 @@ async function checkContext(windows, host, viewer, other) {
   assert.equal(mineIds().size, known + 1, 'a note is the same mark')
   await run(viewer, `document.getElementById('mark').click()`)
   await waitFor('the button press in the log', () => mineIds().size === known + 2)
+  // Shift+X opens the note box focused; the key press itself must be swallowed (it would otherwise be typed into it).
+  const prevented = await run(viewer, `(() => { const event = new KeyboardEvent('keydown', {code: 'KeyX', key: 'X', shiftKey: true, bubbles: true, cancelable: true}); document.body.dispatchEvent(event); return event.defaultPrevented })()`)
+  assert.equal(prevented, true, 'Shift+X is handled, not typed')
+  await waitFor('the Shift+X mark in the log', () => mineIds().size === known + 3)
+  assert.deepEqual(await run(viewer, `({open: !document.getElementById('mark-note').hidden, focused: document.activeElement === document.getElementById('mark-note-input'), value: document.getElementById('mark-note-input').value})`), {open: true, focused: true, value: ''}, 'the note box is open, focused and empty')
+  await run(viewer, `document.getElementById('mark-note-input').dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}))`)
   console.log('PASS: The mark key, the button and the note box work; Settings names the key')
 
   // Mute, volume (one line per drag, not per step) and a Settings change are one small line each.

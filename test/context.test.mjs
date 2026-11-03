@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {DEVICE_KINDS, audioDeviceKey, classifyAudioDevice, describeAudioOutput, diffSettings, pickOutputDevice} from '../renderer/context.mjs'
+import {DEVICE_KINDS, audioDeviceKey, classifyAudioDevice, describeAudioOutput, diffSettings, pickOutputDevice, stripPossessive} from '../renderer/context.mjs'
 import {MARK_LIMIT, MARK_NOTE_MAX, MARK_WINDOW_MS, cleanMark, messageLimiter, newMarkId} from '../renderer/protocol.mjs'
 import {hostToViewerMs, oneWayDelayMs, toHostClock, updateClock, viewerToHostMs} from '../renderer/sync.mjs'
 import {DelayTally} from '../renderer/machine.mjs'
@@ -172,4 +172,18 @@ test('connection-state lines say which state moved and from what; ICE restarts s
   assert.equal(restarts[0].connection, states[0].connection)
   assert.equal(restarts[0].iceState, 'disconnected')
   assert.equal(pc.restarts, 2, 'and the browser still restarts')
+})
+
+test('a device named after its owner is logged without the owner', () => {
+  assert.equal(stripPossessive("Headphones (Lenna's AirPods Pro)"), 'Headphones (AirPods Pro)')
+  assert.equal(stripPossessive('Speakers (Aya’s Buds)'), 'Speakers (Buds)')
+  assert.equal(stripPossessive("Rob's Headphones"), 'Headphones')
+  assert.equal(stripPossessive('José María’s MacBook Pro Speakers'), 'MacBook Pro Speakers')
+  assert.equal(stripPossessive('Speakers (Realtek(R) Audio)'), 'Speakers (Realtek(R) Audio)', 'nothing to strip')
+  assert.equal(stripPossessive(null), '')
+  const devices = [{kind: 'audiooutput', deviceId: 'default', label: "Default - Headphones (Lenna's AirPods Pro)", groupId: 'g'}]
+  const picked = pickOutputDevice(devices)
+  assert.equal(picked.label, 'Headphones (AirPods Pro)')
+  assert.equal(picked.kind, 'bluetooth', 'and it is still recognised')
+  assert.ok(!JSON.stringify(describeAudioOutput(devices, null)).includes('Lenna'))
 })

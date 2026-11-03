@@ -26,7 +26,7 @@ const QUEUE_RISE_MS = 40 // one-way delay that grew by this much
 const CPU_LIMITED_MS = 1000 // of a 2s sample the encoder was held back by CPU / bandwidth
 const ENCODE_SLOW_MS = 25
 const DECODE_SLOW_MS = 25
-const LONG_TASK_MS = 200 // renderer long-task time within the trouble
+const LONG_TASK_MS = 100 // renderer long-task ms per troubled sample (5% of a 2s sample), as a rate: one stray task in a long session is not a slow computer
 
 const finite = (v) => typeof v === 'number' && Number.isFinite(v)
 const nums = (list) => list.filter(finite)
@@ -97,7 +97,11 @@ function diagnoseBottleneck(input = {}) {
   numbers.hostCpuHeld = cpuHeld
   numbers.hostBwHeld = bwHeld
   const near = (s) => times.some((t) => Math.abs(t - s.at) <= NEAR_MS)
-  const longTasks = (list) => (list || []).filter((s) => finite(s.at) && finite(s.ltMs) && near(s)).reduce((sum, s) => sum + s.ltMs, 0)
+  // Long-task ms per sample near the trouble (a rate), so a long session with one stray task does not look slow.
+  const longTasks = (list) => {
+    const nearby = (list || []).filter((s) => finite(s.at) && finite(s.ltMs) && near(s))
+    return nearby.length ? nearby.reduce((sum, s) => sum + s.ltMs, 0) / nearby.length : 0
+  }
   numbers.viewerLongTaskMs = longTasks(input.viewerBusy)
   numbers.hostLongTaskMs = longTasks(input.hostBusy)
 
@@ -110,16 +114,17 @@ function diagnoseBottleneck(input = {}) {
   const push = (...texts) => reasons.push(...texts.filter(Boolean))
   const done = (verdict) => ({verdict, reasons, numbers})
 
-  if (hostSlowPc && !hostFull) {
+  // A computer is only blamed when the other side's link did not fill: that is the likelier cause of the trouble.
+  if (hostSlowPc && !hostFull && !viewerFull) {
     push(cpuHeld >= 0.5 ? `encoder held back by CPU in ${Math.round(cpuHeld * 100)}% of the troubled samples` : null,
       encode && encode.during >= ENCODE_SLOW_MS ? `encode ${Math.round(encode.during)} ms per frame while troubled` : null,
-      numbers.hostLongTaskMs >= LONG_TASK_MS ? `${Math.round(numbers.hostLongTaskMs)} ms of renderer long tasks` : null,
+      numbers.hostLongTaskMs >= LONG_TASK_MS ? `${Math.round(numbers.hostLongTaskMs)} ms of renderer long tasks per troubled sample` : null,
       edgeText('host', hostEdge) || 'host link not measured')
     return done('host-computer')
   }
-  if (viewerSlowPc && !viewerFull) {
+  if (viewerSlowPc && !viewerFull && !hostFull) {
     push(decode && decode.during >= DECODE_SLOW_MS ? `decode ${Math.round(decode.during)} ms per frame while troubled` : null,
-      numbers.viewerLongTaskMs >= LONG_TASK_MS ? `${Math.round(numbers.viewerLongTaskMs)} ms of renderer long tasks` : null,
+      numbers.viewerLongTaskMs >= LONG_TASK_MS ? `${Math.round(numbers.viewerLongTaskMs)} ms of renderer long tasks per troubled sample` : null,
       edgeText('viewer', viewerEdge) || 'viewer link not measured')
     return done('viewer-computer')
   }
@@ -150,7 +155,8 @@ function diagnoseBottleneck(input = {}) {
   }
   push(edgeText('host', hostEdge), edgeText('viewer', viewerEdge),
     queueGrew(hv) ? `host-to-viewer delay +${Math.round(hv.rise)} ms` : null,
-    'neither person\'s own link filled up: the trouble is somewhere between them')
+    hostEdge && viewerEdge ? "neither person's own link filled up: the trouble is somewhere between them"
+      : `${hostEdge ? "viewer's" : "host's"} own link was not measured, and the ${hostEdge ? "host's" : "viewer's"} did not fill up: the cause is not clear`)
   return done('unclear')
 }
 

@@ -131,3 +131,38 @@ test('rise and linkFull on their own', () => {
   assert.equal(rise([], [at(1)]), null)
   assert.equal(rise(points([20, 20]), [at(50)]), null, 'no sample near the trouble')
 })
+
+test('a stray host long task in ten minutes of viewer trouble does not turn their network into the host\'s computer', () => {
+  const n = 300 // 10 minutes of 2s samples; the viewer has loss from 50 to 250
+  const idx = Array.from({length: n}, (_, i) => i)
+  const bad = (i) => i >= 50 && i < 250
+  const input = {
+    viewer: idx.map((i) => ({at: at(i), loss: bad(i) ? 6 : 0, freezes: 0, frz: 0, dec: 3})),
+    host: idx.map((i) => ({at: at(i), bw: 0, cpu: 0, enc: 4})),
+    hostEdge: idx.map((i) => ({at: at(i), er: 20})),
+    viewerEdge: idx.map((i) => ({at: at(i), er: bad(i) ? 200 : 20})),
+    hostBusy: idx.map((i) => ({at: at(i), ltMs: i % 60 === 0 ? 60 : 0})), // one 60 ms task every 2 minutes
+    viewerBusy: idx.map((i) => ({at: at(i), ltMs: 0})),
+  }
+  const result = diagnoseBottleneck(input)
+  assert.equal(result.verdict, 'viewer-network')
+  assert.ok(result.numbers.hostLongTaskMs < 5, `${result.numbers.hostLongTaskMs} ms per troubled sample`)
+})
+
+test('a computer is never blamed while the other side\'s link is full, whatever its own numbers say', () => {
+  assert.equal(diagnoseBottleneck(session({viewerEdge: true, hostCpu: true})).verdict, 'viewer-network')
+  assert.equal(diagnoseBottleneck(session({viewerEdge: true, slowEncode: true, hostLongTasks: true})).verdict, 'viewer-network')
+  assert.equal(diagnoseBottleneck(session({hostEdge: true, slowDecode: true, viewerLongTasks: true})).verdict, 'host-upload')
+})
+
+test('one side measured and calm, the other not measured at all: says which one was not measured', () => {
+  const input = session({hv: true})
+  input.viewerEdge = []
+  const result = diagnoseBottleneck(input)
+  assert.equal(result.verdict, 'unclear')
+  assert.match(result.reasons.join(';'), /viewer's own link was not measured, and the host's did not fill up/)
+  assert.doesNotMatch(result.reasons.join(';'), /neither person's/)
+  const other = session({hv: true})
+  other.hostEdge = []
+  assert.match(diagnoseBottleneck(other).reasons.join(';'), /host's own link was not measured, and the viewer's did not fill up/)
+})

@@ -33,6 +33,10 @@ const withoutPrefix = (label) => String(label || '').replace(/^(?:default|commun
 
 // enumerateDevices() output → {label, kind, outs}: the output the app plays through right now.
 // `label` is null when the browser withholds names; `outs` is how many outputs exist.
+// A device is often named after its owner ("Lenna's AirPods Pro"). The log is sent to someone else, so the
+// possessive goes: "AirPods Pro" says what it is, and the person is already in the line as the username.
+export const stripPossessive = (label) => String(label ?? '').replace(/[\p{L}\p{N} .-]+['’]s\s+/gu, '').trim()
+
 export function pickOutputDevice(devices) {
   const outputs = (Array.isArray(devices) ? devices : []).filter((d) => d && d.kind === 'audiooutput')
   const chosen = outputs.find((d) => d.deviceId === 'default') || outputs[0] || null
@@ -41,6 +45,7 @@ export function pickOutputDevice(devices) {
     const real = outputs.find((d) => d !== chosen && d.groupId === chosen.groupId && d.deviceId !== 'communications' && d.label)
     if (real) label = withoutPrefix(real.label)
   }
+  label = stripPossessive(label)
   label = label ? label.slice(0, 80) : null
   return {label, kind: classifyAudioDevice(label), outs: outputs.length}
 }

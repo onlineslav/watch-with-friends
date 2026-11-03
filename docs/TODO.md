@@ -341,6 +341,9 @@ Done when:
   `tuneSenders`/`setParameters` on parameters read before a renegotiation, rejected and never retried. Done when: a
   rejoin over a reused connection always gets video (repeat the rejoin step ≥20 times in a loop), and a rejected
   `setParameters` is retried with a fresh `getParameters()`.
+- (orchestrator, 0.8.1 CI on macos-latest, 2026-11-03) Intermittent: `test:network` timed out waiting for every share
+  tile to have a source and `__test.audioLevel() > 0.05`; the same commit passed on that runner an hour earlier. Find
+  whether a tile's audio sometimes never starts (M1.5 changed share audio stamping), fix or make the check honest.
 Gate: no
 Evidence:
 

@@ -17,3 +17,4 @@
 - M1.6 needs Aya (9a0d3aa, d60c6b4; 2 attempts; viewers now stereo; v0.8.0 compat 8/8). M1.11 built (05fa480): second/third file audible again (was silent since ≤0.8.0).
 - M1.11 verified (3 attempts; attempt 3 by workflow-builder-strong, ~340k). Also fixed: SDP growth that dropped viewers at ~7 films (pre-existing).
 - M1.7 parts 1–3 done (cadf4d8, da7c8f7, 8469cdb, 88de987, b411068; ~477k); smoothness left. M1.12 filed (Loop may go silent).
+- 0.8.2 released (tag → 88de987 after the Mac rejoin fix; one Intel-Mac rerun for the load-sensitive quality step): stereo, second film audible, no drop at ~7 films, rejoin picture and Mac room switch.

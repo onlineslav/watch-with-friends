@@ -14,6 +14,12 @@ const diagnostics = require('../main/log')
 const {prepareYouTube, registerYouTube} = require('../main/youtube')
 prepareYouTube()
 const checkYouTube = process.argv.includes('--youtube')
+// --switch-loop=N: after the earlier steps, all three windows leave a room and enter another N times (default 1); the 0.8.2 Mac CI
+// failure was a pair that never connected on such a switch (M1.7).
+const switchLoop = Number((process.argv.find((arg) => arg.startsWith('--switch-loop=')) || '').split('=')[1]) || 1
+// --churn-loop=N: in a room of three, one person leaves and comes straight back N times (the 0.8.2 Mac CI failure: the returning
+// pair never connected, "handshake timed out"). Default 3.
+const churnLoop = Number((process.argv.find((arg) => arg.startsWith('--churn-loop=')) || '').split('=')[1]) || 3
 const rejoinLoop = Number((process.argv.find((arg) => arg.startsWith('--rejoin-loop=')) || '').split('=')[1]) || 3
 // --live-rate=N: N people in one room, the host playing a film, and the live telemetry stream measured
 // per person for 60 seconds (M1.1). Nothing else is checked.
@@ -50,6 +56,8 @@ async function until(win, condition, timeoutMs = publicDiscovery ? 90000 : 15000
   for (const [name, other] of testWindows) {
     if (other.isDestroyed()) continue
     console.error(`${name} connections: ` + await run(other, connectionDump).catch((error) => error.message))
+    const trace = await run(other, 'JSON.stringify((globalThis.__trace || []).slice(-80))').catch(() => '[]') // set only by a debug build of the transport
+    if (trace !== '[]') console.error(`${name} transport trace: ${trace}`)
   }
     console.error(await run(win, `JSON.stringify({friends:__test.friendNetwork.list(), role:__test.session.role, peers:[...__test.session.peers], remote:__test.session.remote, connection:__test.session.connection, video:{ready:document.getElementById('remote-video').readyState, frames:document.getElementById('remote-video').getVideoPlaybackQuality().totalVideoFrames}, streams:[...__test.session.peerStreams].map(([id, entry]) => ({id, stream:entry.stream.id.slice(0, 6), claimedAt:entry.claimedAt, tracks:entry.stream.getTracks().map(t => ({kind:t.kind, muted:t.muted, state:t.readyState, id:t.id.slice(0, 6)}))})), errors:__test.errors})`))
   assert.fail(`Timed out: ${condition}`)
@@ -478,6 +486,17 @@ app.whenReady().then(async () => {
 
     const joinAll = () => Promise.all(windows.map((win) => run(win, '__test.enterRoom("ABCDEFGH")')))
     const connected = () => Promise.all(windows.map((win) => until(win, '__test.session.peers.size === 2')))
+    // One of the three leaves and comes straight back, churnLoop times; everyone must be connected again each time.
+    const churn = async (room) => {
+      for (let i = 1; i <= churnLoop; i++) {
+        const who = [a, b, c][i % 3]
+        await run(who, '__test.leaveRoom()')
+        await pause(i * 37 % 250) // from straight away to a quarter of a second
+        await run(who, `__test.enterRoom("${room}")`)
+        await connected()
+        if (churnLoop > 3) console.log(`churn ${i}/${churnLoop} ok`)
+      }
+    }
     await run(a, '__test.enterRoom("ABCDEFGH", {joining:false})')
     assert.equal(await run(a, 'document.getElementById("room-name").value'), "alpha's Room")
     await run(a, `
@@ -498,6 +517,11 @@ app.whenReady().then(async () => {
     await Promise.all([a, c].map((win) => until(win, 'document.getElementById("room-name").value === "Film Club"')))
     console.log('PASS: New arrivals receive the saved room name and subsequent edits synchronize')
     console.log('PASS: Three authenticated room participants connect while friends remain online')
+    if (process.argv.includes('--churn-first')) { // for looping the step alone, without the long steps before it
+      await churn('ABCDEFGH')
+      console.log(`PASS: One of three leaves and returns straight away ${churnLoop} times and everyone is connected again`)
+      return
+    }
     if (publicDiscovery) {
       await run(b, '__test.leaveRoom()')
       await until(a, '__test.session.peers.size === 1')
@@ -603,7 +627,7 @@ app.whenReady().then(async () => {
     await Promise.all([b, c].map((win) => until(win, '__test.audioLevel() > 0.01')))
     console.log('PASS: Both viewers receive moving video and clock synchronization')
     const downloadItem = await run(c, `__test.addToPlaylist([${JSON.stringify(video)}])[0].id`)
-    await until(b, `__test.playable(__test.session.playlist.items.get(${JSON.stringify(downloadItem)}))`)
+    await until(b, `__test.session.playlist.items.has(${JSON.stringify(downloadItem)}) && __test.playable(__test.session.playlist.items.get(${JSON.stringify(downloadItem)}))`)
     const originalSaveDialog = dialog.showSaveDialog
     const {DownloadFiles} = require('../main/downloads')
     const originalRead = DownloadFiles.prototype.read
@@ -1100,12 +1124,23 @@ app.whenReady().then(async () => {
     }
     // Isolate departure checks from the audiovisual fixture: transferring a playlist
     // file must work in an idle room too, and late replies must not enter a new room.
+    for (let i = 1; i < switchLoop; i++) {
+      await Promise.all(windows.map((win) => run(win, '__test.leaveRoom()')))
+      const room = `SWITCH${i % 2}`
+      await run(a, `__test.enterRoom("${room}", {joining:false})`)
+      await Promise.all([b, c].map((win) => run(win, `__test.enterRoom("${room}")`)))
+      await connected()
+      console.log(`switch ${i}/${switchLoop - 1} ok`)
+    }
     await Promise.all(windows.map((win) => run(win, '__test.leaveRoom()')))
     await run(a, '__test.enterRoom("DWNLOAD1", {joining:false})')
     await Promise.all([b, c].map((win) => run(win, '__test.enterRoom("DWNLOAD1")')))
     await connected()
+    await churn('DWNLOAD1')
+    console.log(`PASS: One of three leaves and returns straight away ${churnLoop} times and everyone is connected again`)
+    if (process.argv.includes('--stop-after-churn')) return // for looping this step alone
     const departureItem = await run(c, `__test.addToPlaylist([${JSON.stringify(video)}])[0].id`)
-    await until(b, `__test.playable(__test.session.playlist.items.get(${JSON.stringify(departureItem)}))`)
+    await until(b, `__test.session.playlist.items.has(${JSON.stringify(departureItem)}) && __test.playable(__test.session.playlist.items.get(${JSON.stringify(departureItem)}))`)
     const departureSave = path.join(temporary, 'departed-owner.mp4')
     let departurePath = departureSave
     dialog.showSaveDialog = async () => ({canceled: false, filePath: departurePath})
@@ -1124,7 +1159,7 @@ app.whenReady().then(async () => {
       await run(c, '__test.enterRoom("DWNLOAD1")')
       await connected()
       await until(c, `__test.session.availableFiles.has(${JSON.stringify(departureItem)})`)
-      await until(b, `__test.playable(__test.session.playlist.items.get(${JSON.stringify(departureItem)}))`)
+      await until(b, `__test.session.playlist.items.has(${JSON.stringify(departureItem)}) && __test.playable(__test.session.playlist.items.get(${JSON.stringify(departureItem)}))`)
       console.log('PASS: Owner departure stops the download and removes its temporary file; downloading becomes available after rejoining')
 
       departurePath = path.join(temporary, 'departed-viewer.mp4')
@@ -1257,9 +1292,14 @@ app.whenReady().then(async () => {
     const dir = path.join(temporary, 'logs')
     const lines = fs.readdirSync(dir).filter((name) => name.endsWith('.log')).sort().reverse()
       .flatMap((name) => fs.readFileSync(path.join(dir, name), 'utf8').split('\n'))
-      .filter((line) => /"lv":"(error|warn)"|"sc":"(media|ffmpeg)"/.test(line) && !/"ev":"(ice-error|transport-warning)"/.test(line))
+      .filter((line) => /"lv":"(error|warn)"|"sc":"(media|ffmpeg)"/.test(line) && !/"ev":"ice-error"/.test(line))
     console.error(`--- last ${Math.min(40, lines.length)} errors, warnings and media events from the windows' log ---`)
     for (const line of lines.slice(-40)) console.error(line.slice(0, 600))
+    // Who joined and left what, and when, for a connection that never formed (M1.7: the Mac CI rejoin failure).
+    const peers = lines.length ? fs.readdirSync(dir).filter((name) => name.endsWith('.log')).sort().reverse()
+      .flatMap((name) => fs.readFileSync(path.join(dir, name), 'utf8').split('\n')).filter((line) => /"sc":"(peer|room|network)"/.test(line)) : []
+    console.error(`--- last ${Math.min(40, peers.length)} peer, room and network events ---`)
+    for (const line of peers.slice(-40)) console.error(line.slice(0, 400))
   } catch (logError) {
     console.error(`(no diagnostic log to show: ${logError.message})`)
   }

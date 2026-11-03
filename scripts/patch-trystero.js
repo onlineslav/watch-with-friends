@@ -450,3 +450,47 @@ if (!stopV3Peer.includes(stopV3Marker)) {
   }
   fs.writeFileSync(peerPath, stopV3Peer + stopV3Marker)
 }
+
+// A peer that has just left a room is not attached again by a stray signal (M1.7, found by looping a leave/rejoin
+// under CPU load; the 0.8.2 Mac CI run failed the same way). Someone leaving a room says so on the data channel
+// ("@_leave", ordered with everything else on it), but the relay announcements and offers of a shared peer travel
+// another way, and one sent just before the leave can arrive just after it. signal-handler.mjs attaches a known
+// shared peer to the room on any announcement, offer, answer or candidate, so the room opened a binding to a peer that
+// was no longer in it and started a handshake with nobody. When the person really came back, their presence frame
+// found that binding already there (not new), nobody started a handshake for the new visit, the stale one waited
+// for messages the new visit never sent, and everyone's handshake timed out after 10 s ("handshake timed out after
+// 10000ms"; the stale handshake was 1 ms after the leave in the trace). The presence frame is ordered after the leave
+// on the data channel, so after a "@_leave" only a presence frame (or a new connection) may attach that peer again;
+// signals are ignored for 5 s. A copy that never sends presence frames cannot leave a room this way either.
+const ghostMarker = '// watch-with-friends ghost attach v1\n'
+function patchGhost(name, edits) {
+  const file = path.join(core, 'dist', name)
+  let text = fs.readFileSync(file, 'utf8')
+  if (text.includes(ghostMarker)) return
+  for (const [before, after] of edits) {
+    if (text.split(before).length !== 2) throw new Error(`Trystero ghost-attach patch context changed: ${name}: ${before.slice(0, 60)}`)
+    text = text.replace(before, () => after)
+  }
+  fs.writeFileSync(file, text + (text.endsWith('\n') ? '' : '\n') + ghostMarker)
+}
+patchGhost('room.mjs', [
+  ['\t\tif (wasActive) listeners.onPeerLeave?.(id);\n\t\tonPeerLeave(id);', '\t\tif (wasActive) listeners.onPeerLeave?.(id);\n\t\tonPeerLeave(id, reason);'],
+])
+patchGhost('strategy.mjs', [
+  [
+    '\t\tconst joinedRoom = room_default((f) => onPeerConnect = f, (id) => {\n\t\t\tif (didLeaveRoom) return;\n\t\t\tconst state = ctx.peerStates[id];',
+    '\t\tconst joinedRoom = room_default((f) => onPeerConnect = f, (id, reason) => {\n\t\t\tif (didLeaveRoom) return;\n\t\t\tif (/peer left room$/.test(reason?.message ?? "")) getState(ctx.peerStates, id).leftRoomAt = Date.now();\n\t\t\tconst state = ctx.peerStates[id];',
+  ],
+  [
+    '\t\tconst ctx = {\n\t\t\tappId,',
+    '\t\tconst attachFromSignal = (peerId, shared) => {\n\t\t\tconst left = ctx.peerStates[peerId]?.leftRoomAt;\n\t\t\tif (left && Date.now() - left < 5e3) return;\n\t\t\tattachSharedPeerToRoom(peerId, shared);\n\t\t};\n\t\tconst ctx = {\n\t\t\tappId,',
+  ],
+  [
+    '\t\t\tconnectPeer,\n\t\t\tdisconnectPeer,\n\t\t\tattachSharedPeerToRoom,\n',
+    '\t\t\tconnectPeer,\n\t\t\tdisconnectPeer,\n\t\t\tattachSharedPeerToRoom: attachFromSignal,\n',
+  ],
+  [
+    '\t\t\troomTokenPromise: roomNamespacePromise,\n\t\t\tattachSharedPeerToRoom,\n',
+    '\t\t\troomTokenPromise: roomNamespacePromise,\n\t\t\tattachSharedPeerToRoom: (peerId, shared) => {\n\t\t\t\tif (ctx.peerStates[peerId]) ctx.peerStates[peerId].leftRoomAt = 0;\n\t\t\t\tattachSharedPeerToRoom(peerId, shared);\n\t\t\t},\n',
+  ],
+])

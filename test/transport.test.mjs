@@ -844,3 +844,18 @@ test('glare: a track taken off while its offer is out, then a colliding offer th
     pair.a.destroy(); pair.b.destroy()
   }
 })
+
+test('a shared peer that has just left a room is attached again only by its presence frame, not by a stray signal (M1.7)', async () => {
+  const {readFileSync} = await import('node:fs')
+  const strategy = readFileSync(new URL('../node_modules/@trystero-p2p/core/dist/strategy.mjs', import.meta.url), 'utf8')
+  const room = readFileSync(new URL('../node_modules/@trystero-p2p/core/dist/room.mjs', import.meta.url), 'utf8')
+  // The room hands its reason for losing a peer to the strategy, which notes when someone left it...
+  assert.match(room, /onPeerLeave\(id, reason\)/)
+  assert.match(strategy, /peer left room\$\/\.test\(reason\?\.message \?\? ""\)\) getState\(ctx\.peerStates, id\)\.leftRoomAt = Date\.now\(\)/)
+  // ...the signal handler (which attaches a known shared peer on any announcement, offer, answer or candidate) gets
+  // the guarded attach, and only the presence handler's registration clears the note.
+  assert.match(strategy, /attachFromSignal = \(peerId, shared\) => \{\s*const left = ctx\.peerStates\[peerId\]\?\.leftRoomAt;\s*if \(left && Date\.now\(\) - left < 5e3\) return;/)
+  assert.match(strategy, /attachSharedPeerToRoom: attachFromSignal,/)
+  assert.match(strategy, /roomTokenPromise: roomNamespacePromise,\s*attachSharedPeerToRoom: \(peerId, shared\) => \{\s*if \(ctx\.peerStates\[peerId\]\) ctx\.peerStates\[peerId\]\.leftRoomAt = 0;/)
+  assert.equal(strategy.split('// watch-with-friends ghost attach v1').length, 2, 'patched exactly once')
+})

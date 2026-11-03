@@ -41,7 +41,9 @@ function removeStale(prefix, {now = Date.now(), tmp = os.tmpdir()} = {}) {
   return removed
 }
 
-// Makes this run's folder (after clearing stale ones). `release()` removes it; it also runs when the process exits.
+// Makes this run's folder (after clearing stale ones). `release()` removes it. Not hooked to the process 'exit' event: Electron emits that
+// as soon as the last window closes, before a failing check has read its log from this folder; a crash leaves the folder
+// for the next run's removeStale (its owner pid is dead by then).
 function create(prefix, {keep = false, tmp = os.tmpdir()} = {}) {
   removeStale(prefix, {tmp})
   const dir = fs.mkdtempSync(path.join(tmp, prefix))
@@ -52,7 +54,6 @@ function create(prefix, {keep = false, tmp = os.tmpdir()} = {}) {
     released = true
     if (!keep) remove(dir)
   }
-  process.on('exit', release)
   return {dir, release}
 }
 

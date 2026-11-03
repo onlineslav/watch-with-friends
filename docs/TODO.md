@@ -347,7 +347,7 @@ estimate. LOW: with keep-audio off, random loss can still look like congestion t
 Waiting on: Aya's check (music-heavy film with Lenna).
 
 ### M1.7 Smooth, sharp video under real conditions [feel] [wire]
-Status: in progress
+Status: needs Aya
 Story: The picture stays smooth and as sharp as the connection allows, and recovers quickly after a hiccup.
 Done when:
 - Bench numbers for fps and frame-interval jitter at 24, 30 and 60fps films and a 60fps share, before and after.
@@ -384,7 +384,15 @@ quality, ceiling and download-sound steps. Orchestrator reruns on b411068: `npm 
 `test:compat` 10/10. Left: video smoothness (bench fps/jitter at 24/30/60 and a 60fps share, `venc` hardware check,
 loss-burst recovery ≤10s, no freeze >500ms on keyframe requests); share-tile audio and playlist-popover flakes not
 reproduced.
-Evidence:
+Evidence: cadf4d8, da7c8f7, 8469cdb, 88de987, b411068 (attempt 1, Sonnet) + b3d8abe (fresh Sonnet). Bench 3-run medians
+before → after: 60fps film 48.9 → 58.2 frames/s at the viewer (frame poll boost when rVFC skips), 60fps share
+49.4 → 58.9, 24fps 23.78 → 23.97 (late 0.66% → 0.06%), 30fps 29.74 → 29.94; 1080p back to full size after a 4s 10%
+loss burst 7.6s → 0.9s (`RECOVERY_CALM_MS` 6000 → 4000), 30%/3s burst 10.9s → 0.9s; longest frame gap at 10% loss
+267–317ms (no PLI/FIR; NACK repairs it). Hardware encode on Windows confirmed by the GPU VideoEncode engine counter
+(12–14% during the bench) and `video_encode: enabled`; Chromium withholds the encoder name; Mac not confirmed.
+Rejoin, room switch (0 failures in 720 churn loops under load), temp folders, seek race as in Progress above.
+Orchestrator reruns: `npm test` 489/489; `test:network` 52 PASS with the cost gate report-only; `test:compat`
+10/10 against v0.7.1, v0.8.0 and v0.8.2 ([wire]: ghost-attach rule). Waiting on: Aya's check 6.
 
 ### M1.11 Second file silent for viewers [must-work] [wire]
 Status: verified
@@ -440,7 +448,7 @@ different media kinds at the same mid in one round trip (CLAUDE.md); against 0.8
 still build up slowly until both ends run this build.
 
 ### M1.12 Looped film goes silent for viewers [must-work]
-Status: todo
+Status: verified
 Added: orchestrator, 2026-11-03, from the M1.7 builder (suspected, not proven).
 Story: When I loop a film, my friends keep hearing it on every repeat.
 Done when:
@@ -455,10 +463,17 @@ Done when:
   live clone over when the capture has no live track of that kind; `test:network` loops twice, forces a republish and
   checks audio.
 Gate: no
-Evidence:
+Evidence: 3b70980 (attempt 1), 1096b69 (attempt 2, carry the live audio clone over a republish), 79aadb7 (attempt 3,
+workflow-builder-strong: long-film loop through the ffmpeg restart path; carried clones leave the old map). Bench
+`--variant=loop`: before, repeats 3–8 had 0/2 beeps; after, short clip 15/15 repeats heard, 20s film opened at 17s
+looped 3 runs × 8 repeats with both beeps every repeat (RMS ≥0.345), 95–102 frames in each repeat's first 3s, ffmpeg
+restarted every loop, 0 paused samples; a different film afterwards is heard. `test:network` loops a 2.5s film 6
+times (audio and growing frames for both viewers each repeat), then forces two republishes (live audio, one sender
+per peer). Orchestrator sweep: loop bench 7/7 repeats heard; `npm test` 489/489. Audits: 1 (MEDIUM long-film path,
+fixed; 2 LOW fixed).
 
 ### M1.8 Real session review with Lenna [feel]
-Status: todo
+Status: needs Aya
 Story: Lenna and I watch something together with live telemetry on, and the worst three things we notice get fixed.
 Done when:
 - Lenna is on the new build with the checkbox on; a 30+ minute session (a film and a share) is captured.
@@ -492,6 +507,21 @@ Evidence:
   the machine; re-measure when quiet.
 - `test:compat --tag=v0.7.1` and `--tag=v0.8.2` hung in the harness (old-tree prepare), not in the app → fixing.
 
+### Full sweep, final (2026-11-03, HEAD 79aadb7)
+- `npm test` 489/489. `test:compat` 10/10 against v0.7.1, v0.8.0 and v0.8.2 (harness hang fixed in f31c579).
+- `npm run bench`: film +22ms, share +34.8ms medians (±40ms target met); loop bench all repeats heard.
+- `test:network` passes 52/52 with the cost gate report-only; strict runs read 2.00–3.24ms for the host sample while
+  another project's vitest/tsc/Electron runs loaded the machine (40–94% CPU); quiet runs read 1.32–1.77ms. Not yet
+  shown under 2ms on a quiet machine with this HEAD → recheck when quiet; read Lenna's `machine-sample.cost` in M1.8.
+- Not released from this run: `e6e60a4` (network probe, from another session) pings 1.1.1.1 and the router every
+  200ms in every room whether or not "Send telemetry for development" is on, which conflicts with the Must-work line
+  "Nothing leaves a machine unless … is on". Gate it on the checkbox (no loss for development: Aya and Lenna have it
+  on), then release 0.8.3 with M1.7 (60fps, faster recovery) and M1.12 (loop) — see Waiting on Aya.
+
+## Waiting on Aya
+- Network probe gate (above): gate `netProbe.start()` on the telemetry checkbox before 0.8.3, or say it may stay
+  ungated.
+
 ## Aya's checks
 
 1. **M1.5 film sync (with Lenna, after 0.8.1 installs):** both tick Settings → Having problems? → "Send telemetry for
@@ -507,6 +537,11 @@ Evidence:
 5. **M1.6 stereo + M1.11 second film (after the next release):** host a music-heavy film with Lenna; ask whether it
    sounds wide (left and right differ) and clean. Then open a second film, and a third, in the same session: she
    should hear each one, not just see it.
+6. **M1.7 smooth video (after 0.8.3):** host a 60fps clip to Lenna: does motion look as smooth as on your screen? A
+   24fps film looks unchanged; during a 1080p film, start a big download for ~4s: the picture sharpens again within
+   ~10s.
+7. **M1.8 session with Lenna (after 0.8.3):** both tick telemetry, watch 30+ minutes (a film and a share), press X at
+   bad moments, then run `npm run diagnostics -- --report`.
 
 ## Later (filed from Aya's notes, not cards yet)
 

@@ -18,3 +18,7 @@
 - M1.11 verified (3 attempts; attempt 3 by workflow-builder-strong, ~340k). Also fixed: SDP growth that dropped viewers at ~7 films (pre-existing).
 - M1.7 parts 1–3 done (cadf4d8, da7c8f7, 8469cdb, 88de987, b411068; ~477k); smoothness left. M1.12 filed (Loop may go silent).
 - 0.8.2 released (tag → 88de987 after the Mac rejoin fix; one Intel-Mac rerun for the load-sensitive quality step): stereo, second film audible, no drop at ~7 films, rejoin picture and Mac room switch.
+- M1.12 verified (3 attempts, last by workflow-builder-strong); M1.7 needs Aya (60fps 49 → 58 fps, 1080p recovery
+  7.6s → 0.9s); compat harness fixed, 10/10 vs v0.7.1, v0.8.0, v0.8.2. Milestone audit done (2 HIGH, 4 MEDIUM, all
+  handled). Run ends with 8 verified, 4 needing Aya (M1.5, M1.6, M1.7, M1.10) and M1.8 for Aya + Lenna. 0.8.3 held:
+  the network probe from another session (e6e60a4) runs without the telemetry checkbox. Helper tokens ≈ 5.3M.

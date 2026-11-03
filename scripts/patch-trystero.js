@@ -20,6 +20,7 @@ function patch(name, edits) {
   fs.writeFileSync(file, marker + text)
 }
 fs.copyFileSync(path.join(root, 'shared/receive-budget.mjs'), path.join(core, 'dist/receive-budget.mjs'))
+fs.copyFileSync(path.join(root, 'shared/opus-sdp.mjs'), path.join(core, 'dist/opus-sdp.mjs'))
 patch('handshake.mjs', [
   ['state.pendingHandshakePayloads.push(payload);', `if (state.pendingHandshakePayloads.length >= 8) {
       failPeerHandshake(id, state.peer, mkErr("too many pending handshake messages"));
@@ -218,4 +219,119 @@ if (!peerText.includes(giveUpMarker)) {
   if (!peerText.includes(before)) throw new Error('Trystero abandoned-connection patch context changed')
   // Appended, not prepended: the hardening patch above recognises a patched file by its first line.
   fs.writeFileSync(peerPath, peerText.replace(before, after) + giveUpMarker)
+}
+
+// Opus parameters in the local description (M1.6). WebRTC's decoder follows the receiver's OWN
+// SDP, so a viewer that only edited the host's SDP (renderer/app.js, setRemoteDescription) decoded
+// mono: the M1.4 bench read L/R separation 0 at the viewer while the host's send side said stereo=1.
+// Every local offer and answer is therefore created, edited (shared/opus-sdp.mjs, copied beside
+// peer.mjs above) and then set, in place of the argument-less setLocalDescription() that left the
+// browser to write it. That includes the ICE-restart offer; a rollback is left alone.
+//
+// Creating and setting are two steps now, and the browser runs its own calls in order, so a remote
+// offer applied between them leaves the second step in the wrong state (createOffer in
+// have-remote-offer; a rollback in stable). Everything that touches the descriptions therefore runs
+// one job at a time here: our offers and answers, remote offers and remote answers. Each job reads the
+// signalling state when its turn comes, which is what the argument-less call did for free. A remote
+// offer waits for a local one in flight and then rolls back (the state is really have-local-offer by
+// then); an offerer still ignores a remote offer that collides with its own. Descriptions go out
+// after the job, never inside it, so waiting for ICE gathering without trickle cannot hold the line.
+// If the edited description is refused, the browser's own is used, so a negotiation never fails
+// because of this (the audio just is not stereo on that pass).
+const opusMarker = '// watch-with-friends opus sdp v2\n'
+let opusPeer = fs.readFileSync(peerPath, 'utf8')
+if (!opusPeer.includes(opusMarker)) {
+  const edits = [
+    ['import { all, alloc, candidateType, resetTimer, toError } from "./utils.mjs";',
+     'import { preferStereoOpus } from "./opus-sdp.mjs";\nimport { all, alloc, candidateType, resetTimer, toError } from "./utils.mjs";'],
+    ['\tlet offerWatch = null;',
+     [
+       '\tlet offerWatch = null;',
+       '\tlet negotiation = Promise.resolve();',
+       '\tconst serializeNegotiation = (job) => {',
+       '\t\tconst run = negotiation.catch(() => {}).then(job);',
+       '\t\tnegotiation = run;',
+       '\t\treturn run;',
+       '\t};',
+       '\tconst setLocalNow = async (restartIce = false) => {',
+       '\t\tconst answering = !restartIce && (pc.signalingState === "have-remote-offer" || pc.signalingState === "have-local-pranswer");',
+       '\t\tconst created = answering ? await pc.createAnswer() : await pc.createOffer(restartIce ? { iceRestart: true } : void 0);',
+       '\t\ttry {',
+       '\t\t\tawait pc.setLocalDescription({ type: created.type, sdp: preferStereoOpus(created.sdp) });',
+       '\t\t} catch (err) {',
+       '\t\t\tconsole.warn("trystero: edited local description refused, using the browser\'s own: " + (err?.message ?? err));',
+       '\t\t\tawait pc.setLocalDescription(created);',
+       '\t\t}',
+       '\t};',
+     ].join('\n')],
+    [[
+      '\t\t\tif (restartIce) {',
+      '\t\t\t\tif (pc.signalingState !== "stable" && pc.signalingState !== "closed" && pc.localDescription?.type === offerType) await pc.setLocalDescription({ type: "rollback" });',
+      '\t\t\t\tif (typeof pc.restartIce === "function") pc.restartIce();',
+      '\t\t\t}',
+      '\t\t\tawait pc.setLocalDescription(restartIce ? await pc.createOffer({ iceRestart: true }) : void 0);',
+    ].join('\n'),
+    [
+      '\t\t\tawait serializeNegotiation(async () => {',
+      '\t\t\t\tif (restartIce) {',
+      '\t\t\t\t\tif (pc.signalingState !== "stable" && pc.signalingState !== "closed" && pc.localDescription?.type === offerType) await pc.setLocalDescription({ type: "rollback" });',
+      '\t\t\t\t\tif (typeof pc.restartIce === "function") pc.restartIce();',
+      '\t\t\t\t}',
+      '\t\t\t\tawait setLocalNow(restartIce);',
+      '\t\t\t});',
+    ].join('\n')],
+    [[
+      '\t\t\t\tif (sdp.type === offerType) {',
+      '\t\t\t\t\tif (makingOffer || pc.signalingState !== "stable" && !isSettingRemoteAnswerPending) {',
+      '\t\t\t\t\t\tif (initiator) return;',
+      '\t\t\t\t\t\tawait all([pc.setLocalDescription({ type: "rollback" }), pc.setRemoteDescription(rtcSdp)]);',
+      '\t\t\t\t\t} else await pc.setRemoteDescription(rtcSdp);',
+      '\t\t\t\t\tawait flushPendingRemoteCandidates();',
+      '\t\t\t\t\tawait pc.setLocalDescription();',
+      '\t\t\t\t\treturn await emitLocalDescriptionSignal();',
+      '\t\t\t\t}',
+      '\t\t\t\tif (sdp.type === answerType) {',
+      '\t\t\t\t\tif (pc.signalingState !== "have-local-offer") return;',
+      '\t\t\t\t\tisSettingRemoteAnswerPending = true;',
+      '\t\t\t\t\ttry {',
+      '\t\t\t\t\t\tawait pc.setRemoteDescription(rtcSdp);',
+      '\t\t\t\t\t\tawait flushPendingRemoteCandidates();',
+      '\t\t\t\t\t} finally {',
+      '\t\t\t\t\t\tisSettingRemoteAnswerPending = false;',
+      '\t\t\t\t\t}',
+      '\t\t\t\t}',
+    ].join('\n'),
+    [
+      '\t\t\t\tif (sdp.type === offerType) {',
+      '\t\t\t\t\tconst collides = () => pc.signalingState !== "stable" && !isSettingRemoteAnswerPending;',
+      '\t\t\t\t\tif (initiator && (makingOffer || collides())) return;',
+      '\t\t\t\t\tconst answered = await serializeNegotiation(async () => {',
+      '\t\t\t\t\t\tif (initiator && collides()) return false;',
+      '\t\t\t\t\t\tif (collides()) await all([pc.setLocalDescription({ type: "rollback" }), pc.setRemoteDescription(rtcSdp)]);',
+      '\t\t\t\t\t\telse await pc.setRemoteDescription(rtcSdp);',
+      '\t\t\t\t\t\tawait flushPendingRemoteCandidates();',
+      '\t\t\t\t\t\tawait setLocalNow();',
+      '\t\t\t\t\t\treturn true;',
+      '\t\t\t\t\t});',
+      '\t\t\t\t\treturn answered ? await emitLocalDescriptionSignal() : void 0;',
+      '\t\t\t\t}',
+      '\t\t\t\tif (sdp.type === answerType) {',
+      '\t\t\t\t\tawait serializeNegotiation(async () => {',
+      '\t\t\t\t\t\tif (pc.signalingState !== "have-local-offer") return;',
+      '\t\t\t\t\t\tisSettingRemoteAnswerPending = true;',
+      '\t\t\t\t\t\ttry {',
+      '\t\t\t\t\t\t\tawait pc.setRemoteDescription(rtcSdp);',
+      '\t\t\t\t\t\t\tawait flushPendingRemoteCandidates();',
+      '\t\t\t\t\t\t} finally {',
+      '\t\t\t\t\t\t\tisSettingRemoteAnswerPending = false;',
+      '\t\t\t\t\t\t}',
+      '\t\t\t\t\t});',
+      '\t\t\t\t}',
+    ].join('\n')],
+  ]
+  for (const [before, after] of edits) {
+    if (!opusPeer.includes(before)) throw new Error('Trystero Opus patch context changed: peer.mjs')
+    opusPeer = opusPeer.replace(before, () => after)
+  }
+  fs.writeFileSync(peerPath, opusPeer + opusMarker)
 }

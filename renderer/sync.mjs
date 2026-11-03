@@ -113,3 +113,43 @@ export function aggregateLinks(links) {
   const score = (p) => (p.receiver?.freezes || 0) * 100 + (p.receiver?.lossPct || 0) * 10 + (p.sender?.limit === 'none' ? 0 : 20) + (p.rttMs || 0) / 100
   return links.reduce((worst, next) => score(next) > score(worst) ? next : worst)
 }
+
+// Audio gives way by bitrate before it drops out (M1.6). Each viewer has its own audio ceiling, set
+// from the loss that viewer reports (the same report chooseSendQuality reads): step 0 is the
+// configured cap (AUDIO_MAX_BITRATE for films, Settings' choice for a share), step 1 is 128 kbps above
+// 2% loss, step 2 is 64 kbps above 5%. A smaller stream costs the link less, so the picture and the
+// retransmissions keep room, and Opus's forward error correction has less to carry. One step back up
+// after 30 seconds of clean reports. A report that did not arrive is not calm: only fresh ones count.
+// No RED (a second copy of every packet): Opus's in-band FEC is on in the SDP and costs nothing extra.
+export const AUDIO_STEP_CAPS_BPS = [Infinity, 128_000, 64_000]
+export const AUDIO_STEP_LOSS_PCT = [2, 5]
+export const AUDIO_RECOVER_MS = 30_000
+
+export function chooseAudioStep(previous, {receiver = null, receiverAt = null} = {}, intervalMs = 2000) {
+  let step = previous?.step ?? 0
+  let calmMs = previous?.calmMs ?? 0
+  let decision = 'holding'
+  const fresh = receiver != null && receiverAt != null && receiverAt !== previous?.receiverAt
+  if (fresh) {
+    const loss = receiver.lossPct
+    const wanted = loss > AUDIO_STEP_LOSS_PCT[1] ? 2 : loss > AUDIO_STEP_LOSS_PCT[0] ? 1 : 0
+    if (wanted > step) {
+      step = wanted
+      calmMs = 0
+      decision = 'loss'
+    } else if (loss > AUDIO_STEP_LOSS_PCT[0]) {
+      calmMs = 0 // still lossy, already as low as the loss asks: stay
+    } else if (step > 0) {
+      calmMs += intervalMs
+      decision = 'calm'
+      if (calmMs >= AUDIO_RECOVER_MS) {
+        step -= 1
+        calmMs = 0
+        decision = 'recovery'
+      }
+    }
+  }
+  return {step, calmMs, receiverAt: fresh ? receiverAt : previous?.receiverAt ?? null, decision, lossPct: fresh ? receiver.lossPct : previous?.lossPct ?? null}
+}
+
+export const audioCapBps = (step, configuredBps) => Math.min(configuredBps, AUDIO_STEP_CAPS_BPS[step] ?? AUDIO_STEP_CAPS_BPS.at(-1))

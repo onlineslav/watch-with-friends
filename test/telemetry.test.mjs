@@ -343,3 +343,26 @@ test('captions stay aligned with the picture when the video waits for the audio 
     }
   }
 })
+
+// A connection that has carried three publishes keeps three audio sections. The first is a stale one;
+// reading it reported "mono, no FEC" for a connection that was stereo.
+const audioSection = (port, direction, fmtp, extra = []) => [`m=audio ${port} UDP/TLS/RTP/SAVPF 111`, `a=${direction}`, ...extra, 'a=rtpmap:111 opus/48000/2', `a=fmtp:111 ${fmtp}`].join('\r\n')
+const STALE = 'minptime=10;useinbandfec=1;stereo=0;sprop-stereo=0'
+const LIVE = 'minptime=10;stereo=1;sprop-stereo=1;useinbandfec=1;usedtx=0;maxplaybackrate=48000;maxaveragebitrate=510000'
+
+test('parseOpusFmtp reads the audio section that carries sound, not the first of several', () => {
+  // The sender's own description: two stale sections (its track was removed: recvonly, no msid; and a
+  // stopped one), then the live one with its track.
+  const sender = ['v=0', audioSection(9, 'recvonly', STALE), audioSection(0, 'inactive', STALE), audioSection(9, 'sendrecv', LIVE, ['a=msid:film audio-3']), ''].join('\r\n')
+  assert.deepEqual(parseOpusFmtp(sender), {ch: 2, st: 1, sst: 1, br: 510000, fec: 1, dtx: 0, pr: 48000})
+  // The receiver's description of the same connection: no track of its own anywhere; the stale sections
+  // are inactive and the live one is the last that is not.
+  const receiver = ['v=0', audioSection(9, 'inactive', STALE), audioSection(9, 'inactive', STALE), audioSection(9, 'recvonly', LIVE), ''].join('\r\n')
+  assert.deepEqual(parseOpusFmtp(receiver), {ch: 2, st: 1, sst: 1, br: 510000, fec: 1, dtx: 0, pr: 48000})
+  // A track in an earlier section beats a later section that has none (a republish mid-way).
+  const midway = ['v=0', audioSection(9, 'sendrecv', LIVE, ['a=ssrc:1234 cname:x']), audioSection(9, 'recvonly', STALE), ''].join('\r\n')
+  assert.equal(parseOpusFmtp(midway).st, 1)
+  // Nothing live and nothing active: the last one that is not rejected, rather than nothing.
+  const dead = ['v=0', audioSection(9, 'inactive', STALE), audioSection(9, 'inactive', LIVE), audioSection(0, 'inactive', STALE), ''].join('\r\n')
+  assert.equal(parseOpusFmtp(dead).st, 1)
+})

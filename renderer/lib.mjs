@@ -36,19 +36,10 @@ export function isNewerClaim(a, b) {
   return a.claimedAt !== b.claimedAt ? a.claimedAt > b.claimedAt : a.hostId > b.hostId
 }
 
-// WebRTC sends mono ~32kbps Opus unless the receiver's SDP asks for stereo.
-export function preferStereoOpus(sdp) {
-  const match = sdp.match(/a=rtpmap:(\d+) opus\/48000\/2/i)
-  if (!match) return sdp
-  const pt = match[1]
-  return sdp.replace(new RegExp(`a=fmtp:${pt} ([^\\r\\n]*)`), (_line, params) => {
-    const kept = params
-      .split(';')
-      .map((p) => p.trim())
-      .filter((p) => p && !/^(stereo|sprop-stereo|maxaveragebitrate)=/.test(p))
-    return `a=fmtp:${pt} ${[...kept, 'stereo=1', 'sprop-stereo=1', 'maxaveragebitrate=510000'].join(';')}`
-  })
-}
+// WebRTC sends mono ~32kbps Opus unless the receiver's SDP asks for stereo. The Opus parameters this
+// app uses, and why, are in shared/opus-sdp.mjs (the Trystero peer munges its own offers and answers
+// with the same function; renderer/app.js munges the remote description).
+export {preferStereoOpus} from '../shared/opus-sdp.mjs'
 
 // Chromium starts video around 300kbps and takes ~20s to ramp up, so the first seconds look
 // blurry. A start-bitrate hint in the receiver's SDP lets the sender begin near full quality.

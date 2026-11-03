@@ -3,7 +3,7 @@ import {PROTOCOL, MAX_PEERS, HOST_TIMEOUT_MS, isRevision, nextRevision, sameClai
 import {createNetwork} from './network.mjs'
 import {RoomDownloads} from './downloads.mjs'
 import {authenticateRoomPeer} from './room-auth.mjs'
-import {estimatedMediaTime, updateClock, chooseSendQuality, aggregateLinks, hostToViewerMs, toHostClock, viewerToHostMs} from './sync.mjs'
+import {estimatedMediaTime, updateClock, chooseSendQuality, chooseAudioStep, audioCapBps, aggregateLinks, hostToViewerMs, toHostClock, viewerToHostMs} from './sync.mjs'
 import {describeUpdate} from './update.mjs'
 import {
   errorMessage,
@@ -105,6 +105,9 @@ const APP_ID = 'synced-video-player-7c1e4b-v2'
 const STATE_INTERVAL_MS = 1000
 const VIDEO_MAX_BITRATE = 10_000_000
 const AUDIO_MAX_BITRATE = 256_000
+// Each viewer's audio ceiling steps down with the loss it reports (chooseAudioStep in sync.mjs). `enabled`
+// is false only when the bench compares against a fixed cap.
+const audioLadder = {enabled: true}
 // Browsers default a new audio capture toward mono plus voice-call processing (echo
 // cancellation, noise suppression, auto-gain) unless told otherwise — exactly wrong for sharing
 // music or system audio, which wants both channels preserved untouched.
@@ -1388,6 +1391,9 @@ function trackSize(track) {
   return track?.frameSize ? {width: track.frameSize.width, height: track.frameSize.height} : {}
 }
 
+// What tuneSenders last set on each sender (see there).
+const appliedParameters = new WeakMap()
+
 // Raise WebRTC's conservative defaults so a movie looks and sounds like a movie.
 async function tuneSenders() {
   const current = session
@@ -1406,7 +1412,8 @@ async function tuneSenders() {
         const encoding = params.encodings[0]
         // A screen share's audio uses the configurable Settings bitrate (up to Opus's own
         // practical ceiling); file/image hosting keeps the fixed default, unaffected.
-        const audioBitrate = current.screen ? shareAudioBitrate(shareSettings.audioBitrate) : AUDIO_MAX_BITRATE
+        const audioStep = audioLadder.enabled ? person(peerId).audio?.step ?? 0 : 0
+        const audioBitrate = audioCapBps(audioStep, current.screen ? shareAudioBitrate(shareSettings.audioBitrate) : AUDIO_MAX_BITRATE)
         const maxBitrate = track.kind === 'video' ? quality?.bitrate || 4_000_000 : audioBitrate
         const settings = trackSize(track)
         // Sharp text never downscales (bitrate still adapts); other modes and files keep the cap.
@@ -1418,7 +1425,11 @@ async function tuneSenders() {
         // the sound. Off puts it back to WebRTC's default, 'low', the same as video.
         const audioPriority = shareSettings.audioFirst ? 'high' : 'low'
         const audioSet = track.kind !== 'audio' || (encoding.priority === audioPriority && encoding.networkPriority === audioPriority)
+        // setParameters runs once per change, not once per pass: a pass that finds the sender already
+        // there (as read back, or as this function last set it, for what the browser does not read back) skips it.
+        const wanted = track.kind === 'video' ? `${maxBitrate}/${scale}/${degradation}` : `${maxBitrate}/${audioPriority}`
         if (encoding.maxBitrate === maxBitrate && audioSet && (track.kind !== 'video' || (encoding.scaleResolutionDownBy === scale && params.degradationPreference === degradation))) continue
+        if (appliedParameters.get(sender) === wanted && encoding.maxBitrate === maxBitrate) continue
         encoding.maxBitrate = maxBitrate
         if (track.kind === 'video') {
           encoding.scaleResolutionDownBy = scale
@@ -1428,8 +1439,10 @@ async function tuneSenders() {
           encoding.networkPriority = audioPriority
         }
         await sender.setParameters(params).then(() => {
-          logEvent('telemetry', 'send-parameters-applied', {peer: peerId, kind: track.kind, maxBitrate, scale: track.kind === 'video' ? scale : null})
+          appliedParameters.set(sender, wanted)
+          logEvent('telemetry', 'send-parameters-applied', {peer: peerId, kind: track.kind, maxBitrate, scale: track.kind === 'video' ? scale : null, ...(track.kind === 'audio' && {audioStep})})
         }, (error) => {
+          appliedParameters.delete(sender)
           logWarn('telemetry', 'send-parameters-failed', {peer: peerId, kind: track.kind, maxBitrate, scale: track.kind === 'video' ? scale : null, message: error.message})
         })
       }
@@ -1671,8 +1684,14 @@ async function sampleConnection() {
           peerCount: current.peers.size,
           ...dimensions,
         })
+        const audioBefore = p.audio
+        p.audio = chooseAudioStep(p.audio, {receiver: p.receiver, receiverAt: p.receiverAt}, TELEMETRY_INTERVAL_MS)
+        if (p.audio.step !== (audioBefore?.step ?? 0)) {
+          logWarn('telemetry', 'audio-step-change', {peer: id, from: audioBefore?.step ?? 0, to: p.audio.step, reason: p.audio.decision, lossPct: p.audio.lossPct, capBps: audioCapBps(p.audio.step, current.screen ? shareAudioBitrate(shareSettings.audioBitrate) : AUDIO_MAX_BITRATE)})
+        }
         if (current.stream) logSendQuality(id, stats, before, p, {
           mediaKind: audioOnly ? 'audio' : 'video',
+          audioStep: p.audio.step,
           sentBitrateBps: sent?.bitrateBps ?? null,
           sendIntervalMs: sent?.intervalMs ?? null,
           audioSentBitrateBps: audioSent?.bitrateBps ?? null,

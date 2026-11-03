@@ -206,8 +206,46 @@ function benchHooks() {
     return {frames: late.length, medianLateMs: at(0.5), p95LateMs: at(0.95), maxLateMs: late.at(-1)}
   }
 
+  // Point every remote ICE candidate at a relay in the main process (scripts/bench-net.js) that damages
+  // what passes. Only IPv4 UDP candidates are kept: anything else (IPv6, TCP) would be a way around the relay.
+  function installNetwork() {
+    const ports = new Map()
+    const front = (host, port) => {
+      const key = host + ':' + port
+      if (!ports.has(key)) ports.set(key, window.__benchRelay.open(host, port))
+      return ports.get(key)
+    }
+    const shape = /^(a=)?candidate:(\S+) (\d+) (\S+) (\d+) (\S+) (\d+) typ (\S+)(.*)$/
+    const rewrite = async (line) => {
+      const m = shape.exec(line)
+      if (!m) return line
+      if (m[4].toLowerCase() !== 'udp' || !/^\d+\.\d+\.\d+\.\d+$/.test(m[6])) return null
+      const port = await front(m[6], Number(m[7])).catch(() => null)
+      return port == null ? null : `${m[1] || ''}candidate:${m[2]} ${m[3]} ${m[4]} ${m[5]} ${m[6]} ${port} typ ${m[8]}${m[9]}`
+    }
+    const addIceCandidate = RTCPeerConnection.prototype.addIceCandidate
+    RTCPeerConnection.prototype.addIceCandidate = async function (candidate, ...rest) {
+      if (candidate && typeof candidate.candidate === 'string' && candidate.candidate) {
+        const line = await rewrite(candidate.candidate)
+        if (line == null) return
+        candidate = new RTCIceCandidate({...(candidate.toJSON ? candidate.toJSON() : candidate), candidate: line})
+      }
+      return addIceCandidate.call(this, candidate, ...rest)
+    }
+    const setRemoteDescription = RTCPeerConnection.prototype.setRemoteDescription
+    RTCPeerConnection.prototype.setRemoteDescription = async function (description, ...rest) {
+      if (description?.sdp && description.sdp.includes('a=candidate:')) {
+        const eol = description.sdp.includes('\r\n') ? '\r\n' : '\n'
+        const lines = await Promise.all(description.sdp.split(/\r?\n/).map((line) => (line.startsWith('a=candidate:') ? rewrite(line) : line)))
+        description = {type: description.type, sdp: lines.filter((line) => line != null).join(eol)}
+      }
+      return setRemoteDescription.call(this, description, ...rest)
+    }
+    return true
+  }
+
   window.__bench = {
-    installTap, watchVideo, collect, rtp, installWindow, windowReport,
+    installNetwork, installTap, watchVideo, collect, rtp, installWindow, windowReport,
     startWindow: (epoch) => state.window.start(epoch),
     stopWindow: () => { if (state.window) state.window.stopped = true },
     now: () => Date.now(),

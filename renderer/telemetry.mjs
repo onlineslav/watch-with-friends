@@ -348,21 +348,30 @@ export function detailDelta(previous, next) {
   })
 }
 
-// Opus as negotiated, read from a live SDP: the first audio section that is still in use and offers it.
-// The channel count comes from the rtpmap line and the rest from the fmtp parameters.
+// Opus as negotiated, read from a live SDP: the audio section that is carrying sound now. A connection
+// that has hosted several films or shares keeps a stale audio section for each (stopped, or inactive, or
+// with its track removed) ahead of the live one, so the first section is the wrong one to read.
+// In order of preference: a section with a track in this description (an a=msid or a=ssrc line),
+// then one that is not inactive, then any; the last such section wins, because new ones are appended.
+// A section the other side rejected (port 0) is never read. The channel count comes from the rtpmap
+// line and the rest from the fmtp parameters.
 export function parseOpusFmtp(sdp) {
   if (typeof sdp !== 'string') return null
+  const sections = []
   for (const section of sdp.split(/(?:^|\r?\n)m=/).slice(1)) {
     const lines = section.split(/\r?\n/)
     if (!lines[0].startsWith('audio ') || lines[0].startsWith('audio 0 ')) continue
     const rtpmap = lines.map((l) => /^a=rtpmap:(\d+) opus\/48000(?:\/(\d+))?/i.exec(l)).find(Boolean)
     if (!rtpmap) continue
-    const fmtp = lines.find((l) => l.startsWith(`a=fmtp:${rtpmap[1]} `))
-    const params = Object.fromEntries((fmtp?.slice(fmtp.indexOf(' ') + 1).split(';') || []).map((p) => p.trim().split('=')).filter(([k]) => k))
-    const read = (key) => (params[key] != null && params[key] !== '' && Number.isFinite(Number(params[key])) ? Number(params[key]) : null)
-    return omitNull({ch: rtpmap[2] ? Number(rtpmap[2]) : null, st: read('stereo'), sst: read('sprop-stereo'), br: read('maxaveragebitrate'), fec: read('useinbandfec'), dtx: read('usedtx'), cbr: read('cbr')})
+    sections.push({lines, rtpmap, live: lines.some((l) => /^a=(msid|ssrc):/.test(l)), active: !lines.includes('a=inactive')})
   }
-  return null
+  const chosen = [(s) => s.live && s.active, (s) => s.active, () => true].map((keep) => sections.filter(keep).at(-1)).find(Boolean)
+  if (!chosen) return null
+  const {lines, rtpmap} = chosen
+  const fmtp = lines.find((l) => l.startsWith(`a=fmtp:${rtpmap[1]} `))
+  const params = Object.fromEntries((fmtp?.slice(fmtp.indexOf(' ') + 1).split(';') || []).map((p) => p.trim().split('=')).filter(([k]) => k))
+  const read = (key) => (params[key] != null && params[key] !== '' && Number.isFinite(Number(params[key])) ? Number(params[key]) : null)
+  return omitNull({ch: rtpmap[2] ? Number(rtpmap[2]) : null, st: read('stereo'), sst: read('sprop-stereo'), br: read('maxaveragebitrate'), fec: read('useinbandfec'), dtx: read('usedtx'), cbr: read('cbr'), pr: read('maxplaybackrate')})
 }
 
 // The slow-changing facts about one connection, kept out of the 2s samples: logged once, and again

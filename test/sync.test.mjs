@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {updateClock, estimatedMediaTime, chooseSendQuality, aggregateLinks} from '../renderer/sync.mjs'
+import {updateClock, estimatedMediaTime, chooseSendQuality, chooseAudioStep, audioCapBps, aggregateLinks} from '../renderer/sync.mjs'
 import {adaptBuffer, MAX_BUFFER_MS} from '../renderer/telemetry.mjs'
 
 test('media clock accounts for transit and stops extrapolating a stalled host', () => {
@@ -174,4 +174,62 @@ test('a long run of cuts down to the floor does not pin recovery there', () => {
   assert.equal(quality.bitrate, 300000)
   for (let i = 12; i < 22; i++) quality = chooseSendQuality(quality, {receiver: clean, receiverAt: i * 2000, capacity: 6e6})
   assert.ok(quality.bitrate >= 2e6, `only ${quality.bitrate} after 20 clean seconds`)
+})
+
+// ---------- audio steps (M1.6) ----------
+
+const report = (lossPct, at) => ({receiver: {lossPct}, receiverAt: at})
+function audioFeed(state, losses, startAt = 1) {
+  const steps = []
+  losses.forEach((lossPct, i) => {
+    state = chooseAudioStep(state, report(lossPct, startAt + i), 2000)
+    steps.push(state.step)
+  })
+  return {state, steps}
+}
+
+test('audio steps down 256 -> 128 -> 64 kbps at above 2% and above 5% loss, and not at or below 2%', () => {
+  assert.deepEqual([0, 1, 2, 3].map((step) => audioCapBps(step, 256_000)), [256_000, 128_000, 64_000, 64_000])
+  assert.deepEqual(audioFeed(null, [0, 1, 2]).steps, [0, 0, 0], 'up to 2% is left alone')
+  assert.deepEqual(audioFeed(null, [2.5]).steps, [1])
+  assert.deepEqual(audioFeed(null, [5.1]).steps, [2])
+  assert.deepEqual(audioFeed(null, [3, 6]).steps, [1, 2])
+  // The cap never goes above what is configured: a share set to 96 kbps stays at 96, and still drops to 64.
+  assert.deepEqual([0, 1, 2].map((step) => audioCapBps(step, 96_000)), [96_000, 96_000, 64_000])
+  assert.deepEqual([0, 1, 2].map((step) => audioCapBps(step, 510_000)), [510_000, 128_000, 64_000])
+})
+
+test('at 5% loss the audio steps down within 10 seconds (one report every 2s)', () => {
+  const losses = [4.6, 5.3, 4.8, 5.2, 4.9]
+  const {steps} = audioFeed(null, losses)
+  assert.deepEqual(steps, [1, 2, 2, 2, 2], 'the first report above 2% takes the first step, the first above 5% the second, and it stays down while the loss lasts')
+})
+
+test('audio steps back up one at a time after 30 seconds of clean reports, and only fresh reports count', () => {
+  let {state} = audioFeed(null, [7])
+  assert.equal(state.step, 2)
+  const calm = (count, from) => audioFeed(state, Array(count).fill(0), from)
+  let run = calm(14, 10) // 28s
+  assert.equal(run.state.step, 2, 'not yet')
+  state = run.state
+  run = calm(1, 30)
+  assert.equal(run.state.step, 1, 'one step after 30s')
+  state = run.state
+  run = calm(14, 40)
+  assert.equal(run.state.step, 1)
+  state = run.state
+  run = calm(1, 60)
+  assert.equal(run.state.step, 0, 'then the next, 30s later')
+  // A stale (repeated) report is not calm.
+  state = chooseAudioStep(null, report(7, 1), 2000)
+  for (let i = 0; i < 40; i++) state = chooseAudioStep(state, report(0, 1), 2000) // the same report, again and again
+  assert.equal(state.step, 2)
+  // Loss that is above 2% but already as low as it asks for resets the clock.
+  state = chooseAudioStep(null, report(7, 1), 2000)
+  state = audioFeed(state, Array(10).fill(0), 2).state
+  state = chooseAudioStep(state, report(3, 12), 2000)
+  assert.equal(state.step, 2)
+  assert.equal(state.calmMs, 0)
+  // No receiver report at all (a viewer that has not reported): nothing changes.
+  assert.equal(chooseAudioStep(state, {receiver: null, receiverAt: null}, 2000).step, 2)
 })

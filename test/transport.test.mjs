@@ -9,28 +9,70 @@ import {createMediaIdentityCache, createMediaManager} from '../node_modules/@try
 import createPeer from '../node_modules/@trystero-p2p/core/dist/peer.mjs'
 
 // Just enough RTCPeerConnection for peer.mjs's offer/answer handling, with an open data channel
-// (so this is renegotiation on a live connection, as when a host adds its film).
+// (so this is renegotiation on a live connection, as when a host adds its film). It follows the
+// browser's signalling rules: every call is refused in a state the spec refuses it in, and calls run
+// one at a time in order, each taking a few turns of the event loop, so a remote offer can arrive
+// between a createOffer() and the setLocalDescription() that follows it, as it does in Chromium.
 let offers = 0
+const fakeSdp = (type) => ['v=0', 'm=audio 9 UDP/TLS/RTP/SAVPF 111', 'a=rtpmap:111 opus/48000/2', 'a=fmtp:111 minptime=10;useinbandfec=1', `a=x-test:${type}:${++offers}`, ''].join('\r\n')
 class FakeConnection extends EventTarget {
+  static slow = false // each call takes a turn of the event loop, so signals cross in transit
   signalingState = 'stable'
   connectionState = 'connected'
   iceConnectionState = 'connected'
   iceGatheringState = 'complete'
   localDescription = null
   remoteDescription = null
-  createDataChannel() { return {readyState: 'open', send() {}, close() {}} }
-  async setLocalDescription(description) {
-    if (description?.type === 'rollback') { this.signalingState = 'stable'; return }
-    const type = this.signalingState === 'have-remote-offer' ? 'answer' : 'offer'
-    this.localDescription = {type, sdp: `v=0 a=rtpmap:111 opus ${type} ${++offers}`}
-    this.signalingState = type === 'offer' ? 'have-local-offer' : 'stable'
+  chain = Promise.resolve()
+  created = []
+  refuseEdited = 0
+  wrong(what) { return new Error(`InvalidStateError: ${what} in ${this.signalingState}`) }
+  queue(body) {
+    const run = this.chain.then(async () => { await Promise.resolve(); await Promise.resolve(); if (FakeConnection.slow) await settle(); return body() })
+    this.chain = run.catch(() => {})
+    return run
   }
-  async setRemoteDescription(description) {
-    if (description.type === 'answer') {
-      if (this.signalingState !== 'have-local-offer') throw new Error('Called in wrong state: ' + this.signalingState)
-      this.signalingState = 'stable'
-    } else this.signalingState = 'have-remote-offer'
-    this.remoteDescription = description
+  createDataChannel() { return {readyState: 'open', send() {}, close() {}} }
+  restartIce() { this.restarted = (this.restarted || 0) + 1 }
+  createOffer(options) {
+    return this.queue(() => {
+      if (!['stable', 'have-local-offer'].includes(this.signalingState)) throw this.wrong('createOffer')
+      this.created.push({iceRestart: Boolean(options?.iceRestart)})
+      return {type: 'offer', sdp: fakeSdp('offer')}
+    })
+  }
+  createAnswer() {
+    return this.queue(() => {
+      if (!['have-remote-offer', 'have-local-pranswer'].includes(this.signalingState)) throw this.wrong('createAnswer')
+      return {type: 'answer', sdp: fakeSdp('answer')}
+    })
+  }
+  setLocalDescription(description) {
+    return this.queue(() => {
+      if (description?.type === 'rollback') {
+        if (this.signalingState === 'stable') throw this.wrong('rollback')
+        this.signalingState = 'stable'
+        return
+      }
+      if (description?.sdp?.includes('stereo=1') && this.refuseEdited > 0) { this.refuseEdited--; throw new Error('InvalidModificationError: refused') }
+      const type = description?.type ?? (this.signalingState === 'have-remote-offer' ? 'answer' : 'offer')
+      if (type === 'offer' && !['stable', 'have-local-offer'].includes(this.signalingState)) throw this.wrong('setLocalDescription(offer)')
+      if (type === 'answer' && this.signalingState !== 'have-remote-offer') throw this.wrong('setLocalDescription(answer)')
+      this.localDescription = {type, sdp: description?.sdp ?? fakeSdp(type)}
+      this.signalingState = type === 'offer' ? 'have-local-offer' : 'stable'
+    })
+  }
+  setRemoteDescription(description) {
+    return this.queue(() => {
+      if (description.type === 'answer') {
+        if (this.signalingState !== 'have-local-offer') throw this.wrong('setRemoteDescription(answer)')
+        this.signalingState = 'stable'
+      } else {
+        if (!['stable', 'have-remote-offer'].includes(this.signalingState)) throw this.wrong('setRemoteDescription(offer)')
+        this.signalingState = 'have-remote-offer'
+      }
+      this.remoteDescription = description
+    })
   }
   getSenders() { return [] }
   close() { this.connectionState = 'closed' }
@@ -351,4 +393,104 @@ test('a shared connection given up on is closed and every room on it drops the p
   assert.deepEqual(left.sort(), ['media', 'pair'])
   assert.equal(peer.connection.connectionState, 'closed')
   assert.equal(manager.get('app', 'friend'), undefined)
+})
+
+// ---------- Opus parameters in the local description (M1.6) ----------
+
+const OPUS_LINE = 'stereo=1;sprop-stereo=1;useinbandfec=1;usedtx=0;maxplaybackrate=48000;maxaveragebitrate=510000'
+const ticks = async (n) => { for (let i = 0; i < n; i++) await Promise.resolve() }
+const turns = async (n) => { for (let i = 0; i < n; i++) await settle() }
+
+// Two real peers (an offerer and an answerer, as Trystero makes them) with a wire between them that
+// takes a turn of the event loop per signal and can be cut.
+function wiredPair() {
+  const a = createPeer(true, {rtcPolyfill: FakeConnection, trickleIce: true})
+  const b = createPeer(false, {rtcPolyfill: FakeConnection, trickleIce: true})
+  const log = {a: [], b: [], errors: [], cut: false}
+  const wire = (name, from, to) => from.setHandlers({
+    signal: (signal) => { log[name].push(signal); if (!log.cut) setImmediate(() => to.signal(signal)) },
+    error: (error) => log.errors.push(`${name}: ${error.message}`),
+  })
+  wire('a', a, b)
+  wire('b', b, a)
+  return {a, b, log}
+}
+const bothStable = ({a, b}) => a.connection.signalingState === 'stable' && b.connection.signalingState === 'stable' && a.connection.localDescription && b.connection.localDescription
+async function untilStable(pair, ms = 1000) {
+  const start = Date.now()
+  while (Date.now() - start < ms) {
+    if (bothStable(pair)) { await turns(10); if (bothStable(pair)) return Date.now() - start }
+    await settle()
+  }
+  throw new Error(`not stable within ${ms}ms: a ${pair.a.connection.signalingState}, b ${pair.b.connection.signalingState}`)
+}
+const offersIn = (signals) => signals.filter((signal) => signal.type === 'offer')
+
+test('every local offer and answer carries the app\'s Opus parameters, so the receiver decodes stereo', async () => {
+  const pair = wiredPair()
+  await untilStable(pair)
+  assert.deepEqual(pair.log.errors, [])
+  for (const side of [pair.a, pair.b]) {
+    const { sdp } = side.connection.localDescription
+    assert.ok(sdp.includes(`a=fmtp:111 minptime=10;${OPUS_LINE}`), sdp)
+  }
+  assert.equal(offersIn(pair.log.a)[0].sdp.includes(OPUS_LINE), true, 'the offer on the wire is the edited one')
+  assert.equal(pair.log.b.find((signal) => signal.type === 'answer').sdp.includes(OPUS_LINE), true, 'and so is the answer')
+  pair.a.destroy(); pair.b.destroy()
+})
+
+test('both peers add a stream at the same moment (glare, at every timing): both settle quickly, nothing resent, no errors', async (t) => {
+  FakeConnection.slow = true
+  t.after(() => { FakeConnection.slow = false })
+  for (let gap = 0; gap <= 8; gap++) {
+    const pair = wiredPair()
+    await untilStable(pair)
+    const before = {a: offersIn(pair.log.a).length, b: offersIn(pair.log.b).length}
+    const started = Date.now()
+    pair.a.connection.onnegotiationneeded()
+    await turns(gap)
+    pair.b.connection.onnegotiationneeded()
+    const took = await untilStable(pair)
+    assert.deepEqual(pair.log.errors, [], `gap ${gap}: no "failed to ..." errors`)
+    assert.ok(Date.now() - started < 1000 && took < 1000, `gap ${gap}: both stable in under a second`)
+    for (const [name, signals] of [['a', pair.log.a], ['b', pair.log.b]]) {
+      const sdps = offersIn(signals).map((signal) => signal.sdp)
+      assert.equal(new Set(sdps).size, sdps.length, `gap ${gap}: ${name} never sent the same offer twice (no watchOffer resend)`)
+    }
+    assert.equal(offersIn(pair.log.a).length, before.a + 1, `gap ${gap}: the offerer made one new offer`)
+    assert.ok(pair.a.connection.localDescription.sdp.includes(OPUS_LINE) && pair.b.connection.localDescription.sdp.includes(OPUS_LINE), `gap ${gap}: and both ends kept the Opus parameters`)
+    pair.a.destroy(); pair.b.destroy()
+  }
+})
+
+test('an ICE restart offer is edited too, from a stable connection and over an unanswered offer', async () => {
+  const pair = wiredPair()
+  await untilStable(pair)
+  await pair.a.getOffer(true)
+  await untilStable(pair)
+  assert.deepEqual(pair.a.connection.created.at(-1), {iceRestart: true})
+  assert.ok(pair.a.connection.localDescription.sdp.includes(OPUS_LINE), 'the restart offer carries the parameters')
+  // An offer nobody answered (the wire is cut), then a restart: it rolls back first.
+  pair.log.cut = true
+  pair.a.connection.onnegotiationneeded()
+  await turns(10)
+  assert.equal(pair.a.connection.signalingState, 'have-local-offer')
+  pair.log.cut = false
+  await pair.a.getOffer(true)
+  await untilStable(pair)
+  assert.deepEqual(pair.log.errors, [])
+  assert.equal(pair.a.connection.restarted, 2)
+  assert.ok(pair.a.connection.localDescription.sdp.includes(OPUS_LINE))
+  pair.a.destroy(); pair.b.destroy()
+})
+
+test('a description the browser refuses after editing is replaced by its own, never an error', async (t) => {
+  t.mock.method(console, 'warn', () => {})
+  const pair = wiredPair()
+  pair.a.connection.refuseEdited = 1
+  await untilStable(pair)
+  assert.deepEqual(pair.log.errors, [])
+  assert.equal(pair.a.connection.localDescription.sdp.includes('stereo=1'), false, 'the offer went out as the browser wrote it')
+  assert.ok(pair.b.connection.localDescription.sdp.includes(OPUS_LINE), 'the other end is unaffected')
+  pair.a.destroy(); pair.b.destroy()
 })

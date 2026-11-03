@@ -85,7 +85,8 @@ assert.ok(['on', 'off'].includes(options.audioLadder) && ['on', 'off'].includes(
 const variants = options.variant === 'all' ? ['film', 'share'] : [options.variant]
 assert.ok(variants.every((v) => ['film', 'share', 'republish', 'reopen'].includes(v)), '--variant is film, share, republish, reopen or all')
 
-const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'synced-bench-'))
+const scratch = require('./temp-dirs').create('synced-bench-', {keep: Boolean(flag('keep', false)) || Boolean(process.env.KEEP_TEMP)})
+const temporary = scratch.dir
 app.setPath('userData', path.join(temporary, 'profile'))
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
 // Windows pages shown off-screen would otherwise count as hidden and stop presenting frames.
@@ -617,7 +618,7 @@ function printReport(report) {
 }
 
 app.whenReady().then(async () => {
-  const watchdog = setTimeout(() => { console.error('Benchmark timed out'); app.exit(1) }, 40 * 60 * 1000)
+  const watchdog = setTimeout(() => { console.error('Benchmark timed out'); scratch.release(); app.exit(1) }, 40 * 60 * 1000)
   let exitCode = 0
   try {
     const env = await fixtures()
@@ -680,11 +681,7 @@ app.whenReady().then(async () => {
     require('../main/media').stopAll()
     network?.close()
     diagnostics.stop()
-    if (!options.keep) {
-      // The big files first: a window's profile can stay locked a moment after it closes.
-      for (const name of ['bench-clip.mkv', 'bench-clip.f32']) try { fs.rmSync(path.join(temporary, name), {force: true}) } catch {}
-      try { fs.rmSync(temporary, {recursive: true, force: true, maxRetries: 3}) } catch {}
-    }
+    scratch.release() // unless --keep
   }
   app.exit(exitCode)
 })

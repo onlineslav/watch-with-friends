@@ -23,7 +23,10 @@ const {createFakeWebSocket} = require('./fakes')
 
 const root = path.resolve(__dirname, '..')
 const publicDiscovery = process.argv.includes('--public-discovery')
-const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'synced-network-test-'))
+// ~300 MB per run; removed again however the run ends (--keep or KEEP_TEMP=1 to look at it), and folders of dead runs on start.
+const scratch = require('./temp-dirs').create('synced-network-test-', {keep: process.argv.includes('--keep') || Boolean(process.env.KEEP_TEMP)})
+const temporary = scratch.dir
+const finish = (code) => { scratch.release(); app.exit(code) }
 app.setPath('userData', path.join(temporary, 'profile'))
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -435,7 +438,7 @@ async function fixtures() {
 
 app.whenReady().then(async () => {
   const windows = []
-  const watchdog = setTimeout(() => { console.error('Network integration check timed out'); app.exit(1) }, publicDiscovery || checkYouTube ? 240000 : 180000)
+  const watchdog = setTimeout(() => { console.error('Network integration check timed out'); finish(1) }, publicDiscovery || checkYouTube ? 240000 : 180000)
   try {
     const {video, picture, sound} = await fixtures()
     diagnostics.start({dir: path.join(temporary, 'logs'), info: {version: app.getVersion()}})
@@ -550,7 +553,9 @@ app.whenReady().then(async () => {
       await qualitySample()
       assert.equal((await videoEncoding()).maxBitrate, 300000)
       assert.equal((await videoEncoding()).scaleResolutionDownBy, 2)
-      await until(b, '__test.session.link?.receiver?.height === 360')
+      // The sender is held to half size (checked above), so the picture that arrives is at most 360 high. Not exactly 360: this is the
+      // real encoder, and libwebrtc's own adaptation may already have taken the source below 720 (a 540 source, halved, is 270).
+      await until(b, '__test.session.link?.receiver?.height > 0 && __test.session.link.receiver.height <= 360')
       await run(a, '__test.qualityProbe.capacity = 1200000; __test.qualityProbe.lossPct = 0; __test.qualityProbe.freezes = 0; true')
       // Advance 30 seconds of clean feedback without waiting for the periodic timer.
       for (let i = 0; i < 15; i++) await qualitySample()
@@ -1244,7 +1249,7 @@ app.whenReady().then(async () => {
     require('../main/media').stopAll()
     diagnostics.stop()
   }
-}).then(() => app.exit(0), (error) => {
+}).then(() => finish(0), (error) => {
   console.error(error)
   // A timeout says what never happened, not why: the windows' own log usually does (a host
   // failing to play, ffmpeg exiting), and on CI this is the only place to see it.
@@ -1258,5 +1263,5 @@ app.whenReady().then(async () => {
   } catch (logError) {
     console.error(`(no diagnostic log to show: ${logError.message})`)
   }
-  app.exit(1)
+  finish(1)
 })

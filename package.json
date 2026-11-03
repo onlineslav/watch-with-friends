@@ -16,6 +16,7 @@
     "test:youtube": "node scripts/electron.js scripts/check-youtube.js",
     "test:logging": "npm run bundle && node scripts/electron.js scripts/check-logging.js",
     "diagnostics": "node scripts/diagnostics.js",
+    "bench": "node scripts/patch-trystero.js && node scripts/electron.js scripts/bench.js",
     "test:network": "node scripts/patch-trystero.js && node scripts/electron.js scripts/check-network.js",
     "test:live": "npm run bundle && node scripts/electron.js scripts/check-live.js",
     "test:live-rate": "node scripts/patch-trystero.js && node scripts/electron.js scripts/check-network.js --live-rate=2 && node scripts/electron.js scripts/check-network.js --live-rate=4",

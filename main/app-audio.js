@@ -14,6 +14,11 @@ const binaryPath = () => {
   return app.isPackaged ? path.join(process.resourcesPath, file) : path.join(__dirname, '..', 'native', HELPER, file)
 }
 
+// Test seam, unpackaged builds only: scripts/bench.js points this at a script that plays the part of the
+// helper (a recorded clip's PCM, paced in real time) so the audio path from the helper's stdout onward
+// can be measured without capturing a real app, which would make sound. Unset in every real run.
+const fakeHelper = () => (!app.isPackaged && process.env.SVP_APP_AUDIO_FAKE) || null
+
 const HIGH_WATER_BYTES = 4 * 1024 * 1024
 const MAX_PULL_BYTES = 1024 * 1024
 // ScreenCaptureKit can report a stream started successfully and then silently deliver nothing —
@@ -34,9 +39,12 @@ let nextSessionId = 1
 // missing). Only a resolved session is worth pulling from.
 function startSession(windowId) {
   if (!['darwin', 'win32'].includes(process.platform)) return Promise.reject(new Error('App audio capture is only available on macOS and Windows'))
-  if (!fs.existsSync(binaryPath())) return Promise.reject(new Error(`This build is missing ${HELPER}, the helper that captures one app's audio`))
+  if (!fakeHelper() && !fs.existsSync(binaryPath())) return Promise.reject(new Error(`This build is missing ${HELPER}, the helper that captures one app's audio`))
   return new Promise((resolve, reject) => {
-    const proc = spawn(binaryPath(), [String(windowId)], {stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true})
+    const fake = fakeHelper()
+    const proc = fake
+      ? spawn(process.execPath, [fake, String(windowId)], {stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, env: {...process.env, ELECTRON_RUN_AS_NODE: '1'}})
+      : spawn(binaryPath(), [String(windowId)], {stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true})
     const session = {proc, chunks: [], size: 0, done: false, killed: false, error: null, waiter: null, bytesReceived: 0}
     const wake = () => {
       const waiter = session.waiter

@@ -114,7 +114,7 @@ Decided: machine numbers in one `machine-sample` per tick; slow facts in change-
 re-check at the milestone audit with 3+ viewers.
 
 ### M1.3 Session scorecard and release comparison
-Status: in progress
+Status: verified
 Story: After a watch session I run one command and get a short scorecard per person, and can see whether a new
 version is better or worse than the last one.
 Done when:
@@ -126,7 +126,13 @@ Done when:
 - Pure summary functions are unit-tested against a fixed sample log (golden output).
 Out of scope: charts.
 Gate: no
-Evidence:
+Evidence: 74c20e0. Orchestrator reruns: `node --test test/report.test.js` 17/17 (3 golden outputs: newest day, a 0.8.0
+day without M1.2 fields printing "–", and `--compare`); `npm test` 357/357; `--report --dir test/fixtures/report
+2026-10-01` pairs host + viewer logs into one room session and fills a viewer without its own log from the host's
+reports; `--compare` prints 0.8.0 vs 0.9.0 with better/worse verdicts. Hand-checked: concealment 16800/2688000 = 0.63%,
+frozen 600ms/56s = 1.1%. Not yet run on a real session (the archive only holds a test file); that happens in M1.8.
+Decided (builder): A/V offset positive = sound behind picture, method labelled `[av]` (`s.av`) or `[delay]` (audio
+jb + playout + Web Audio out − video jb); times in UTC; audio target = Settings' `set.ab`; `--no-fetch`/`--dir`.
 
 ### M1.4 Automated A/V sync and audio benchmark [must-work]
 Status: todo

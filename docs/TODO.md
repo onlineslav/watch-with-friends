@@ -191,13 +191,22 @@ Done when:
   (`powerMonitor`), and Settings changes, each as a small event (no per-frame or per-sample cost).
 - Source facts once per file opened: container, codecs, resolution, fps, HDR, passthrough or transcode and why,
   the encoder chosen (nvenc/qsv/amf/videotoolbox/libx264).
+- (Aya, 2026-11-03) Whose network is the bottleneck:
+  - Each app pings the Worker over its existing `/live` socket every 2s (answered by `setWebSocketAutoResponse`,
+    so the DO stays asleep; the socket is open whenever the checkbox is on, watched or not) and logs the RTT to the
+    Cloudflare edge on the 2s sample. A rising RTT while streaming means that person's own link is saturated.
+  - One-way delay per direction (host→viewer and viewer→host) from the clock offset `sync.mjs` already measures,
+    logged on the samples.
+  - `--report` prints a "Likely bottleneck" line per viewer (your upload / their network / their computer / your
+    computer / unclear) with the numbers behind it.
 - All events go through the existing redaction (no paths, no IPs), stay under the 4000-byte line cap, and add no
   rAF loop or per-sample IPC; documented in CLAUDE.md; unit tests for the new pure parts (device-kind
   classification, mark validation, report mark windows).
 Likely failures:
 - Device labels are empty until media permission is granted: fall back to `unknown`, never fail.
 - A mark sent during a host change or to a peer on 0.8.0 must not break the room.
-Out of scope: Wi-Fi signal strength, join-timing breakdown, Chromium audio underrun counts (later, if needed).
+Out of scope: on-demand speed test and Wi-Fi vs cable (Aya: first two methods only), Wi-Fi signal strength,
+join-timing breakdown, Chromium audio underrun counts (later, if needed).
 Gate: no
 Evidence:
 

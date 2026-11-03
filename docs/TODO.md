@@ -135,7 +135,7 @@ Decided (builder): A/V offset positive = sound behind picture, method labelled `
 jb + playout + Web Audio out − video jb); times in UTC; audio target = Settings' `set.ab`; `--no-fetch`/`--dir`.
 
 ### M1.4 Automated A/V sync and audio benchmark [must-work]
-Status: todo
+Status: in progress
 Story: Every change to the media path is measured the same way before release, so "better" is a number, not a
 feeling.
 Done when:
@@ -147,9 +147,28 @@ Done when:
 - A screen-share variant measures the same for a share of a window playing the clip.
 - It never plays sound through the speakers (output muted or routed to a silent sink: Aya's no-audible-tests rule).
 - Results are printed and written to `work/bench/<version>-<date>.json` so runs can be compared.
+- (pre-mortem) The clip is moving `testsrc2` with a flash patch of at least 3 frames (rising edge detected) and a quiet
+  bed tone under the beeps; flashes at irregular intervals of at least 2s; N≥20 events per run.
+- (pre-mortem) Video time is the viewer's rVFC `expectedDisplayTime`; audio time is the onset sample from an
+  AudioWorklet tap after `routeRemoteAudio`'s output gain, converted with `getOutputTimestamp`. The bench asserts the
+  viewer's rVFC rate is ≥0.9× the clip fps. All of it lives in test hooks; idle home still shows 0 rAF calls.
+- (pre-mortem) The JSON records `outputLatency`, `baseLatency`, the `getOutputTimestamp` lag and a
+  `deviceLatencyIncluded` flag; if muting makes them ~0 the report says so and names the correction it applies.
+- (pre-mortem) The gated number is the viewer's absolute offset against the clip's true simultaneity; host offset and
+  transport skew (`s.av`) are reported beside it, never subtracted. Median, p95, worst, and spread across 3 runs.
+- (pre-mortem) Concealment is reported as `conc − sil` over a window that skips the first 10s of ramp-up.
+- (pre-mortem) The share variant asserts the received beep's RMS is above a threshold, so silence never passes.
 Likely failures:
 - Measuring at the wrong point: the offset must include the Web Audio output path, or it hides the suspected bug.
 - A flaky harness: report spread across 3 runs.
+Decided (orchestrator, 2026-11-03, under Aya's "easy for development" rule; overrule if wrong):
+- Share-variant audio: no real WASAPI/ScreenCaptureKit capture (it would play sound). The clip's PCM goes through the
+  real `'app'` audio path from the helper's stdout onward (a fake helper process feeding `main/app-audio.js` →
+  `renderer/app-audio.mjs` → the share stream), so only the OS capture call itself is skipped. No virtual audio
+  cable needed.
+- "≤40ms" is measured up to the Web Audio output, including the latency the OS reports (`outputLatency`). Extra
+  latency a device doesn't report (Bluetooth) is out of scope, and so is the host's own local playback (the
+  `<video>` element syncs itself).
 Gate: no
 Evidence:
 

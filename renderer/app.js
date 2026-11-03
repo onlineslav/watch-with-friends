@@ -1637,6 +1637,8 @@ async function sampleConnection() {
         p.quality = chooseSendQuality(p.quality, {
           receiver: p.receiver,
           receiverAt: p.receiverAt,
+          feedbackAgeMs: p.receiverAt != null ? performance.now() - p.receiverAt : null,
+          sentBps: sent?.bitrateBps ?? null,
           capacity: stats.capacity,
           active: playback.playing && !playback.loading && !playback.buffering,
           peerCount: current.peers.size,

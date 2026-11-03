@@ -366,6 +366,10 @@ Done when:
 - (orchestrator, 0.8.1 CI on macos-latest, 2026-11-03) Intermittent: `test:network` timed out waiting for every share
   tile to have a source and `__test.audioLevel() > 0.05`; the same commit passed on that runner an hour earlier. Find
   whether a tile's audio sometimes never starts (M1.5 changed share audio stamping), fix or make the check honest.
+- (M1.11 builder) `test:network` and the bench leave `synced-network-test-*` / `synced-bench-*` folders (~300 MB each)
+  in `%TEMP%` when a run fails; ~319 of them filled the disk (ENOSPC). Clean up on failure and on start.
+- (M1.6 builder) Intermittent `test:network` player error: "Failed to set 'timestampOffset' on 'SourceBuffer': still
+  processing appendBuffer or remove" (`renderer/player.mjs` seek race) at "playlist progress ≈ 8 s".
 Gate: no
 Evidence:
 

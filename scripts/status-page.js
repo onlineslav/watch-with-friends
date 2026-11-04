@@ -11,6 +11,12 @@ const { execFileSync } = require('node:child_process');
 const root = path.resolve(__dirname, '..');
 const outDir = path.join(root, 'work', 'status');
 const outFile = path.join(outDir, 'index.html');
+
+// The "Your Claude plan" tile comes from the shared builder in Aya's _workflow (a global rule,
+// 2026-11-04). Optional: on a machine without it, the page just has no tile.
+let shared = null;
+try { shared = require('I:/Software Development/_workflow/status/status-page.js'); } catch { /* not on this PC */ }
+const tokensTile = () => { try { return shared ? shared.tokensHtml(root) : ''; } catch { return ''; } };
 const read = (p) => {
   try { return fs.readFileSync(path.join(root, p), 'utf8').replace(/\r\n/g, '\n'); }
   catch { return ''; }
@@ -187,6 +193,7 @@ code{font:12px 'DM Mono',monospace;background:var(--inset);padding:1px 5px;borde
 .commits{list-style:none;margin:0;padding:0;font-size:13px}.commits li{display:flex;gap:10px;padding:5px 0;border-bottom:1px solid var(--line)}.commits li:last-child{border:0}
 .commits .h{font:11px 'DM Mono',monospace;color:var(--muted);min-width:56px}.commits time{font:11px 'DM Mono',monospace;color:var(--muted);margin-left:auto;white-space:nowrap;padding-left:8px}
 .stale{color:var(--accent)}
+${shared ? shared.TOKENS_CSS : ''}
 </style></head>
 <body><main>
 <div class="top"><div><h1>Watch With Friends build</h1><p class="sub">${devlog ? md(devlog[1]) : ''}</p></div>
@@ -200,6 +207,7 @@ ${msHtml}
 <div class="panel"><h3>Open bugs</h3>${bugs.length ? `<ul class="now-list">${bugs.map((b) => `<li><span class="cid">${esc(b.id)}</span><span>${md(b.title)} <span class="mono" style="font-size:10px;color:var(--muted)">· ${LABEL[kind(b.status)]}</span></span></li>`).join('')}</ul>` : '<p class="empty">None open.</p>'}</div>
 <div class="panel"><h3>Later, not cards yet</h3>${later.length ? `<ul class="aya-list">${later.map((l) => `<li>${md(l)}</li>`).join('')}</ul>` : '<p class="empty">Nothing filed.</p>'}</div>
 </div>
+${tokensTile()}
 <div class="panel"><h3>Latest commits</h3><ul class="commits">${commits.map((c) => `<li><span class="h">${esc(c.hash)}</span><span>${md(c.subject)}</span><time data-t="${esc(c.time)}"></time></li>`).join('')}</ul></div>
 </main>
 <script>

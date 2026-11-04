@@ -16,7 +16,7 @@ const outFile = path.join(outDir, 'index.html');
 // 2026-11-04). Optional: on a machine without it, the page just has no tile.
 let shared = null;
 try { shared = require('I:/Software Development/_workflow/status/status-page.js'); } catch { /* not on this PC */ }
-const tokensTile = () => { try { return shared ? shared.tokensHtml(root) : ''; } catch { return ''; } };
+const tokensTile = () => { try { return shared ? shared.tokensHtml(root) + (shared.docsHtml ? shared.docsHtml(root) : '') : ''; } catch { return ''; } };
 const read = (p) => {
   try { return fs.readFileSync(path.join(root, p), 'utf8').replace(/\r\n/g, '\n'); }
   catch { return ''; }
@@ -193,7 +193,7 @@ code{font:12px 'DM Mono',monospace;background:var(--inset);padding:1px 5px;borde
 .commits{list-style:none;margin:0;padding:0;font-size:13px}.commits li{display:flex;gap:10px;padding:5px 0;border-bottom:1px solid var(--line)}.commits li:last-child{border:0}
 .commits .h{font:11px 'DM Mono',monospace;color:var(--muted);min-width:56px}.commits time{font:11px 'DM Mono',monospace;color:var(--muted);margin-left:auto;white-space:nowrap;padding-left:8px}
 .stale{color:var(--accent)}
-${shared ? shared.TOKENS_CSS : ''}
+${shared ? shared.TOKENS_CSS + (shared.DOCS_CSS || '') : ''}
 </style></head>
 <body><main>
 <div class="top"><div><p class="page-kind">Development status</p><h1>Watch With Friends</h1><p class="sub">${devlog ? md(devlog[1]) : ''}</p></div>

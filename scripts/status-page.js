@@ -147,7 +147,7 @@ function build() {
 
   const html = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Watch With Friends Build Status</title>
+<title>Watch With Friends · Development status</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=DM+Mono&family=DM+Sans:wght@400;500;600&family=Unbounded:wght@500&display=swap" rel="stylesheet">
 <style>
 :root{color-scheme:dark;--ground:#191715;--panel:#211e1b;--inset:#2a2622;--ink:#efe6d2;--soft:#c8bfae;--muted:#a9a091;--line:rgba(239,230,210,.10);--accent:#f2b9a0;--tint:rgba(242,185,160,.14);--lavender:#c9bce8;--green:#b9d3ad;--red:#e8968a}
@@ -196,7 +196,7 @@ code{font:12px 'DM Mono',monospace;background:var(--inset);padding:1px 5px;borde
 ${shared ? shared.TOKENS_CSS : ''}
 </style></head>
 <body><main>
-<div class="top"><div><h1>Watch With Friends build</h1><p class="sub">${devlog ? md(devlog[1]) : ''}</p></div>
+<div class="top"><div><p class="page-kind">Development status</p><h1>Watch With Friends</h1><p class="sub">${devlog ? md(devlog[1]) : ''}</p></div>
 <p class="sub mono">Updated <time data-t="${now.toISOString()}">${now.toLocaleTimeString()}</time> · ${dirty} file${dirty === 1 ? '' : 's'} changed and not committed yet</p></div>
 <div class="grid">
 <div class="panel"><h3>Building now</h3>${active.length ? `<ul class="now-list">${active.map((c) => `<li><span class="cid">${esc(c.id)}</span><span>${md(c.title)} <span class="mono" style="font-size:10px;color:var(--muted)">· ${LABEL[kind(c.status)]}</span></span></li>`).join('')}</ul>` : '<p class="empty">Nothing in progress.</p>'}</div>

@@ -34,8 +34,17 @@ function createNetwork({lossPct = 0, linkKbps = 0, queuePackets = 50, random = M
     const done = Math.max(at, shaper.free) + (length * 8) / linkKbps // bits over kbit/s is ms
     shaper.free = done
     shaper.queued++
-    setTimeout(() => { shaper.queued--; stats.forwarded++; deliver() }, Math.max(0, done - at))
+    const timer = setTimeout(() => {
+      timers.delete(timer)
+      shaper.queued--
+      stats.forwarded++
+      deliver()
+    }, Math.max(0, done - at))
+    timers.add(timer)
   }
+  // Packets still queued behind the link when the relay closes are dropped with it: delivering one
+  // afterwards sends on a closed socket (ERR_SOCKET_DGRAM_NOT_RUNNING, an uncaught exception).
+  const timers = new Set()
 
   function open(type = 'udp4') {
     const socket = dgram.createSocket(type)
@@ -71,6 +80,8 @@ function createNetwork({lossPct = 0, linkKbps = 0, queuePackets = 50, random = M
   }
 
   function close() {
+    for (const timer of timers) clearTimeout(timer)
+    timers.clear()
     for (const socket of sockets) try { socket.close() } catch {}
     sockets.clear()
     relays.clear()

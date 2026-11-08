@@ -121,6 +121,75 @@ async function checkFields(windows) {
   console.log('PASS: Samples carry audio health, A/V sync inputs, codec cost, machine load, host pipeline, link facts and settings, inside the line cap')
 }
 
+// A narrow bar (the playlist open, a small window) used to squeeze the volume slider to a sliver. Now the
+// volume and the timeline keep their size: the language and subtitle dropdowns merge into one first, and
+// only then does the timeline take a row of its own. Picking from the merged dropdown changes the track.
+async function checkControlsLayout(windows, host, viewer) {
+  const read = `(() => {
+    const bar = document.getElementById('controls')
+    const shown = (id) => getComputedStyle(document.getElementById(id)).display !== 'none'
+    return {
+      width: bar.clientWidth,
+      merged: bar.classList.contains('merged-tracks'),
+      stacked: bar.classList.contains('stacked'),
+      volume: Math.round(document.getElementById('volume-control').getBoundingClientRect().width),
+      seek: Math.round(document.getElementById('seek').getBoundingClientRect().width),
+      overflow: bar.scrollWidth - bar.clientWidth,
+      separate: shown('audio-select') && shown('subtitle-select'),
+      tracks: shown('track-select'),
+    }
+  })()`
+  const [width, height] = viewer.getContentSize()
+  const layouts = []
+  try {
+    const sizes = [[1700, false], [1280, true], [1100, true], [900, true], [720, true]]
+    for (const [w, playlist] of sizes) {
+      viewer.setContentSize(w, 800)
+      await run(viewer, `__test.setPlaylistOpen(${playlist})`)
+      // Two frames: the observer, then the refit it schedules.
+      await until(viewer, `new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(true))))`)
+      await new Promise((resolve) => setTimeout(resolve, 150))
+      const layout = await run(viewer, read)
+      layouts.push({w, playlist, ...layout})
+      assert.equal(layout.volume, 140, `volume squeezed at ${w}px: ${JSON.stringify(layout)}`)
+      assert.ok(layout.seek >= 120, `timeline squeezed at ${w}px: ${JSON.stringify(layout)}`)
+      assert.ok(layout.overflow <= 0, `controls overrun the bar at ${w}px: ${JSON.stringify(layout)}`)
+      assert.equal(layout.merged ? layout.tracks && !layout.separate : layout.separate && !layout.tracks, true, JSON.stringify(layout))
+      if (!layout.stacked) assert.ok(layout.seek >= 240, `timeline under 240px on one row at ${w}px: ${JSON.stringify(layout)}`)
+    }
+    assert.equal(layouts[0].merged || layouts[0].stacked, false, `a wide bar changed its layout: ${JSON.stringify(layouts[0])}`)
+    const firstMerged = layouts.findIndex((l) => l.merged)
+    const firstStacked = layouts.findIndex((l) => l.stacked)
+    assert.ok(firstMerged > 0, `the dropdowns never merged: ${JSON.stringify(layouts)}`)
+    assert.ok(firstStacked === -1 || firstStacked >= firstMerged, `the timeline stacked before the dropdowns merged: ${JSON.stringify(layouts)}`)
+
+    // Pick from the merged dropdown: a language, then subtitles off and on again.
+    viewer.setContentSize(900, 800)
+    await until(viewer, `document.getElementById('controls').classList.contains('merged-tracks')`)
+    const pick = (value) => run(viewer, `(() => {
+      const menu = document.getElementById('track-select')
+      menu.value = ${JSON.stringify(value)}
+      menu.dispatchEvent(new Event('change'))
+      return menu.value
+    })()`)
+    const groups = await run(viewer, `Array.from(document.querySelectorAll('#track-select optgroup'), (g) => g.label + ':' + g.children.length)`)
+    assert.deepEqual(groups.map((g) => g.split(':')[0]), ['Language', 'Subtitles'])
+    const target = await run(viewer, `__test.session.remote.audio.find((a) => a.value !== __test.session.remote.audioSelected).value`)
+    assert.equal(await pick(`a:${target}`), '', 'the merged dropdown went back to its summary')
+    await until(host, `__test.getState().audioSelected === ${JSON.stringify(target)}`)
+    const subtitle = await run(viewer, '__test.session.remote.subtitles[0].value')
+    await pick('s:')
+    await until(viewer, '!__test.session.captions.id')
+    await pick(`s:${subtitle}`)
+    await until(viewer, `__test.session.captions.id === ${JSON.stringify(subtitle)}`)
+    await until(viewer, `document.getElementById('track-select').title.includes('·')`)
+  } finally {
+    await run(viewer, '__test.setPlaylistOpen(false)')
+    viewer.setContentSize(width, height)
+  }
+  console.log(`PASS: A narrow bar keeps the volume (140px) and timeline; the dropdowns merge first (${layouts.map((l) => `${l.w}${l.playlist ? '+list' : ''}:${l.merged ? 'M' : ''}${l.stacked ? 'S' : ''}${l.seek}`).join(' ')}) and the merged one changes language and subtitles`)
+}
+
 // M1.9: the context the log gains. A mark pressed by one person is logged by everyone in the room under one
 // id, a copy that does not know an action ignores it, the rate limit holds, and the one-way delays, the audio
 // device and the playback actions are in the real log. Reads the real log file.
@@ -859,6 +928,7 @@ app.whenReady().then(async () => {
       await Promise.all([b, c].map((win) => until(win, '__test.audioLevel() > 0.01')))
     }
     console.log('PASS: Both viewers receive audible samples after repeated paused English/Japanese switches')
+    await checkControlsLayout(windows, a, b)
     for (const event of ['removetrack', 'ended']) {
       await run(b, '__test.control("pause")')
       await until(a, 'document.getElementById("local-video").paused')

@@ -103,6 +103,7 @@ import {
 } from './telemetry.mjs'
 import {LongTaskTally, DelayTally, watchLongTasks, frameSpacing, freshMachine, settingsTag} from './machine.mjs'
 import {describeAudioOutput, audioDeviceKey, diffSettings, MARK_KEY, MARK_KEY_LABEL} from './context.mjs'
+import {fitLayout, LAYOUT_STEPS, trackMenu, parseTrackChoice} from './controls-layout.mjs'
 
 const APP_ID = 'synced-video-player-7c1e4b-v2'
 const STATE_INTERVAL_MS = 1000
@@ -313,6 +314,7 @@ const ui = {
   duration: $('duration'),
   audio: $('audio-select'),
   subtitles: $('subtitle-select'),
+  tracks: $('track-select'),
   volume: $('volume'),
   volumeControl: $('volume-control'),
   volumeReadout: $('volume-readout'),
@@ -3521,6 +3523,74 @@ function toggleFullscreen() {
   else ui.room.requestFullscreen().catch(() => {})
 }
 
+// The language and subtitle dropdowns as one, for a narrow bar (controls-layout.mjs). Built from
+// the two dropdowns themselves, which stay the source of truth: picking here sets one of them and
+// fires its change event. Not rebuilt while it's open, which would close it under the pointer.
+function selectOptions(select) {
+  return Array.from(select.options, (o) => ({value: o.value, label: o.label}))
+}
+function fillTrackMenu() {
+  if (ui.tracks.matches(':open')) return
+  const menu = trackMenu(selectOptions(ui.audio), ui.audio.value, selectOptions(ui.subtitles), ui.subtitles.value)
+  const signature = JSON.stringify(menu)
+  if (ui.tracks.dataset.signature !== signature) {
+    // Closed, it's an icon (styles.css); the current language and subtitles are its tooltip.
+    const summary = new Option('', '')
+    summary.hidden = true
+    const groups = menu.groups.map((group) => {
+      const element = document.createElement('optgroup')
+      element.label = group.label
+      // Every option is indented as far as the ✓ that marks the current one.
+      const EM_SPACE = String.fromCodePoint(0x2003)
+      element.append(...group.options.map((o) => new Option(`${o.current ? '✓ ' : EM_SPACE}${o.label}`, o.value)))
+      return element
+    })
+    ui.tracks.replaceChildren(summary, ...groups)
+    ui.tracks.title = `Language and subtitles: ${menu.summary}`
+    ui.tracks.setAttribute('aria-label', ui.tracks.title)
+    ui.tracks.dataset.signature = signature
+  }
+  ui.tracks.value = ''
+  const canMerge = !ui.audio.hidden && !ui.subtitles.hidden
+  if (canMerge !== fitControls.canMerge) fitControls()
+}
+
+ui.tracks.addEventListener('change', () => {
+  const choice = parseTrackChoice(ui.tracks.value)
+  ui.tracks.value = ''
+  if (!choice) return
+  const select = choice.kind === 'audio' ? ui.audio : ui.subtitles
+  select.value = choice.value
+  select.dispatchEvent(new Event('change'))
+  fillTrackMenu()
+})
+
+// The timeline and volume keep their size when the bar narrows; the dropdowns merge first, then
+// the timeline takes a row of its own (controls-layout.mjs). Measured, so it follows the real
+// widths of the dropdowns' labels and the drawer.
+function fitControls() {
+  const bar = ui.controls
+  if (!bar.clientWidth) return
+  const canMerge = !ui.audio.hidden && !ui.subtitles.hidden
+  fitControls.canMerge = canMerge
+  const before = LAYOUT_STEPS.filter((step) => bar.classList.contains(step))
+  const steps = fitLayout((taken) => {
+    for (const step of LAYOUT_STEPS) bar.classList.toggle(step, taken.includes(step))
+    return {seek: ui.seek.getBoundingClientRect().width, overflow: bar.scrollWidth - bar.clientWidth}
+  }, canMerge)
+  for (const step of LAYOUT_STEPS) bar.classList.toggle(step, steps.includes(step))
+  if (steps.join() !== before.join()) logEvent('ui', 'controls-layout', {steps, width: bar.clientWidth})
+}
+fitControls.canMerge = null
+// Refit on the next frame, not inside the observer: fitting changes the bar's height (the
+// stacked row), and a size change inside the callback is the observer's own loop error.
+let fitWidth = 0
+new ResizeObserver(() => {
+  if (ui.controls.clientWidth === fitWidth) return
+  fitWidth = ui.controls.clientWidth
+  requestAnimationFrame(fitControls)
+}).observe(ui.controls)
+
 function fillSelect(select, options, selected) {
   const signature = JSON.stringify(options)
   if (select.dataset.signature !== signature) {
@@ -3762,6 +3832,7 @@ function render() {
   ui.subtitles.hidden = subtitles.length <= 1
   if (ready) subtitles.push({value: LOAD_SUBTITLE, label: 'Load subtitle file…'})
   fillSelect(ui.subtitles, subtitles, session.captions.id ?? state?.subtitleSelected ?? '')
+  fillTrackMenu()
 
   if (!stageShowing() || (!chromeIdles() && pointerInside)) ui.room.classList.remove('idle')
   else if (chromeIdles() && !chromeTimer && !ui.room.classList.contains('idle')) wakeChrome()
@@ -4773,7 +4844,9 @@ function showSeekPreview(event) {
   const fraction = Math.min(1, Math.max(0, (event.clientX - rect.left - inset) / Math.max(1, rect.width - SEEK_THUMB_PX)))
   ui.seekPreview.textContent = formatTime(session.seeking ? (ui.seek.value / 1000) * duration : fraction * duration)
   const x = session.seeking ? rect.left + inset + (ui.seek.value / 1000) * (rect.width - SEEK_THUMB_PX) : event.clientX
-  ui.seekPreview.style.left = `${x - ui.controls.getBoundingClientRect().left}px`
+  const bar = ui.controls.getBoundingClientRect()
+  ui.seekPreview.style.left = `${x - bar.left}px`
+  ui.seekPreview.style.bottom = `${bar.bottom - rect.top + 6}px`
   ui.seekPreview.hidden = false
 }
 function hideSeekPreview() {

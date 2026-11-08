@@ -1,12 +1,11 @@
-## What's new in 0.8.4
+## What's new in 0.8.5
 
 Windows users and Mac users on 0.5.3 or later receive this release through the in-app updater. Mac users on 0.5.2 or earlier should install the DMG below once to enable future in-app updates.
 
-- **No more freezes when the host's computer is busy.** If other programs kept the host's PC busy, the stream could freeze for 15-40 seconds or drop out for everyone. On Windows the app now goes ahead of other programs while you're in a room, so a busy computer no longer stalls the stream.
-- **Sharp picture again after a bad patch.** After a long connection hiccup the picture could stay stuck at low quality (360p) for a minute even once the connection was fine. It now comes back as soon as the connection does.
-- **See where a click on the timeline will jump to.** Hovering over the timeline shows the time, and the time follows the handle while you drag it.
+- **The controls hide again while something plays.** After clicking the timeline, the volume slider or a menu such as subtitles, the controls and top bar could stay on screen for the rest of the film. They now get out of the way after a few seconds, as they should.
+- **Clicking outside Settings saves and closes it.** No more Save or Discard question when you click off the Settings panel, with either mouse button, and the click no longer reaches the movie behind it.
 
-Also in 0.8.3: looped films keep their sound, smoother 60fps video, faster recovery after a hiccup. See the 0.8.3 release for details.
+Also in 0.8.4: no freezes when the host's computer is busy, a sharp picture again after a bad patch, and the timeline shows where a click will jump to. See the 0.8.4 release for details.
 
 ## Download
 

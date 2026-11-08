@@ -195,6 +195,29 @@ async function checkContext(windows, host, viewer, other) {
   assert.deepEqual(changes.settings.slice(-2).map((e) => e.share.frameRate), [[30, 60], [60, 30]])
   console.log('PASS: Mute, volume and Settings changes are logged once each')
 
+  // B1: a real click outside Settings, left or right button, saves and closes with no prompt, and the
+  // film keeps playing (the click must not reach the video). DevTools-protocol mouse events go through
+  // the page's own input pipeline, so this is the same path as a person's click.
+  const cdp = viewer.webContents.debugger
+  if (!cdp.isAttached()) cdp.attach()
+  for (const [button, rate] of [['left', '60'], ['right', '30']]) {
+    await run(viewer, `document.getElementById('room-settings').click()`)
+    await until(viewer, '!document.getElementById("settings").hidden')
+    await run(viewer, `(() => { const s = document.getElementById('share-framerate'); s.value = '${rate}'; s.dispatchEvent(new Event('change')) })()`)
+    const point = await run(viewer, `(() => { const s = document.getElementById('settings'); for (const p of [[6, innerHeight / 2], [innerWidth - 6, innerHeight / 2], [innerWidth / 2, 6]]) if (document.elementFromPoint(...p) === s) return p; return null })()`)
+    assert.ok(point, 'a point on the Settings backdrop')
+    for (const type of ['mousePressed', 'mouseReleased']) {
+      await cdp.sendCommand('Input.dispatchMouseEvent', {type, x: point[0], y: point[1], button, buttons: type === 'mousePressed' ? (button === 'left' ? 1 : 2) : 0, clickCount: 1})
+    }
+    await until(viewer, 'document.getElementById("settings").hidden', 3000)
+    assert.equal(await run(viewer, 'document.getElementById("settings-unsaved").hidden'), true, `no Save/Discard prompt after a ${button} click outside`)
+    assert.equal(await run(viewer, `document.getElementById('share-framerate').value`), rate, `a ${button} click outside keeps the change`)
+  }
+  cdp.detach()
+  await pause(1000)
+  assert.equal(await run(host, 'document.getElementById("local-video").paused'), false, 'clicking outside Settings never paused the film')
+  console.log('PASS: Clicking outside Settings (left or right button) saves and closes without a prompt, and the film keeps playing')
+
   // Rate limit, bad payloads, and an action nobody here registered (what a copy from before marks looks like to us).
   const sent = []
   for (let i = 0; i < 12; i++) sent.push(await run(other, '__test.markMoment("")'))

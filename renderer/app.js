@@ -4209,8 +4209,8 @@ ui.username.addEventListener('click', async () => {
 
 // Settings opens over the current screen. In a room it goes inside the room so it shows in fullscreen,
 // and changing your username waits until you leave, because the welcome screen takes the whole window.
-// Changes show live while it's open. Save keeps them; Discard, or closing it any other way, puts
-// back what was there when it opened. A new audio source restarts a running share, so that one
+// Changes show live while it's open. Save, or clicking outside it, keeps them; Discard puts back
+// what was there when it opened, and Escape or the back arrow ask first. A new audio source restarts a running share, so that one
 // waits for Save.
 let settingsSnapshot = null
 
@@ -4485,12 +4485,19 @@ ui.shareMenuStop.addEventListener('click', () => {
   stopShare()
 })
 ui.settingsSave.addEventListener('click', () => showSettings(false, {save: true}))
-// Clicking the dimmed backdrop closes it, but a text selection that ends there doesn't.
+// Clicking the dimmed backdrop, left or right button, saves and closes with no prompt (B1: a
+// Save/Discard question there read as the panel refusing to go away), but a text selection that
+// ends there doesn't. The click stops at the backdrop, so it never reaches the video (pause).
 let backdropPress = false
 ui.settings.addEventListener('pointerdown', (event) => (backdropPress = event.target === ui.settings))
-ui.settings.addEventListener('click', (event) => {
-  if (backdropPress && event.target === ui.settings) requestCloseSettings()
-})
+for (const type of ['click', 'contextmenu']) {
+  ui.settings.addEventListener(type, (event) => {
+    if (event.target !== ui.settings) return
+    event.preventDefault()
+    event.stopPropagation()
+    if (backdropPress && ui.settingsUnsaved.hidden) showSettings(false, {save: true})
+  })
+}
 
 // Our own picker (a grid of thumbnails), not the OS one: main only grants a source this list
 // just returned and the user just clicked, never an arbitrary id (see screenshare:select).

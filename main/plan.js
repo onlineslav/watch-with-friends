@@ -26,6 +26,32 @@ function trackLabel(stream, n, extra) {
   return parts.length ? parts.join(' · ') : `Track ${n + 1}`
 }
 
+// What renderer/languages.mjs needs to pick a default track from the person's language settings.
+// Viewers only see the label, so the flags a title doesn't already say are added to it (trackFlagLabel).
+function trackFacts(stream) {
+  const tags = stream.tags || {}
+  const d = stream.disposition || {}
+  return {
+    language: tags.language || null,
+    title: tags.title || null,
+    original: d.original === 1,
+    dub: d.dub === 1,
+    commentary: d.comment === 1,
+    described: d.visual_impaired === 1,
+    forced: d.forced === 1,
+    sdh: d.hearing_impaired === 1,
+  }
+}
+
+function trackFlagLabel(stream, kind) {
+  const d = stream.disposition || {}
+  const title = stream.tags?.title || ''
+  if (kind === 'audio' && d.comment === 1 && !/commentary/i.test(title)) return 'commentary'
+  if (kind === 'subtitle' && d.forced === 1) return 'forced'
+  if (kind === 'subtitle' && d.hearing_impaired === 1 && !/sdh|cc/i.test(title)) return 'SDH'
+  return null
+}
+
 // ffprobe writes a frame rate as "24000/1001", and "0/0" for a stream that has none.
 function frameRate(text) {
   const [n, d] = String(text || '').split('/').map(Number)
@@ -41,8 +67,9 @@ function summarizeProbe(probe, externalSubtitlePaths = []) {
   const audio = audioStreams
     .map((s, n) => ({
       index: s.index,
-      label: trackLabel(s, n, `${s.codec_name}${s.channels > 2 ? ` ${s.channels}ch` : ''}`),
+      label: trackLabel(s, n, [trackFlagLabel(s, 'audio'), `${s.codec_name}${s.channels > 2 ? ` ${s.channels}ch` : ''}`].filter(Boolean).join(' · ')),
       isDefault: s.disposition?.default === 1,
+      ...trackFacts(s),
     }))
 
   const subtitles = []
@@ -56,8 +83,9 @@ function summarizeProbe(probe, externalSubtitlePaths = []) {
         kind: 'embedded',
         subIndex: n,
         image: IMAGE_SUBTITLE_CODECS.has(s.codec_name),
-        label: trackLabel(s, n, s.disposition?.forced === 1 ? 'forced' : null),
+        label: trackLabel(s, n, trackFlagLabel(s, 'subtitle')),
         isDefault: s.disposition?.default === 1,
+        ...trackFacts(s),
       })
     })
   for (const p of externalSubtitlePaths) subtitles.push(externalSubtitle(p))

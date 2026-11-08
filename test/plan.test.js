@@ -43,7 +43,7 @@ const media8Bit = summarizeProbe({
 test('summarizeProbe skips cover art and keeps ffmpeg subtitle indexes', () => {
   assert.equal(media.duration, 5400.5)
   assert.equal(media.video.index, 1)
-  assert.deepEqual(media.audio, [{index: 2, label: 'ENG · dts 6ch', isDefault: true}])
+  assert.deepEqual(media.audio, [{index: 2, label: 'ENG · dts 6ch', isDefault: true, language: 'eng', title: null, original: false, dub: false, commentary: false, described: false, forced: false, sdh: false}])
   assert.deepEqual(
     media.subtitles.map((s) => [s.id, s.image]),
     [['embedded:1', false], ['embedded:2', true], ['external:C:\\Movies\\movie.en.srt', false]],
@@ -167,4 +167,21 @@ test('lastMessage skips ffmpeg progress lines so a failure still reads as its er
   assert.equal(lastMessage('Conversion failed!\n'), 'Conversion failed!')
   assert.equal(lastMessage(stats), '')
   assert.equal(lastMessage(''), '')
+})
+
+test('summarizeProbe passes language facts and adds flags the title does not say to the label', () => {
+  const summary = summarizeProbe({format: {duration: '10'}, streams: [
+    {index: 0, codec_type: 'audio', codec_name: 'aac', channels: 2, tags: {language: 'jpn', title: 'Japanese'}, disposition: {default: 1, original: 1}},
+    {index: 1, codec_type: 'audio', codec_name: 'aac', channels: 2, tags: {language: 'eng'}, disposition: {comment: 1}},
+    {index: 2, codec_type: 'subtitle', codec_name: 'ass', tags: {language: 'eng', title: 'Full'}, disposition: {hearing_impaired: 1}},
+    {index: 3, codec_type: 'subtitle', codec_name: 'ass', tags: {language: 'eng', title: 'Signs'}, disposition: {forced: 1}},
+  ]})
+  assert.equal(summary.audio[0].original, true)
+  assert.equal(summary.audio[0].label, 'Japanese · JPN · aac')
+  assert.equal(summary.audio[1].commentary, true)
+  assert.equal(summary.audio[1].label, 'ENG · commentary · aac')
+  assert.equal(summary.subtitles[0].sdh, true)
+  assert.equal(summary.subtitles[0].label, 'Full · ENG · SDH')
+  assert.equal(summary.subtitles[1].label, 'Signs · ENG · forced')
+  assert.equal(summary.subtitles[1].forced, true)
 })

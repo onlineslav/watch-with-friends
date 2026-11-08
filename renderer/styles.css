@@ -974,6 +974,135 @@ button:disabled {
   accent-color: var(--accent);
 }
 
+/* Settings → Languages (renderer/languages.mjs decides; this only shows the choices). */
+.lang-label {
+  margin-top: 4px;
+  font-size: 14px;
+}
+
+.lang-choices {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+
+/* A button sizes to its content; without the width and min-width the long line pushes the
+   card past the panel instead of wrapping. */
+.lang-choice {
+  width: 100%;
+  min-width: 0;
+  white-space: normal;
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.lang-choice:hover {
+  border-color: #464656;
+}
+
+.lang-choice[aria-checked="true"] {
+  border-color: var(--accent);
+  background: rgba(124, 108, 255, 0.12);
+}
+
+.lang-dot {
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  border: 2px solid var(--muted);
+  border-radius: 50%;
+  box-sizing: border-box;
+}
+
+.lang-choice[aria-checked="true"] .lang-dot {
+  border-color: var(--accent);
+  background: var(--accent);
+  box-shadow: inset 0 0 0 3px var(--bg);
+}
+
+.lang-choice b {
+  display: block;
+  font-size: 14px;
+}
+
+.lang-sub {
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.lang-seg {
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+.lang-seg button {
+  flex: 1;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.lang-seg button:hover {
+  color: var(--text);
+}
+
+.lang-seg button[aria-pressed="true"] {
+  background: var(--accent);
+  color: #fff;
+}
+
+.lang-check {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.lang-check input {
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+
+.lang-check span {
+  display: grid;
+}
+
+.lang-check small {
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.lang-choice:focus-visible,
+.lang-seg button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 /* Asked when Settings is closed with changes not yet saved. */
 .unsaved-prompt {
   position: fixed;

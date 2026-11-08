@@ -145,6 +145,29 @@
             <button id="zoom-reset" class="link-button" type="button">Reset</button>
           </div>
         </section>
+        <section class="settings-section languages">
+          <h2>Languages</h2>
+          <p class="hint">Which audio and subtitles a file starts on. Applies from the next file you open.</p>
+          <div class="setting-field">
+            <label for="lang-select">My language</label>
+            <select id="lang-select"></select>
+          </div>
+          <span class="lang-label" id="lang-prefer-label">I'd rather watch</span>
+          <div class="lang-choices" role="radiogroup" aria-labelledby="lang-prefer-label">
+            <button class="lang-choice" role="radio" data-prefer="dub" type="button"><span class="lang-dot"></span><span><b>Dubbed</b><span class="lang-sub" data-text="dub"></span></span></button>
+            <button class="lang-choice" role="radio" data-prefer="original" type="button"><span class="lang-dot"></span><span><b>Original</b><span class="lang-sub" data-text="original"></span></span></button>
+          </div>
+          <span class="lang-label" id="lang-subs-label">Subtitles</span>
+          <div class="lang-seg" role="group" aria-labelledby="lang-subs-label">
+            <button type="button" data-subs="need">When I need them</button>
+            <button type="button" data-subs="always">Always</button>
+            <button type="button" data-subs="off">Off</button>
+          </div>
+          <label class="lang-check"><input id="lang-signs" type="checkbox" /><span>Signs &amp; songs on dubs<small>Translate on-screen text and songs even when the audio is in your language.</small></span></label>
+          <label class="lang-check"><input id="lang-sdh" type="checkbox" /><span>Prefer subtitles with sound descriptions<small>SDH / CC tracks, like "[door slams]".</small></span></label>
+          <label class="lang-check"><input id="lang-remember" type="checkbox" /><span>Remember my changes for the next episode<small>Switch tracks by hand and the next file from the same folder starts the same way.</small></span></label>
+          <p class="hint">The host's setting picks the audio for everyone. Your subtitles follow yours.</p>
+        </section>
         <section class="settings-section">
           <h2>Screen sharing</h2>
           <div class="setting-field">

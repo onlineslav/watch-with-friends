@@ -54,6 +54,17 @@ export class StreamPlayer extends EventTarget {
     this.audioIndex = (media.audio.find((a) => a.isDefault) || media.audio[0])?.index ?? null
     // Only image subtitles are burned in; text ones are drawn by each person's app.
     this.subtitleId = media.subtitles.find((s) => s.isDefault && s.image)?.id ?? null
+    // The app's language settings (renderer/languages.mjs) can choose instead; the file's own
+    // defaults stay if they can't, or if choosing throws.
+    try {
+      const pick = this.pickTracks?.(media)
+      if (pick) {
+        if (media.audio.some((a) => a.index === pick.audioIndex)) this.audioIndex = pick.audioIndex
+        this.subtitleId = media.subtitles.some((s) => s.id === pick.subtitleId && s.image) ? pick.subtitleId : null
+      }
+    } catch (error) {
+      this.emit('pick-failed', error)
+    }
     this.forceTranscode = false
     await this.attachSource()
     if (generation !== this.generation) return false

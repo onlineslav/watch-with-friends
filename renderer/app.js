@@ -104,6 +104,7 @@ import {
 import {LongTaskTally, DelayTally, watchLongTasks, frameSpacing, freshMachine, settingsTag} from './machine.mjs'
 import {describeAudioOutput, audioDeviceKey, diffSettings, MARK_KEY, MARK_KEY_LABEL} from './context.mjs'
 import {fitLayout, LAYOUT_STEPS, trackMenu, parseTrackChoice} from './controls-layout.mjs'
+import {LANGUAGES, languageName, cleanLanguagePrefs, describeTrack, describeLabel, chooseTracks, trackSignature, remember, folderOf} from './languages.mjs'
 
 const APP_ID = 'synced-video-player-7c1e4b-v2'
 const STATE_INTERVAL_MS = 1000
@@ -191,6 +192,12 @@ const ui = {
   zoomSlider: $('zoom-slider'),
   zoomPercent: $('zoom-percent'),
   zoomReset: $('zoom-reset'),
+  langSelect: $('lang-select'),
+  langChoices: [...document.querySelectorAll('.lang-choice')],
+  langSubs: [...document.querySelectorAll('.lang-seg button')],
+  langSigns: $('lang-signs'),
+  langSdh: $('lang-sdh'),
+  langRemember: $('lang-remember'),
   zoomBadge: $('zoom-badge'),
   settingsUsername: $('settings-username'),
   diagnosticsNote: $('diagnostics-note'),
@@ -3429,17 +3436,185 @@ async function selectSubtitle(id) {
   } finally { clearTimeout(slow) }
 }
 
-// A new video starts everyone on its default text track, if it has one.
+// ---------- Languages ----------
+// Settings → Languages decides which audio and subtitles a file starts on (renderer/languages.mjs).
+// The host's settings pick the audio, since everyone hears the same stream; each person's own
+// settings pick their text subtitles, matched to the audio actually playing. Image subtitles are
+// burned in for everyone, so only the host ever picks one. "Remember my changes" keeps a track
+// chosen by hand: the host's per folder (the next episode sits beside this one), a viewer's per
+// room, since a viewer never sees the host's paths.
+let languagePrefs = cleanLanguagePrefs(null, navigator.language)
+try {
+  languagePrefs = cleanLanguagePrefs(JSON.parse(localStorage.getItem('languagePrefs') || 'null'), navigator.language)
+} catch {}
+let trackMemory = {}
+try {
+  const saved = JSON.parse(localStorage.getItem('trackMemory') || 'null')
+  if (saved && typeof saved === 'object' && !Array.isArray(saved)) trackMemory = saved
+} catch {}
+
+function setLanguagePrefs(next) {
+  languagePrefs = cleanLanguagePrefs({...languagePrefs, ...next}, navigator.language)
+  try {
+    localStorage.setItem('languagePrefs', JSON.stringify(languagePrefs))
+  } catch {}
+  renderLanguagePrefs()
+}
+
+function rememberTrack(key, kind, signature) {
+  if (!languagePrefs.remember || !key || !signature) return
+  trackMemory = remember(trackMemory, key, kind, signature, Date.now())
+  try {
+    localStorage.setItem('trackMemory', JSON.stringify(trackMemory))
+  } catch {}
+}
+
+// A subtitle file the host added has no tags, only its file name ("Show.S01E02.en.srt").
+const hostSubtitleFacts = (track) => describeTrack(track.kind === 'external' ? {title: track.label, isDefault: false} : track)
+const hostMemoryKey = () => (player.media?.filePath ? folderOf(player.media.filePath) : null)
+const viewerMemoryKey = () => (session.code ? `room:${session.code}` : null)
+const viewerSubtitleFacts = (subtitles = []) => subtitles.map((s) => describeLabel(s.label, {image: s.image, isDefault: s.isDefault}))
+
+function logTracks(pick, extra) {
+  logEvent('media', 'tracks', {a: pick.audio?.why, s: pick.subtitle?.why, lang: languagePrefs.lang, prefer: languagePrefs.prefer, subs: languagePrefs.subtitles, ...extra})
+}
+
+// Called by player.open() before ffmpeg starts, so the chosen audio is the first one encoded.
+player.pickTracks = (media) => {
+  const pick = chooseTracks({
+    audio: media.audio.map(describeTrack),
+    subtitles: media.subtitles.map(hostSubtitleFacts),
+    prefs: languagePrefs,
+    memory: trackMemory[folderOf(media.filePath)] || null,
+    allowImage: true,
+  })
+  const audioTrack = media.audio[pick.audio.index]
+  const subtitle = media.subtitles[pick.subtitle.index]
+  media.languagePick = {text: subtitle && !subtitle.image ? subtitle.id : null}
+  logTracks(pick, {audioLang: audioTrack ? describeTrack(audioTrack).lang : null, image: Boolean(subtitle?.image)})
+  return {audioIndex: audioTrack?.index ?? null, subtitleId: subtitle?.image ? subtitle.id : null}
+}
+
+function playingAudioLang(state) {
+  if (isHost()) {
+    const track = player.media?.audio.find((a) => a.index === player.audioIndex)
+    return track ? describeTrack(track).lang : null
+  }
+  const selected = state?.audio?.find((a) => a.value === state.audioSelected)
+  return selected ? describeLabel(selected.label).lang : null
+}
+
+// The text subtitle this person's settings choose for what's playing (a catalog value, or null).
+// repick: the audio changed language, so pick again from the settings alone, not from memory.
+function autoSubtitle(state, audioLang, {repick = false} = {}) {
+  if (isHost()) {
+    const media = player.media
+    if (!media) return null
+    let textId = media.languagePick?.text ?? null
+    if (repick) {
+      const pick = chooseTracks({subtitles: media.subtitles.map(hostSubtitleFacts), prefs: languagePrefs, allowImage: true, audioLang})
+      const subtitle = media.subtitles[pick.subtitle.index]
+      textId = subtitle && !subtitle.image ? subtitle.id : null
+      const imageId = subtitle?.image ? subtitle.id : null
+      if (imageId !== player.subtitleId) {
+        player.setSubtitle(imageId)
+        broadcastState()
+      }
+      logTracks(pick, {audioLang, image: Boolean(imageId), repick: true})
+    } else if (player.subtitleId) return null // a burned-in track is already showing
+    return textId ? session.catalog.remote.get(textId) || null : null
+  }
+  const subtitles = state?.subtitles || []
+  if (subtitles.some((s) => s.value === state.subtitleSelected && s.image)) return null
+  const pick = chooseTracks({subtitles: viewerSubtitleFacts(subtitles), prefs: languagePrefs, memory: repick ? null : trackMemory[viewerMemoryKey()] || null, allowImage: false, audioLang})
+  if (subtitles.length) logEvent('media', 'tracks', {s: pick.subtitle.why, audioLang, repick: repick || undefined})
+  return subtitles[pick.subtitle.index]?.value ?? null
+}
+
+// A new video starts everyone on the subtitles their settings choose, and when the audio changes
+// language (the host switched to the dub) they're chosen again, unless picked by hand.
 function syncCaptionsToMedia(state) {
   const key = state && !state.loading ? `${state.hostId}:${state.claimedAt}` : null
-  if (key === session.captions.mediaKey) return
-  session.captions.mediaKey = key
+  const captions = session.captions
+  const audioLang = key ? playingAudioLang(state) : null
+  if (key === captions.mediaKey) {
+    if (!key || captions.manual || audioLang === captions.audioLang) return
+    captions.audioLang = audioLang
+    return selectSubtitle(autoSubtitle(state, audioLang, {repick: true}))
+  }
+  captions.mediaKey = key
+  captions.audioLang = audioLang
+  captions.manual = false
   session.localSubtitles = []
-  selectSubtitle(state?.subtitles?.find((s) => s.isDefault && !s.image)?.value)
+  selectSubtitle(key ? autoSubtitle(state, audioLang) : null)
 }
+
+// Tracks switched by hand become the starting point for the next episode (if Remember is on).
+function rememberAudioChoice(value) {
+  if (!isHost()) return
+  const track = player.media?.audio.find((a) => String(a.index) === value)
+  if (track) rememberTrack(hostMemoryKey(), 'audio', trackSignature(describeTrack(track)))
+}
+
+function rememberSubtitleChoice(value, state) {
+  if (isHost()) {
+    const id = value ? session.catalog.resolve(value) : null
+    const track = id && player.media?.subtitles.find((s) => s.id === id)
+    if (value && !track) return
+    return rememberTrack(hostMemoryKey(), 'subtitle', track ? trackSignature(hostSubtitleFacts(track)) : {off: true})
+  }
+  if (value.startsWith('local:')) return // the viewer's own file; the next episode won't have it
+  const index = (state?.subtitles || []).findIndex((s) => s.value === value)
+  if (value && index < 0) return
+  rememberTrack(viewerMemoryKey(), 'subtitle', value ? trackSignature(viewerSubtitleFacts(state.subtitles)[index]) : {off: true})
+}
+
+const languageOption = (l) => ({value: l.code, label: l.native === l.name ? l.name : `${l.native} (${l.name})`})
+
+function renderLanguagePrefs() {
+  const name = languageName(languagePrefs.lang)
+  ui.langSelect.value = languagePrefs.lang
+  for (const choice of ui.langChoices) {
+    const on = choice.dataset.prefer === languagePrefs.prefer
+    choice.setAttribute('aria-checked', String(on))
+    choice.tabIndex = on ? 0 : -1
+  }
+  const text = {
+    dub: `Hear it in ${name} when there's a dub. If not, the original with ${name} subtitles.`,
+    original: `Hear it as it was made, with ${name} subtitles. No subtitles if it's already in ${name}.`,
+  }
+  for (const sub of document.querySelectorAll('.lang-sub')) sub.textContent = text[sub.dataset.text]
+  for (const button of ui.langSubs) button.setAttribute('aria-pressed', String(button.dataset.subs === languagePrefs.subtitles))
+  ui.langSigns.checked = languagePrefs.signs
+  ui.langSdh.checked = languagePrefs.sdh
+  ui.langRemember.checked = languagePrefs.remember
+}
+
+function initLanguageSettings() {
+  fillSelect(ui.langSelect, LANGUAGES.map(languageOption), languagePrefs.lang)
+  ui.langSelect.addEventListener('change', () => setLanguagePrefs({lang: ui.langSelect.value}))
+  for (const choice of ui.langChoices) {
+    choice.addEventListener('click', () => setLanguagePrefs({prefer: choice.dataset.prefer}))
+    // A radio group: arrows move the choice, as a native one would.
+    choice.addEventListener('keydown', (event) => {
+      if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.key)) return
+      event.preventDefault()
+      const next = ui.langChoices.find((c) => c !== choice)
+      setLanguagePrefs({prefer: next.dataset.prefer})
+      next.focus()
+    })
+  }
+  for (const button of ui.langSubs) button.addEventListener('click', () => setLanguagePrefs({subtitles: button.dataset.subs}))
+  ui.langSigns.addEventListener('change', () => setLanguagePrefs({signs: ui.langSigns.checked}))
+  ui.langSdh.addEventListener('change', () => setLanguagePrefs({sdh: ui.langSdh.checked}))
+  ui.langRemember.addEventListener('change', () => setLanguagePrefs({remember: ui.langRemember.checked}))
+  renderLanguagePrefs()
+}
+initLanguageSettings()
 
 function addSubtitleFile(filePath) {
   if (session.role === 'idle') return toast('Open media first')
+  session.captions.manual = true
   if (isHost()) {
     const id = player.addExternalSubtitle(filePath)
     session.catalog.publish(player.media.subtitles)
@@ -4293,7 +4468,7 @@ function showSettings(open, {save = false} = {}) {
     ui.newUsername.disabled = inRoom
     ui.newUsername.title = inRoom ? 'Leave the room to change your username' : ''
     populateAudioDevices({probe: true}) // pick up a virtual audio device installed since the list was last built
-    if (ui.settings.hidden) settingsSnapshot = {zoom, name: myName, share: {...shareSettings}, telemetry: ui.sendTelemetry.checked}
+    if (ui.settings.hidden) settingsSnapshot = {zoom, name: myName, share: {...shareSettings}, telemetry: ui.sendTelemetry.checked, languages: {...languagePrefs}}
     refreshTelemetry()
   } else if (settingsSnapshot && !ui.settings.hidden) {
     const before = settingsSnapshot
@@ -4302,6 +4477,7 @@ function showSettings(open, {save = false} = {}) {
       if (ui.profileName.value !== myName) setMyName(ui.profileName.value) // typed, but the box never lost focus
       const saved = diffSettings({zoom: before.zoom, telemetry: before.telemetry, name: before.name}, {zoom, telemetry: ui.sendTelemetry.checked, name: myName}, ['zoom', 'telemetry', 'name'])
       if (saved.name) saved.name = true // that it changed, not what it says
+      Object.assign(saved, diffSettings(before.languages, languagePrefs, Object.keys(languagePrefs)))
       if (Object.keys(saved).length) logEvent('settings', 'save', saved)
       if (before.share.audioDeviceId !== shareSettings.audioDeviceId && session.screen) restartShare()
     } else {
@@ -4311,6 +4487,7 @@ function showSettings(open, {save = false} = {}) {
       syncNameSave(ui.profileName)
       updateShareSettings(before.share, {restart: false})
       if (ui.sendTelemetry.checked !== before.telemetry) setTelemetry(before.telemetry)
+      if (JSON.stringify(languagePrefs) !== JSON.stringify(before.languages)) setLanguagePrefs(before.languages)
     }
   }
   ui.settings.hidden = !open
@@ -4322,7 +4499,8 @@ function settingsChanged() {
   if (!before) return false
   const typed = cleanDisplayName(ui.profileName.value)
   return zoom !== before.zoom || myName !== before.name || Boolean(typed && typed !== before.name) ||
-    JSON.stringify(shareSettings) !== JSON.stringify(before.share) || ui.sendTelemetry.checked !== before.telemetry
+    JSON.stringify(shareSettings) !== JSON.stringify(before.share) || ui.sendTelemetry.checked !== before.telemetry ||
+    JSON.stringify(languagePrefs) !== JSON.stringify(before.languages)
 }
 
 // Escape, the close button and the backdrop ask first when there's something to lose.
@@ -4856,7 +5034,10 @@ ui.seek.addEventListener('pointermove', showSeekPreview)
 ui.seek.addEventListener('pointerleave', () => { if (!session.seeking) hideSeekPreview() })
 ui.seek.addEventListener('pointerup', () => { if (!ui.seek.matches(':hover')) hideSeekPreview() })
 
-ui.audio.addEventListener('change', () => control('audio', ui.audio.value))
+ui.audio.addEventListener('change', () => {
+  rememberAudioChoice(ui.audio.value)
+  control('audio', ui.audio.value)
+})
 
 ui.subtitles.addEventListener('change', async () => {
   const value = ui.subtitles.value
@@ -4868,6 +5049,8 @@ ui.subtitles.addEventListener('change', async () => {
     return
   }
   const image = Boolean(state?.subtitles?.some((s) => s.value === value && s.image))
+  session.captions.manual = true // the audio changing language no longer picks for them
+  rememberSubtitleChoice(value, state)
   // Burned-in subtitles are shared, so only touch them when picking one or turning subtitles off.
   if (image || (!value && state?.subtitleSelected)) control('subtitle', value)
   selectSubtitle(image ? null : value)
@@ -5070,6 +5253,7 @@ ui.localVideo.addEventListener('loadedmetadata', () => {
 })
 
 player.addEventListener('media', () => broadcastState())
+player.addEventListener('pick-failed', ({detail}) => logError('media', 'tracks-failed', {message: errorMessage(detail)}))
 player.addEventListener('session', () => {
   session.epoch++
   logEvent('media', 'pipeline-restart', {epoch: session.epoch, transcoding: player.transcoding, time: currentTime()})

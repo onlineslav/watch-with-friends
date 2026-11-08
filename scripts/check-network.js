@@ -573,7 +573,11 @@ app.whenReady().then(async () => {
     const videoEncoding = () => run(a, `__test.qualityProbe.pc.getSenders().find(sender => sender.track?.kind === 'video').getParameters().encodings[0]`)
     try {
       await qualitySample()
-      assert.equal((await videoEncoding()).maxBitrate, 4000000)
+      // At least the 4 Mbps start, never cut to the 350 kbps estimate. Not exactly 4 Mbps: the periodic
+      // sample can land between the injection and this one, and two clean reports raise it a step
+      // (5 Mbps on the 0.8.4 Apple Silicon CI run).
+      const cleanCeiling = (await videoEncoding()).maxBitrate
+      assert.ok(cleanCeiling >= 4000000 && cleanCeiling <= 5000000, `ceiling ${cleanCeiling} after a clean report on a low estimate`)
       assert.equal((await videoEncoding()).scaleResolutionDownBy, 1)
       console.log('PASS: A clean HD stream keeps its picture and ceiling through a low bandwidth estimate')
       await run(a, '__test.qualityProbe.lossPct = 5; __test.qualityProbe.freezes = 1; true')

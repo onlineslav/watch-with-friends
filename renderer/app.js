@@ -309,6 +309,7 @@ const ui = {
   loop: $('loop'),
   time: $('time'),
   seek: $('seek'),
+  seekPreview: $('seek-preview'),
   duration: $('duration'),
   audio: $('audio-select'),
   subtitles: $('subtitle-select'),
@@ -3742,7 +3743,8 @@ function render() {
   ui.play.dataset.state = isPlaying() ? 'playing' : 'paused'
   ui.loop.classList.toggle('active', session.loop)
   ui.loop.setAttribute('aria-pressed', String(session.loop))
-  ui.time.textContent = formatTime(time)
+  // While the thumb is held, the time label follows the thumb, not the playhead.
+  ui.time.textContent = formatTime(session.seeking ? (ui.seek.value / 1000) * duration : time)
   ui.duration.textContent = formatTime(duration)
   if (!session.seeking) ui.seek.value = duration ? String(Math.round((time / duration) * 1000)) : '0'
 
@@ -4743,12 +4745,36 @@ ui.fullscreen.addEventListener('click', toggleFullscreen)
 
 ui.seek.addEventListener('input', () => {
   session.seeking = true
-  ui.time.textContent = formatTime((ui.seek.value / 1000) * currentDuration())
+  const time = (ui.seek.value / 1000) * currentDuration()
+  ui.time.textContent = formatTime(time)
+  if (!ui.seekPreview.hidden) ui.seekPreview.textContent = formatTime(time)
 })
 ui.seek.addEventListener('change', () => {
   session.seeking = false
   control('seek', (ui.seek.value / 1000) * currentDuration())
 })
+
+// Hovering the timeline shows the time a click there would jump to. The range input puts value 0
+// and 1000 at the thumb's centre at either end, not at the track's edges, so the hover maps through
+// the same inset.
+const SEEK_THUMB_PX = 16
+function showSeekPreview(event) {
+  const duration = currentDuration()
+  if (ui.seek.disabled || !duration) return hideSeekPreview()
+  const rect = ui.seek.getBoundingClientRect()
+  const inset = SEEK_THUMB_PX / 2
+  const fraction = Math.min(1, Math.max(0, (event.clientX - rect.left - inset) / Math.max(1, rect.width - SEEK_THUMB_PX)))
+  ui.seekPreview.textContent = formatTime(session.seeking ? (ui.seek.value / 1000) * duration : fraction * duration)
+  const x = session.seeking ? rect.left + inset + (ui.seek.value / 1000) * (rect.width - SEEK_THUMB_PX) : event.clientX
+  ui.seekPreview.style.left = `${x - ui.controls.getBoundingClientRect().left}px`
+  ui.seekPreview.hidden = false
+}
+function hideSeekPreview() {
+  ui.seekPreview.hidden = true
+}
+ui.seek.addEventListener('pointermove', showSeekPreview)
+ui.seek.addEventListener('pointerleave', () => { if (!session.seeking) hideSeekPreview() })
+ui.seek.addEventListener('pointerup', () => { if (!ui.seek.matches(':hover')) hideSeekPreview() })
 
 ui.audio.addEventListener('change', () => control('audio', ui.audio.value))
 

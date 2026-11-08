@@ -1,11 +1,10 @@
-## What's new in 0.8.5
+## What's new in 0.8.6
 
 Windows users and Mac users on 0.5.3 or later receive this release through the in-app updater. Mac users on 0.5.2 or earlier should install the DMG below once to enable future in-app updates.
 
-- **The controls hide again while something plays.** After clicking the timeline, the volume slider or a menu such as subtitles, the controls and top bar could stay on screen for the rest of the film. They now get out of the way after a few seconds, as they should.
-- **Clicking outside Settings saves and closes it.** No more Save or Discard question when you click off the Settings panel, with either mouse button, and the click no longer reaches the movie behind it.
+- **Opening the playlist no longer shrinks the volume slider.** The volume and the timeline now keep their size. When the controls run out of room, the language and subtitles menus join into one button (a speech bubble) with a Language section and a Subtitles section; hover it to see what's picked. In a very narrow window the timeline moves to its own row above the buttons.
 
-Also in 0.8.4: no freezes when the host's computer is busy, a sharp picture again after a bad patch, and the timeline shows where a click will jump to. See the 0.8.4 release for details.
+Also in 0.8.5: the controls hide again while something plays, and clicking outside Settings saves and closes it. See the 0.8.5 release for details.
 
 ## Download
 

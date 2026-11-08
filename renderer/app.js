@@ -5097,6 +5097,14 @@ function stageShowing() {
 function chromeIdles() {
   return isPlaying() || ui.stage.classList.contains('showing-shares') || Boolean(shownImage())
 }
+// Focus alone isn't use: a clicked slider (seek, volume), checkbox or dropdown keeps focus after the
+// click, which held the controls up for the rest of the film. Only typing into a text box, an open
+// dropdown list, or keyboard focus inside the open friends drawer counts.
+const CHROME_IN_USE = [
+  '.topbar:hover', '.controls:hover', '.sidebar:hover', '.board-tools:hover', '.playlist:hover', '.friends-drawer:hover',
+  '.friends-open .friends-drawer:focus-within', 'select:open',
+  'input:focus:not([type=range], [type=checkbox], [type=radio], [type=button], [type=color])',
+].join(', ')
 const chromeInUse = () =>
   Boolean(
     drawing ||
@@ -5106,7 +5114,7 @@ const chromeInUse = () =>
       itemDrag ||
       !ui.reactions.hidden ||
       !ui.markNote.hidden ||
-      ui.room.querySelector('.topbar:hover, .controls:hover, .sidebar:hover, .board-tools:hover, .playlist:hover, .friends-drawer:hover, .friends-drawer:focus-within, select:focus, input:focus'),
+      ui.room.querySelector(CHROME_IN_USE),
   )
 function wakeChrome() {
   ui.room.classList.remove('idle')

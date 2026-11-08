@@ -23,3 +23,4 @@
   handled). Run ends with 8 verified, 4 needing Aya (M1.5, M1.6, M1.7, M1.10) and M1.8 for Aya + Lenna. 0.8.3 held:
   the network probe from another session (e6e60a4) runs without the telemetry checkbox. Helper tokens ≈ 5.3M.
 - 0.8.3: looped films stay audible, 60fps films ~58fps at the viewer, 1s recovery after a loss burst, network probe (router + 1.1.1.1 every 200ms, only with the telemetry checkbox on), viewer log lines say role viewer.
+- 0.8.4 (2026-11-08): freezes in a film to Lenna traced to CPU starvation on the host's PC (test suites from other projects starting; router pings 1ms → 150-350ms, her side clean). The app's processes run above normal priority in a room on Windows (bench under 48 busy threads: 9 → 29.6 fps, A/V 2.66s → 2ms). Send ceiling no longer stuck at 360p after a jam. Timeline hover time.

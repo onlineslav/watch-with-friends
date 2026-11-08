@@ -1,13 +1,12 @@
-## What's new in 0.8.3
+## What's new in 0.8.4
 
 Windows users and Mac users on 0.5.3 or later receive this release through the in-app updater. Mac users on 0.5.2 or earlier should install the DMG below once to enable future in-app updates.
 
-- **Looped films keep their sound.** With **Loop** on, viewers could lose the sound a few seconds into the second time round. Fixed, for short clips and full-length films alike.
-- **Smoother 60fps video.** A 60fps film reached viewers at about 49 frames a second. It now arrives at about 58.
-- **Faster recovery after a hiccup.** After a short burst of bad connection the picture went soft for several seconds before coming back to full quality. It now comes back in about a second.
-- **Better problem reports.** With **Send telemetry for development** on, the app now also checks your own router and internet connection while you watch, so a stutter can be traced to whoever's connection caused it.
+- **No more freezes when the host's computer is busy.** If other programs kept the host's PC busy, the stream could freeze for 15-40 seconds or drop out for everyone. On Windows the app now goes ahead of other programs while you're in a room, so a busy computer no longer stalls the stream.
+- **Sharp picture again after a bad patch.** After a long connection hiccup the picture could stay stuck at low quality (360p) for a minute even once the connection was fine. It now comes back as soon as the connection does.
+- **See where a click on the timeline will jump to.** Hovering over the timeline shows the time, and the time follows the handle while you drag it.
 
-Also in 0.8.2: stereo sound for viewers, the second film has sound, no more dropping out after a few films. See the 0.8.2 release for details.
+Also in 0.8.3: looped films keep their sound, smoother 60fps video, faster recovery after a hiccup. See the 0.8.3 release for details.
 
 ## Download
 

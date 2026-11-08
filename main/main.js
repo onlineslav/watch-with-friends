@@ -5,6 +5,7 @@ const {app, BrowserWindow, dialog, ipcMain, powerMonitor, screen, session, shell
 const log = require('./log')
 const machine = require('./machine')
 const {createNetProbe} = require('./net-probe')
+const {createPriorityBoost} = require('./priority')
 const media = require('./media')
 const appAudio = require('./app-audio')
 const appWindows = require('./app-windows')
@@ -129,6 +130,9 @@ const netProbe = createNetProbe({
   binaryPath: () => (app.isPackaged ? path.join(process.resourcesPath, 'win-net-probe.exe') : path.join(__dirname, '..', 'native', 'win-net-probe', 'win-net-probe.exe')),
 })
 const syncNetProbe = () => (machineSamplers.size && telemetry().enabled ? netProbe.start() : netProbe.stop())
+// Above-normal priority for the app's processes while any window is in a room (main/priority.js, Windows).
+const priorityBoost = createPriorityBoost({getMetrics: () => app.getAppMetrics(), record: (...args) => log.record(...args)})
+const syncPriority = () => (machineSamplers.size ? priorityBoost.start() : priorityBoost.stop())
 let cpuSpeedLimit = null
 let machineStatic = null
 
@@ -157,6 +161,7 @@ function setMachineSampling(contents, active) {
     existing?.stop()
     machineSamplers.delete(contents.id)
     syncNetProbe()
+    syncPriority()
     return
   }
   if (existing) return
@@ -168,6 +173,7 @@ function setMachineSampling(contents, active) {
   contents.once('destroyed', () => setMachineSampling({id: contents.id}, false))
   sampler.start()
   syncNetProbe()
+  syncPriority()
   recordMachineStatic().catch(() => {})
 }
 

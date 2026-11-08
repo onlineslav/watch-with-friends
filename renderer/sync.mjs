@@ -56,6 +56,8 @@ export const STALE_FEEDBACK_MS = 4000
 const SAFE_MEMORY_MS = 60_000
 const RECOVERY_CALM_MS = 4000 // two clean reports (was three: a 4s loss burst on a 1080p film left the picture at 540p for up to 12s, bench --variant=burst)
 
+const EPISODE_GAP_MS = RECOVERY_CALM_MS // trouble after less clean playback than this is the same episode
+
 export function chooseSendQuality(previous, {receiver, receiverAt = null, feedbackAgeMs = null, sentBps = null, capacity, active = true, peerCount = 1, width = 1920, height = 1080}, intervalMs = 2000) {
   const ceiling = Math.min(10_000_000, 18_000_000 / Math.max(1, peerCount))
   let bitrate = Math.min(previous?.bitrate ?? Math.min(START_BITRATE, ceiling), ceiling)
@@ -67,8 +69,11 @@ export function chooseSendQuality(previous, {receiver, receiverAt = null, feedba
   const trouble = (reason, factor) => {
     decision = reason
     // Where this episode of trouble began, in what was really going out (the cap can sit well
-    // above it). Further cuts in the same episode keep it, or a long one would pin the cap low.
-    if (failedAt == null || sinceTroubleMs > 0) failedAt = finite(sentBps, 1, 1e10) ? Math.min(bitrate, sentBps) : bitrate
+    // above it). Further cuts in the same episode keep it, or a long one would pin the cap low. One
+    // clean report between cuts does not end the episode: on 2026-11-08 a 40s jam between two ISPs
+    // had one, the next missed report started a "new" episode at the 434 kbps trickling through the
+    // jam, and the cap was held at 369 kbps (360p) for a minute of playback on a link with 12 Mbps free.
+    if (failedAt == null || sinceTroubleMs >= EPISODE_GAP_MS) failedAt = finite(sentBps, 1, 1e10) ? Math.min(bitrate, sentBps) : bitrate
     sinceTroubleMs = 0
     bitrate *= factor
     calmMs = 0
@@ -93,8 +98,10 @@ export function chooseSendQuality(previous, {receiver, receiverAt = null, feedba
       // The probe must be able to exceed a stale estimate left by our old cap.
       const headroom = !careful && finite(capacity, 100_000, 1e10) ? Math.min(capacity * 0.8, bitrate * 2) : 0
       const safe = failedAt != null ? Math.max(bitrate, failedAt * 0.85) : Infinity
-      const raised = Math.min(Math.max(probe, headroom), safe)
-      if (raised > bitrate) {
+      // Rounded before comparing: an unrounded `safe` a fraction above the rounded cap read as a raise,
+      // so the log said "recovery" every 2s while the cap never moved.
+      const raised = Math.round(Math.min(Math.max(probe, headroom), safe))
+      if (raised > Math.round(bitrate)) {
         bitrate = raised
         decision = bitrate >= ceiling && previous?.bitrate >= ceiling ? 'ceiling' : 'recovery'
         if (careful) calmMs = RECOVERY_CALM_MS - 2 * intervalMs

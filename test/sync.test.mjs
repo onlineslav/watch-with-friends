@@ -168,6 +168,24 @@ test('after a stall the cap stays below what was being sent when it began, for a
   assert.ok(quality.bitrate > 5.9e6, `free to probe again, at ${quality.bitrate}`)
 })
 
+test('one clean report in the middle of a jam does not restart the stall memory at the jammed rate', () => {
+  // 2026-11-08, host log: freezes at 3.65 Mbps sent, then loss and missed reports; one clean report at
+  // 05:22:40; the next missed report used to set the memory to the 434 kbps trickling through the jam.
+  let quality = chooseSendQuality({bitrate: 10e6, receiverAt: 0}, {receiver: {lossPct: 0, freezes: 1}, receiverAt: 2000, sentBps: 3.65e6})
+  quality = chooseSendQuality(quality, {receiver: {lossPct: 72, freezes: 0}, receiverAt: 4000, sentBps: 5.1e6})
+  quality = chooseSendQuality(quality, {receiver: clean, receiverAt: 6000, sentBps: 3e5})
+  quality = chooseSendQuality(quality, {receiver: clean, receiverAt: 6000, feedbackAgeMs: 4500, sentBps: 434431})
+  assert.equal(quality.failedAt, 3.65e6, 'still the rate the trouble began at')
+  for (let i = 0; i < 10; i++) quality = chooseSendQuality(quality, {receiver: clean, receiverAt: 8000 + i * 2000, capacity: 12.5e6})
+  assert.ok(quality.bitrate >= 3e6, `back near 720p within 20s, at ${quality.bitrate}`)
+})
+
+test('a raise held by the stall memory is logged as holding, not as recovery', () => {
+  const quality = chooseSendQuality({bitrate: 369266, calmMs: 4000, failedAt: 434431, sinceTroubleMs: 2000, receiverAt: 0}, {receiver: clean, receiverAt: 2000, capacity: 12.5e6})
+  assert.equal(quality.bitrate, 369266)
+  assert.equal(quality.decision, 'holding-below-stall')
+})
+
 test('a long run of cuts down to the floor does not pin recovery there', () => {
   let quality = {bitrate: 4e6}
   for (let i = 0; i < 12; i++) quality = chooseSendQuality(quality, {receiver: {lossPct: 5}, receiverAt: i * 2000})

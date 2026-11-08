@@ -25,10 +25,10 @@ test('a run of slow or lost probes is one stall, reported when a good probe ends
   stats.add('gw', 880, 1400)
   assert.equal(stalls.length, 0, 'still going')
   stats.add('gw', 3, 1600)
-  assert.deepEqual(stalls, [{t: 'gw', dur: 1400, ms: 880, lost: 1, n: 3}])
+  assert.deepEqual(stalls, [{on: 'gw', dur: 1400, ms: 880, lost: 1, n: 3}])
   stats.add('net', null, 0)
   stats.add('net', 10, 1000)
-  assert.deepEqual(stalls[1], {t: 'net', dur: 1000, lost: 1, n: 1}, 'all lost: no ms')
+  assert.deepEqual(stalls[1], {on: 'net', dur: 1000, lost: 1, n: 1}, 'all lost: no ms')
 })
 
 test('a stall that never ends is still reported every ten seconds', () => {
@@ -97,7 +97,7 @@ test('on Windows the helper lines feed the stats and a stall is logged', () => {
   clock = 600
   proc.stdout.emit('data', Buffer.from('t 14\ngw 2\n'))
   assert.deepEqual(probe.take(), {gw: {n: 3, lost: 1, avg: 1.5, max: 2}, net: {n: 2, avg: 13.5, max: 14}})
-  assert.deepEqual(records.find(([, event]) => event === 'probe-stall'), ['network', 'probe-stall', {t: 'gw', dur: 600, lost: 1, n: 1}, 'warn'])
+  assert.deepEqual(records.find(([, event]) => event === 'probe-stall'), ['network', 'probe-stall', {on: 'gw', dur: 600, lost: 1, n: 1}, 'warn'])
   probe.stop()
   assert.equal(proc.killed, true)
 })

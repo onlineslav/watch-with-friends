@@ -61,6 +61,9 @@ function formatEvent({at, mono, level, scope, event, data}) {
     ev: String(event || 'event'),
   }
   const body = data && typeof data === 'object' && !Array.isArray(data) ? redact(data, 1) : {}
+  // A field named like a header key would overwrite it (probe-stall's target `t` once replaced the
+  // time, so those lines could not be placed): the header wins and the field is kept as `_<key>`.
+  for (const key of Object.keys(head)) if (key in body) { body[`_${key}`] = body[key]; delete body[key] }
   const line = JSON.stringify({...head, ...body})
   // Redaction caps each string, so this only catches an event with an unreasonable number of
   // fields. Keeping the header is worth more than keeping a line that no parser can read.

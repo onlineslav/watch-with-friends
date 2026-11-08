@@ -18,14 +18,14 @@ const INTERNET = '1.1.1.1'
 const round = (value) => Math.round(value * 10) / 10
 
 // Probes in, a summary per target out (`take`, each reading), and `onStall` once a run of slow or
-// lost probes ends: {t: 'gw'|'net', dur (ms from the first bad probe to the first good one), ms
+// lost probes ends: {on: 'gw'|'net', dur (ms from the first bad probe to the first good one), ms
 // (slowest reply, absent if all were lost), lost, n}.
 function createProbeStats({onStall = () => {}, stallMs = STALL_MS, longStallMs = LONG_STALL_MS} = {}) {
   const targets = {}
   const end = (t, s, at) => {
     const {start, worst, lost, n} = s.stall
     s.stall = null
-    onStall({t, dur: Math.round(at - start), ...(worst > 0 && {ms: worst}), lost, n})
+    onStall({on: t, dur: Math.round(at - start), ...(worst > 0 && {ms: worst}), lost, n})
   }
   return {
     add(t, ms, at) {

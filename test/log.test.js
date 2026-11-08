@@ -68,6 +68,15 @@ test('an event with too many fields keeps its header instead of writing unparsea
   assert.ok(entry.dropped > 0, 'and says how much was lost')
 })
 
+test('a field named like a header key cannot overwrite the time or scope', () => {
+  const entry = fields({scope: 'network', event: 'probe-stall', data: {t: 'net', sc: 'x', dur: 236}})
+  assert.ok(/^\d{4}-\d\d-\d\dT/.test(entry.t), `the time survives: ${entry.t}`)
+  assert.equal(entry.sc, 'network')
+  assert.equal(entry._t, 'net', 'the field is kept under another name')
+  assert.equal(entry._sc, 'x')
+  assert.equal(entry.dur, 236)
+})
+
 test('non-finite numbers become null so the line stays valid JSON', () => {
   const entry = fields({scope: 's', event: 'e', data: {rtt: Infinity, loss: NaN, ok: 12}})
   assert.equal(entry.rtt, null)

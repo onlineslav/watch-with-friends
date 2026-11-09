@@ -1,10 +1,13 @@
-## What's new in 0.8.6
+## What's new in 0.8.7
 
 Windows users and Mac users on 0.5.3 or later receive this release through the in-app updater. Mac users on 0.5.2 or earlier should install the DMG below once to enable future in-app updates.
 
-- **Opening the playlist no longer shrinks the volume slider.** The volume and the timeline now keep their size. When the controls run out of room, the language and subtitles menus join into one button (a speech bubble) with a Language section and a Subtitles section; hover it to see what's picked. In a very narrow window the timeline moves to its own row above the buttons.
+- **Files start in your language.** Settings has a new **Languages** section. Pick your language and whether you'd rather watch **Dubbed** (your language when there's a dub, otherwise the original with subtitles) or **Original** (the original audio with subtitles). An anime episode with Japanese audio, an English dub and three subtitle tracks now starts on the right ones instead of whichever came first.
+- **Subtitles:** "When I need them", "Always" or "Off", plus options for signs & songs subtitles on dubs and for subtitles with sound descriptions (SDH).
+- **Your changes carry over.** Switch a track by hand and the next episode from the same folder starts the same way (you can turn this off).
+- **In a room,** the host's settings pick the audio for everyone, and each person's subtitles follow their own settings.
 
-Also in 0.8.5: the controls hide again while something plays, and clicking outside Settings saves and closes it. See the 0.8.5 release for details.
+Also in 0.8.6: opening the playlist no longer shrinks the volume slider. See the 0.8.6 release for details.
 
 ## Download
 

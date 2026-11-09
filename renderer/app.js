@@ -194,7 +194,7 @@ const ui = {
   zoomReset: $('zoom-reset'),
   langSelect: $('lang-select'),
   langChoices: [...document.querySelectorAll('.lang-choice')],
-  langSubs: [...document.querySelectorAll('.lang-seg button')],
+  langSubs: document.getElementById('lang-subs'),
   langSigns: $('lang-signs'),
   langSdh: $('lang-sdh'),
   langRemember: $('lang-remember'),
@@ -3584,7 +3584,7 @@ function renderLanguagePrefs() {
     original: `Hear it as it was made, with ${name} subtitles. No subtitles if it's already in ${name}.`,
   }
   for (const sub of document.querySelectorAll('.lang-sub')) sub.textContent = text[sub.dataset.text]
-  for (const button of ui.langSubs) button.setAttribute('aria-pressed', String(button.dataset.subs === languagePrefs.subtitles))
+  ui.langSubs.value = languagePrefs.subtitles
   ui.langSigns.checked = languagePrefs.signs
   ui.langSdh.checked = languagePrefs.sdh
   ui.langRemember.checked = languagePrefs.remember
@@ -3604,7 +3604,7 @@ function initLanguageSettings() {
       next.focus()
     })
   }
-  for (const button of ui.langSubs) button.addEventListener('click', () => setLanguagePrefs({subtitles: button.dataset.subs}))
+  ui.langSubs.addEventListener('change', () => setLanguagePrefs({subtitles: ui.langSubs.value}))
   ui.langSigns.addEventListener('change', () => setLanguagePrefs({signs: ui.langSigns.checked}))
   ui.langSdh.addEventListener('change', () => setLanguagePrefs({sdh: ui.langSdh.checked}))
   ui.langRemember.addEventListener('change', () => setLanguagePrefs({remember: ui.langRemember.checked}))

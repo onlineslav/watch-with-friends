@@ -157,11 +157,13 @@
             <button class="lang-choice" role="radio" data-prefer="dub" type="button"><span class="lang-dot"></span><span><b>Dubbed</b><span class="lang-sub" data-text="dub"></span></span></button>
             <button class="lang-choice" role="radio" data-prefer="original" type="button"><span class="lang-dot"></span><span><b>Original</b><span class="lang-sub" data-text="original"></span></span></button>
           </div>
-          <span class="lang-label" id="lang-subs-label">Subtitles</span>
-          <div class="lang-seg" role="group" aria-labelledby="lang-subs-label">
-            <button type="button" data-subs="need">When I need them</button>
-            <button type="button" data-subs="always">Always</button>
-            <button type="button" data-subs="off">Off</button>
+          <div class="setting-field">
+            <label for="lang-subs">Subtitles</label>
+            <select id="lang-subs">
+              <option value="need">When I need them</option>
+              <option value="always">Always</option>
+              <option value="off">Off</option>
+            </select>
           </div>
           <label class="lang-check"><input id="lang-signs" type="checkbox" /><span>Signs &amp; songs on dubs<small>Translate on-screen text and songs even when the audio is in your language.</small></span></label>
           <label class="lang-check"><input id="lang-sdh" type="checkbox" /><span>Prefer subtitles with sound descriptions<small>SDH / CC tracks, like "[door slams]".</small></span></label>

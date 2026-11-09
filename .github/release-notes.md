@@ -6,6 +6,7 @@ Windows users and Mac users on 0.5.3 or later receive this release through the i
 - **Subtitles:** "When I need them", "Always" or "Off", plus options for signs & songs subtitles on dubs and for subtitles with sound descriptions (SDH).
 - **Your changes carry over.** Switch a track by hand and the next episode from the same folder starts the same way (you can turn this off).
 - **In a room,** the host's settings pick the audio for everyone, and each person's subtitles follow their own settings.
+- **The audio and subtitle menus under the video look like the other buttons there**, with an icon each, instead of grey boxes.
 
 Also in 0.8.6: opening the playlist no longer shrinks the volume slider. See the 0.8.6 release for details.
 

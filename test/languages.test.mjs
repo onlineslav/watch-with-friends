@@ -68,10 +68,10 @@ test('a viewer reads the same facts from the host label', () => {
 })
 
 test('settings default to the system language and survive junk', () => {
-  assert.deepEqual(cleanLanguagePrefs(null, 'es-MX'), {...DEFAULT_LANGUAGE_PREFS, lang: 'spa'})
-  assert.equal(cleanLanguagePrefs(null, 'xx').lang, 'eng')
+  assert.deepEqual(cleanLanguagePrefs(null), DEFAULT_LANGUAGE_PREFS, 'English by default, whatever the system language')
+  assert.equal(DEFAULT_LANGUAGE_PREFS.lang, 'eng')
   assert.deepEqual(cleanLanguagePrefs({lang: 'jpn', prefer: 'original', subtitles: 'always', signs: false, sdh: true, remember: false}), {lang: 'jpn', prefer: 'original', subtitles: 'always', signs: false, sdh: true, remember: false})
-  assert.deepEqual(cleanLanguagePrefs({lang: 'klingon', prefer: 1, subtitles: 'maybe'}, 'en'), DEFAULT_LANGUAGE_PREFS)
+  assert.deepEqual(cleanLanguagePrefs({lang: 'klingon', prefer: 1, subtitles: 'maybe'}), DEFAULT_LANGUAGE_PREFS)
 })
 
 const anime = {

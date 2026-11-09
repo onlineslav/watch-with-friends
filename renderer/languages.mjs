@@ -128,14 +128,11 @@ export function describeLabel(label, {image = false, isDefault = false} = {}) {
 
 export const DEFAULT_LANGUAGE_PREFS = Object.freeze({lang: 'eng', prefer: 'dub', subtitles: 'need', signs: true, sdh: false, remember: true})
 
-export function defaultLanguage(locale) {
-  return langFromTag(locale) || 'eng'
-}
-
-export function cleanLanguagePrefs(saved, locale) {
+// English until someone picks another language, whatever the computer's own language is.
+export function cleanLanguagePrefs(saved) {
   const s = saved && typeof saved === 'object' ? saved : {}
   return {
-    lang: BY_CODE.has(s.lang) ? s.lang : defaultLanguage(locale),
+    lang: BY_CODE.has(s.lang) ? s.lang : DEFAULT_LANGUAGE_PREFS.lang,
     prefer: s.prefer === 'original' ? 'original' : 'dub',
     subtitles: ['need', 'always', 'off'].includes(s.subtitles) ? s.subtitles : 'need',
     signs: s.signs !== false,

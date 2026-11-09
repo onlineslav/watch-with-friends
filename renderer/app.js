@@ -3443,9 +3443,9 @@ async function selectSubtitle(id) {
 // burned in for everyone, so only the host ever picks one. "Remember my changes" keeps a track
 // chosen by hand: the host's per folder (the next episode sits beside this one), a viewer's per
 // room, since a viewer never sees the host's paths.
-let languagePrefs = cleanLanguagePrefs(null, navigator.language)
+let languagePrefs = cleanLanguagePrefs(null)
 try {
-  languagePrefs = cleanLanguagePrefs(JSON.parse(localStorage.getItem('languagePrefs') || 'null'), navigator.language)
+  languagePrefs = cleanLanguagePrefs(JSON.parse(localStorage.getItem('languagePrefs') || 'null'))
 } catch {}
 let trackMemory = {}
 try {
@@ -3454,7 +3454,7 @@ try {
 } catch {}
 
 function setLanguagePrefs(next) {
-  languagePrefs = cleanLanguagePrefs({...languagePrefs, ...next}, navigator.language)
+  languagePrefs = cleanLanguagePrefs({...languagePrefs, ...next})
   try {
     localStorage.setItem('languagePrefs', JSON.stringify(languagePrefs))
   } catch {}

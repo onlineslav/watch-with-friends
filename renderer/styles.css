@@ -2982,19 +2982,15 @@ button:disabled {
 }
 
 .controls #track-select {
-  appearance: none;
+  --track-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23fff' fill-opacity='0.7' d='M4 4h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9l-5 4v-4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm2 5v2h4V9zm6 0v2h6V9zm-6 4v2h8v-2zm10 0v2h2v-2z'/%3E%3C/svg%3E");
+  --track-icon-on: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23fff' fill-opacity='1' d='M4 4h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9l-5 4v-4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm2 5v2h4V9zm6 0v2h6V9zm-6 4v2h8v-2zm10 0v2h2v-2z'/%3E%3C/svg%3E");
   width: 40px;
   min-width: 40px;
-  height: 32px;
+  padding: 0;
+  color: transparent;
   flex-shrink: 0;
-  cursor: pointer;
-  background: rgba(22, 22, 29, 0.9) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23fff' d='M4 4h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9l-5 4v-4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm2 5v2h4V9zm6 0v2h6V9zm-6 4v2h8v-2zm10 0v2h2v-2z'/%3E%3C/svg%3E") no-repeat center / 22px;
-}
-
-.controls #track-select optgroup,
-.controls #track-select option {
-  background: #16161d;
-  color: #fff;
+  background-position: center, right -20px center;
+  background-size: 22px, 10px;
 }
 
 .controls.stacked {
@@ -3231,16 +3227,57 @@ kbd {
   display: none;
 }
 
+/* Drawn like the bar's icon buttons: no box, dimmed until hovered, a faint backdrop on hover. The
+   leading icon says which menu is which (translate = audio, CC = subtitles). */
 .controls select {
-  background: rgba(22, 22, 29, 0.9);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 4px 6px;
+  --track-icon: none;
+  --track-icon-on: none;
+  appearance: none;
+  height: 32px;
+  padding: 0 24px 0 32px;
+  border: 0;
+  border-radius: 8px;
   max-width: 180px;
-  min-width: 64px;
+  min-width: 88px; /* the icon, the arrow and a few letters */
   flex-shrink: 1;
   text-overflow: ellipsis;
   font-size: 13px;
+  color: rgba(255, 255, 255, 0.75);
+  background-color: transparent;
+  background-image: var(--track-icon), url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5' fill='none' stroke='%23fff' stroke-opacity='0.55' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: left 7px center, right 8px center;
+  background-size: 20px, 10px;
+  cursor: pointer;
+  transition: background-color 0.15s, color 0.15s;
+}
+
+.controls select:not(:disabled):hover,
+.controls select:focus-visible {
+  color: #fff;
+  background-color: rgba(255, 255, 255, 0.1);
+  background-image: var(--track-icon-on), url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5' fill='none' stroke='%23fff' stroke-opacity='1' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+
+.controls select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.controls select option,
+.controls select optgroup {
+  background: #16161d;
+  color: #fff;
+}
+
+.controls #audio-select {
+  --track-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23fff' fill-opacity='0.7' d='M12.87 15.07l-2.54-2.51.03-.03A17.52 17.52 0 0 0 14.07 6H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7l1.62-4.33L19.12 17h-3.24z'/%3E%3C/svg%3E");
+  --track-icon-on: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23fff' fill-opacity='1' d='M12.87 15.07l-2.54-2.51.03-.03A17.52 17.52 0 0 0 14.07 6H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7l1.62-4.33L19.12 17h-3.24z'/%3E%3C/svg%3E");
+}
+
+.controls #subtitle-select {
+  --track-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23fff' fill-opacity='0.7' d='M19 4H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2zm-8 7H9.5v-.5h-2v3h2V13H11v1a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v1zm7 0h-1.5v-.5h-2v3h2V13H18v1a1 1 0 0 1-1 1h-3a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v1z'/%3E%3C/svg%3E");
+  --track-icon-on: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23fff' fill-opacity='1' d='M19 4H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2zm-8 7H9.5v-.5h-2v3h2V13H11v1a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v1zm7 0h-1.5v-.5h-2v3h2V13H18v1a1 1 0 0 1-1 1h-3a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v1z'/%3E%3C/svg%3E");
 }
 
 #mute[data-muted='true'] .icon-sound,

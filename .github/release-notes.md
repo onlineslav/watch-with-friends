@@ -1,14 +1,12 @@
-## What's new in 0.8.7
+## What's new in 0.8.8
 
 Windows users and Mac users on 0.5.3 or later receive this release through the in-app updater. Mac users on 0.5.2 or earlier should install the DMG below once to enable future in-app updates.
 
-- **Files start in your language.** Settings has a new **Languages** section. Pick your language and whether you'd rather watch **Dubbed** (your language when there's a dub, otherwise the original with subtitles) or **Original** (the original audio with subtitles). An anime episode with Japanese audio, an English dub and three subtitle tracks now starts on the right ones instead of whichever came first.
-- **Subtitles:** "When I need them", "Always" or "Off", plus options for signs & songs subtitles on dubs and for subtitles with sound descriptions (SDH).
-- **Your changes carry over.** Switch a track by hand and the next episode from the same folder starts the same way (you can turn this off).
-- **In a room,** the host's settings pick the audio for everyone, and each person's subtitles follow their own settings.
-- **The audio and subtitle menus under the video look like the other buttons there**, with an icon each, instead of grey boxes.
+- **Skip intro.** A **Skip intro** button appears while a show's intro plays, for everyone in the room. Press it (or **S**) to jump straight to the episode. The app finds the intro from the file's chapters, or by spotting the theme an episode shares with the next or previous episode in the same folder. The first episode in a folder takes a few seconds to check; the rest are instant.
+- **Previous and Next buttons** next to the skip buttons. Previous restarts what's playing, or goes back to the earlier item if you're in the first few seconds. Next plays the next item in the playlist. **Shift+P** and **Shift+N** do the same.
+- **Skips say what they did.** The 10-second and 30-second skips show "Skipped forward 30s" on screen, and quick presses add up ("Skipped forward 1m 30s").
 
-Also in 0.8.6: opening the playlist no longer shrinks the volume slider. See the 0.8.6 release for details.
+Also in 0.8.7: files start in your language (Settings → Languages). See the 0.8.7 release for details.
 
 ## Download
 

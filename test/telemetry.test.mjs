@@ -301,7 +301,8 @@ test('the video waits for the Web Audio output path, on top of the adapted buffe
   assert.equal(audioPathMs(0.0304, 0.0098), 40, 'rounded to 10ms: a wobble does not rewrite the target every tick')
   assert.equal(audioPathMs(0, 0), 0)
   assert.equal(audioPathMs(undefined, NaN), 0, 'a context that reports nothing adds nothing')
-  assert.equal(audioPathMs(5, 5), 200, 'a nonsense reading is capped')
+  assert.equal(audioPathMs(5, 5), 300, 'a nonsense reading is capped')
+  assert.equal(audioPathMs(0.215, 0.01), 230, 'Bluetooth headphones (215ms out) are covered in full')
   // The adapted buffer (250..750 for a film, 0..250 for a share) is what the audio receiver gets; the video
   // receiver gets the same plus the fixed path. The adaptation is never added twice.
   for (const buffer of [0, 100, 250, 500, 750]) assert.equal(videoTargetMs(buffer, 40), buffer + 40)

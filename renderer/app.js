@@ -18,6 +18,7 @@ import {
   preferStereoOpus,
 } from './lib.mjs'
 import {captureVideoFrames} from './frames.mjs'
+import {relayAudio} from './audio-relay.mjs'
 import {StreamPlayer} from './player.mjs'
 import {repairedStream} from './peer-stream.mjs'
 import {applySenderParameters} from './sender-parameters.mjs'
@@ -1430,6 +1431,20 @@ function afterPublish(what, promises, peer = null) {
   })
 }
 
+// The film's sound goes out through Web Audio (relayAudio) so it keeps flowing, as silence, while the film is
+// paused: a bare clone of the capture's track sends nothing then, and every viewer's lip-sync held the sound back
+// by the length of each pause afterwards. Without an AudioContext it falls back to the bare clone.
+function filmAudioClone(source) {
+  if (source.kind !== 'audio') return source.clone()
+  try {
+    audioOutput()
+    return relayAudio(audio, source)
+  } catch (error) {
+    logWarn('media', 'audio-relay-failed', {message: errorMessage(error)})
+    return source.clone()
+  }
+}
+
 function publishStream() {
   if (session.preview) return
   const video = ui.localVideo
@@ -1488,7 +1503,7 @@ function publishStream() {
       source.stop() // the frames above carry the picture; the capture's own video is not needed
       return null
     }
-    const clone = source.clone()
+    const clone = filmAudioClone(source)
     if (clone.kind === 'video') clone.contentHint = 'motion'
     clones.set(source, clone)
     source.addEventListener('ended', () => retire(source), {once: true})

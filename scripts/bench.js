@@ -94,7 +94,7 @@ assert.ok(['on', 'off'].includes(options.audioLadder) && ['on', 'off'].includes(
 const variants = options.variant === 'all' ? ['film', 'share'] : [options.variant]
 // The relays are in the path for a damaged link, and for a burst of loss on a clean one (their loss starts at 0).
 const network = degraded || variants.includes('burst') ? createNetwork({lossPct: options.loss, linkKbps: options.linkKbps}) : null
-assert.ok(variants.every((v) => ['film', 'share', 'republish', 'reopen', 'loop', 'burst'].includes(v)), '--variant is film, share, republish, reopen, loop, burst or all')
+assert.ok(variants.every((v) => ['film', 'share', 'republish', 'reopen', 'loop', 'burst', 'pause'].includes(v)), '--variant is film, share, republish, reopen, loop, burst, pause or all')
 
 const scratch = require('./temp-dirs').create('synced-bench-', {keep: Boolean(flag('keep', false)) || Boolean(process.env.KEEP_TEMP)})
 const temporary = scratch.dir
@@ -455,6 +455,64 @@ async function runFilm(env, runIndex) {
     const sent = hostTelemetryOf(hostSelfId)
     sent.hardware = await hardwareEncode(host)
     return {variant: 'film', viewer: viewerRead, host: {offset: hostRead.offset, matchedSteady: hostRead.matchedSteady, video: hostRead.video, levelRms: hostRead.levelRms, clock: hostRead.clock, stereo: hostRead.stereo, raw: hostRead.raw}, transport, telemetry: telemetryOf(selfId), sent, elapsedS: lib.round((Date.now() - startedAt) / 1000, 1), pageErrors: errors, problems: validity({viewer: viewerRead, transport, schedule: env.schedule, variant: 'film', quick: options.quick, extra: {hostRead: sent}})}
+  } finally {
+    host.destroy()
+    viewer.destroy()
+    require('../main/media').stopAll()
+  }
+}
+
+// A film paused for PAUSE_S and played again, read only after the resume (2026-11-10, Lenna: "off by about a
+// second" after every pause, until a seek). A bare captureStream() audio clone sends nothing while the element is
+// paused, so its RTP clock fell behind the picture's (stamped with the wall clock) by the pause, and the viewer's
+// lip-sync then held the sound back by up to that much, building over ~30s (her audio jitter buffer 250ms -> 2.2s).
+// The offsets are split into the first 15s after the resume and the rest, and the late half is what is gated.
+const PAUSE_AT_S = 11
+const PAUSE_S = 6
+const PAUSE_LATE_LIMIT_MS = 120
+async function runPause(env, runIndex) {
+  const {host, viewer} = await connectedPair(`pause${runIndex}`, 'pausehost', 'pauseviewer')
+  try {
+    await applySendOptions(host)
+    await Promise.all([run(host, '__bench.installTap()'), run(viewer, '__bench.installTap()')])
+    await run(viewer, `__bench.watchVideo(() => document.getElementById('remote-video'))`)
+    await run(host, `__test.hostFile(${JSON.stringify(env.clip)})`)
+    await until(viewer, 'document.getElementById("remote-video").getVideoPlaybackQuality().totalVideoFrames > 24', 45000, 'viewer receives video')
+    const local = "document.getElementById('local-video')"
+    await until(host, `${local}.currentTime > ${PAUSE_AT_S}`, 60000, `the clip reaches ${PAUSE_AT_S}s`)
+    await run(host, "__test.control('pause'); true")
+    await pause(PAUSE_S * 1000)
+    const pausedAt = await run(host, `${local}.currentTime`)
+    await run(host, "__test.control('play'); true")
+    const resumedAt = await run(viewer, 'performance.now()') // the viewer page's clock, which the frames and beeps carry
+    const duration = env.schedule.duration
+    await until(host, `${local}.currentTime > ${duration - 1.5} || ${local}.ended`, (duration + 40) * 1000, 'the clip reaches its end')
+    await pause(1500)
+    const data = JSON.parse(await run(viewer, '__bench.collect().then(JSON.stringify)'))
+    const after = {...data, frames: data.frames.filter((f) => f[4] > resumedAt + 300), beeps: data.beeps.filter((b) => b.at > resumedAt + 300)}
+    const viewerRead = readSide(after, env.schedule, {deviceMs: options.deviceLatencyMs})
+    const resumeT = pausedAt
+    const early = viewerRead.offsets.filter((o) => o.t < resumeT + 15).map((o) => o.ms)
+    const late = viewerRead.offsets.filter((o) => o.t >= resumeT + 15).map((o) => o.ms)
+    const selfId = await run(viewer, '__test.selfId')
+    await run(viewer, '__test.flushLog()')
+    diagnostics.flush()
+    const samples = fs.readFileSync(diagnostics.filePath(), 'utf8').trim().split('\n').map(parseLine).filter(Boolean).filter((e) => e.ev === 'viewer-sample' && e.self === selfId && e.s)
+    const aJb = samples.map((e) => e.s.aJb).filter(Number.isFinite)
+    const off = samples.map((e) => e.s.off).filter(Number.isFinite)
+    const errors = [...await run(host, '__test.errors'), ...await run(viewer, '__test.errors')]
+    const result = {
+      variant: 'pause', pauseAtS: lib.round(pausedAt, 2), pauseS: PAUSE_S,
+      early: lib.summarizeOffsets(early), late: lib.summarizeOffsets(late), driftMsPerS: viewerRead.offset.driftMsPerS, offsets: viewerRead.offsets,
+      audioJitterBufferMaxMs: aJb.length ? Math.max(...aJb) : null, estimatedOffsetMaxMs: off.length ? Math.max(...off) : null,
+      levelRms: viewerRead.levelRms, matched: viewerRead.matched, pageErrors: errors,
+    }
+    result.problems = [
+      ...(late.length < 8 ? [`only ${late.length} events paired from 15s after the resume (need 8)`] : []),
+      ...(!(viewerRead.levelRms >= 0.1) ? [`the received beep's RMS ${viewerRead.levelRms} is under 0.1: the audio arrived silent or not at all`] : []),
+      ...(late.length && Math.abs(result.late.medianMs) > PAUSE_LATE_LIMIT_MS ? [`from 15s after a ${PAUSE_S}s pause the sound is ${result.late.medianMs}ms off the picture (limit ${PAUSE_LATE_LIMIT_MS}): the pause moved the audio's timeline`] : []),
+    ]
+    return result
   } finally {
     host.destroy()
     viewer.destroy()
@@ -879,12 +937,30 @@ function summarizeVariant(allRuns) {
   }
 }
 
+function summarizePause(allRuns) {
+  const runs = allRuns.filter((r) => !r.failed)
+  const col = (pick) => runs.map(pick).filter(Number.isFinite)
+  const both = (pick, digits = 1) => ({perRun: col(pick), median: lib.round(lib.median(col(pick)), digits)})
+  return {runs: runs.length, failedRuns: allRuns.length - runs.length, earlyMedianMs: both((r) => r.early.medianMs), lateMedianMs: both((r) => r.late.medianMs), driftMsPerS: both((r) => r.driftMsPerS, 2), audioJitterBufferMaxMs: both((r) => r.audioJitterBufferMaxMs, 0), estimatedOffsetMaxMs: both((r) => r.estimatedOffsetMaxMs, 0)}
+}
+
 function printReport(report) {
   const f = (v, unit = '') => (v == null ? 'n/a' : `${v}${unit}`)
   const mode = [report.options.loss ? `loss ${report.options.loss}%` : '', report.options.linkKbps ? `link ${report.options.linkKbps}kbps` : '', report.options.audioLadder === 'off' ? 'audio ladder off' : '', report.options.audioFirst === 'off' ? 'keep-audio-quality off' : '', report.options.tree ? `tree ${path.basename(report.options.tree)}` : ''].filter(Boolean).join(', ') || 'clean link'
   console.log(`\n=== Benchmark ${report.version} ${report.date}${report.options.quick ? ' (quick: not a result)' : ''} [${mode}] ===`)
   for (const [variant, runs] of Object.entries(report.variants)) {
     const s = report.summary[variant]
+    if (variant === 'pause') {
+      console.log(`
+--- pause: ${runs.length} run(s), paused ${PAUSE_S}s at ${PAUSE_AT_S}s, read after the resume (positive = sound late) ---`)
+      console.log(`  first 15s after the resume ${f(s.earlyMedianMs.median, 'ms')} (${s.earlyMedianMs.perRun.join(', ')}); from 15s on ${f(s.lateMedianMs.median, 'ms')} (${s.lateMedianMs.perRun.join(', ')}); drift ${f(s.driftMsPerS.median, 'ms/s')}; viewer audio jitter buffer peak ${f(s.audioJitterBufferMaxMs.median, 'ms')}, s.off peak ${f(s.estimatedOffsetMaxMs.median, 'ms')}`)
+      runs.forEach((r, i) => {
+        if (r.failed) return console.log(`  run ${i + 1}: FAILED ${r.failed}`)
+        console.log(`  run ${i + 1}: offsets after the resume ${r.offsets.map((o) => `${o.t.toFixed(0)}s ${o.ms.toFixed(0)}`).join(', ')}`)
+        for (const problem of r.problems) console.log(`         INVALID: ${problem}`)
+      })
+      continue
+    }
     if (variant === 'burst') {
       console.log(`
 --- burst: ${runs.length} run(s), ${report.options.burstPct}% loss for ${report.options.burstS}s after ${report.options.burstAtS}s, ${report.options.recoverS}s to recover ---`)
@@ -982,7 +1058,7 @@ app.whenReady().then(async () => {
       for (let i = 1; i <= options.runs; i++) {
         console.log(`${variant} run ${i}/${options.runs} ...`)
         try {
-          variantsOut[variant].push(await (variant === 'film' ? runFilm(env, i) : variant === 'loop' ? runLoop(env, i).then(async (short) => { const long = await runLongLoop(env, i); return {...short, long, problems: [...short.problems, ...long.problems], pageErrors: [...short.pageErrors, ...long.pageErrors]} }) : variant === 'burst' ? runBurst(env, i) : variant === 'republish' || variant === 'reopen' ? runRepublish(env, i, variant) : runShare(env, i)))
+          variantsOut[variant].push(await (variant === 'film' ? runFilm(env, i) : variant === 'loop' ? runLoop(env, i).then(async (short) => { const long = await runLongLoop(env, i); return {...short, long, problems: [...short.problems, ...long.problems], pageErrors: [...short.pageErrors, ...long.pageErrors]} }) : variant === 'burst' ? runBurst(env, i) : variant === 'pause' ? runPause(env, i) : variant === 'republish' || variant === 'reopen' ? runRepublish(env, i, variant) : runShare(env, i)))
         } catch (error) {
           console.error(error)
           variantsOut[variant].push({variant, failed: String(error.message || error), problems: [`the run failed: ${error.message}`]})
@@ -1001,7 +1077,7 @@ app.whenReady().then(async () => {
       },
       mode: {loss: options.loss, linkKbps: options.linkKbps, audioLadder: options.audioLadder, audioFirst: options.audioFirst, tree: options.tree ? path.basename(options.tree) : null, network: network && {kind: 'UDP relays (scripts/bench-net.js)', stats: network.stats}},
       variants: variantsOut,
-      summary: Object.fromEntries(Object.entries(variantsOut).map(([k, runs]) => [k, k === 'republish' || k === 'reopen' ? summarizeRepublish(runs) : k === 'loop' ? summarizeLoop(runs) : k === 'burst' ? summarizeBurst(runs) : summarizeVariant(runs)])),
+      summary: Object.fromEntries(Object.entries(variantsOut).map(([k, runs]) => [k, k === 'republish' || k === 'reopen' ? summarizeRepublish(runs) : k === 'loop' ? summarizeLoop(runs) : k === 'burst' ? summarizeBurst(runs) : k === 'pause' ? summarizePause(runs) : summarizeVariant(runs)])),
     }
     const dir = path.join(root, 'work', 'bench')
     fs.mkdirSync(dir, {recursive: true})

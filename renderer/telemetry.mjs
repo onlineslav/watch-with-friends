@@ -113,7 +113,9 @@ export function adaptBuffer(state, troubled, intervalMs) {
 // buffer (the same value the audio receiver gets, which grows and shrinks with trouble) PLUS this fixed
 // amount, computed once from the two so the adaptation is never added to itself. Rounded to 10ms so a
 // latency that wobbles by a fraction doesn't rewrite the target every tick.
-export const MAX_AUDIO_PATH_MS = 200
+// Capped at 300ms: Bluetooth headphones report 200-250ms (a Sony WH-1000XM4 on a Mac: outputLatency 215ms), which a
+// 200ms cap left partly uncovered; a reading past 300 is taken as nonsense rather than waited for.
+export const MAX_AUDIO_PATH_MS = 300
 export function audioPathMs(outputLatencySeconds, baseLatencySeconds) {
   const ms = ((Number(outputLatencySeconds) || 0) + (Number(baseLatencySeconds) || 0)) * 1000
   return Number.isFinite(ms) && ms > 0 ? Math.min(MAX_AUDIO_PATH_MS, Math.round(ms / 10) * 10) : 0

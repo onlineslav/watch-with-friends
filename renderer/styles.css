@@ -3349,3 +3349,74 @@ kbd {
 .volume.adjusting .volume-readout {
   opacity: 1;
 }
+
+/* Skip intro: a pill above the controls' right end, shown only during the intro. It stays when the
+   rest of the chrome hides (it is the one thing worth reaching for then) and drops to the corner. */
+.skip-intro {
+  position: absolute;
+  right: 20px;
+  bottom: 96px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  background: rgba(16, 16, 22, 0.72);
+  backdrop-filter: blur(8px);
+  color: #fff;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: bottom 0.2s, background 0.15s, border-color 0.15s;
+  animation: skip-intro-in 0.25s ease-out;
+}
+.skip-intro:hover,
+.skip-intro:focus-visible {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.skip-intro svg { width: 18px; height: 18px; }
+.room.idle .skip-intro { bottom: 24px; }
+@keyframes skip-intro-in {
+  from { opacity: 0; transform: translateY(6px); }
+}
+
+/* "Skipped forward 30s": centred over the picture, fades by itself (app.js restarts it per press). */
+.skip-flash {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(80%, 520px);
+  padding: 12px 20px;
+  border-radius: 14px;
+  background: rgba(16, 16, 22, 0.72);
+  backdrop-filter: blur(8px);
+  color: #fff;
+  font-size: 17px;
+  font-weight: 600;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-50%, -50%);
+}
+.skip-flash span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.skip-flash svg { flex: none; width: 22px; height: 22px; }
+.skip-flash.back svg { transform: scaleX(-1); }
+.skip-flash.show { animation: skip-flash 1.1s ease-out forwards; }
+@keyframes skip-flash {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(0.92); }
+  12% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  70% { opacity: 1; }
+  100% { opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .skip-intro { animation: none; }
+  .skip-flash.show { animation-name: skip-flash-fade; }
+  @keyframes skip-flash-fade { 0%, 70% { opacity: 1; } 100% { opacity: 0; } }
+}

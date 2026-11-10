@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld('api', {
   probe: (filePath) => ipcRenderer.invoke('media:probe', filePath),
   availableFiles: (paths) => ipcRenderer.invoke('media:available-files', paths),
   readImage: (filePath) => ipcRenderer.invoke('media:image', filePath),
+  findIntro: (filePath) => ipcRenderer.invoke('media:intro', filePath),
   screenShareSources: () => ipcRenderer.invoke('screenshare:sources'),
   selectScreenShareSource: (id, options) => ipcRenderer.invoke('screenshare:select', id, options),
   startAppWindows: (sourceId) => ipcRenderer.invoke('appwindows:start', sourceId),

@@ -235,4 +235,4 @@ async function readImage(filePath) {
   return {name: path.basename(filePath), mime: mime || 'image/png', bytes}
 }
 
-module.exports = {detectCapabilities, probe, pull, readImage, startSession, stopAll, stopSession, subtitleCues}
+module.exports = {FFMPEG, FFPROBE, detectCapabilities, probe, pull, readImage, startSession, stopAll, stopSession, subtitleCues}

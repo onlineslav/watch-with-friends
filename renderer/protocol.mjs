@@ -1,4 +1,5 @@
 // Small, explicit boundaries for data that comes from another computer.
+import {cleanIntro} from './skip.mjs'
 import {cleanText} from './profile.mjs'
 import {isYouTubeId} from '../shared/youtube.mjs'
 import {cleanShare} from './screenshare.mjs'
@@ -112,6 +113,7 @@ export function cleanState(value, peerId) {
     error: typeof value.error === 'string' ? cleanText(value.error, 200) : null,
     playlistId: value.playlistId, playlistPosition: value.playlistPosition ?? 0, finished: value.finished === true,
     ...(value.youtubeId && {youtubeId: value.youtubeId}),
+    intro: cleanIntro(value.intro, value.duration),
     audio, subtitles, audioSelected: value.audioSelected,
     subtitleSelected: value.subtitleSelected, sender: cleanSender(value.sender), viewers, senders,
   }

@@ -157,6 +157,13 @@ export function nextItem(playlist, current, playable = () => true) {
   return orderedItems(playlist).find((item) => compare(item, from) > 0 && playable(item)) || null
 }
 
+// The last playable item before `current`, the same way.
+export function previousItem(playlist, current, playable = () => true) {
+  if (!current) return null
+  const from = playlist.items.get(current.id) || current
+  return orderedItems(playlist).findLast((item) => compare(item, from) < 0 && playable(item)) || null
+}
+
 // The drawer's tab: dragging it left pulls the panel out, dragging right pushes it back in.
 export const DRAWER = {minWidth: 220, maxWidth: 480, closeBelow: 120, defaultWidth: 300}
 

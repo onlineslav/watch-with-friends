@@ -7,6 +7,7 @@ const machine = require('./machine')
 const {createNetProbe} = require('./net-probe')
 const {createPriorityBoost} = require('./priority')
 const media = require('./media')
+const {createIntroFinder} = require('./intro')
 const appAudio = require('./app-audio')
 const appWindows = require('./app-windows')
 const shareSources = require('./share-sources')
@@ -30,6 +31,9 @@ const MEDIA_EXTENSIONS = [
 ]
 const SUBTITLE_EXTENSIONS = ['srt', 'ass', 'ssa', 'vtt']
 const downloadStores = new Map()
+// Skip intro (main/intro.js): made on first use, results kept in userData/intros.json.
+let intros = null
+const introFinder = () => (intros ??= createIntroFinder({ffmpeg: media.FFMPEG, ffprobe: media.FFPROBE, cacheFile: path.join(app.getPath('userData'), 'intros.json'), record: (...args) => log.record(...args)}))
 // Set by screenshare:select (or appwindows:grant) right before the renderer calls
 // getDisplayMedia, and read once by the display-media handler below. Only a source this list
 // itself just returned, or a window a whole-app share's helper just reported, is ever granted.
@@ -224,6 +228,7 @@ function registerIpc() {
       try { return (await fs.promises.stat(filePath)).isFile() } catch { return false }
     }))
   })
+  ipcMain.handle('media:intro', (_event, filePath) => (typeof filePath === 'string' && path.isAbsolute(filePath) ? introFinder().find(filePath) : null))
   ipcMain.handle('media:image', (_event, filePath) => media.readImage(filePath))
   ipcMain.handle('screenshare:sources', async () => {
     // On Windows a helper process lists them: desktopCapturer froze this process for half a

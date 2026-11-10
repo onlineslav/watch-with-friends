@@ -50,6 +50,7 @@ import {
   maxDrawerWidth,
   mergePlaylist,
   nextItem,
+  previousItem,
   orderedItems,
   playlistSnapshot,
   clampDrag,
@@ -104,6 +105,7 @@ import {
 import {LongTaskTally, DelayTally, watchLongTasks, frameSpacing, freshMachine, settingsTag} from './machine.mjs'
 import {describeAudioOutput, audioDeviceKey, diffSettings, MARK_KEY, MARK_KEY_LABEL} from './context.mjs'
 import {fitLayout, LAYOUT_STEPS, trackMenu, parseTrackChoice} from './controls-layout.mjs'
+import {chainSkip, cleanIntro, introShowing, previousAction, skipText} from './skip.mjs'
 import {LANGUAGES, languageName, cleanLanguagePrefs, describeTrack, describeLabel, chooseTracks, trackSignature, remember, folderOf} from './languages.mjs'
 
 const APP_ID = 'synced-video-player-7c1e4b-v2'
@@ -318,6 +320,11 @@ const ui = {
   time: $('time'),
   seek: $('seek'),
   seekPreview: $('seek-preview'),
+  previous: $('previous'),
+  next: $('next'),
+  skipIntro: $('skip-intro'),
+  skipFlash: $('skip-flash'),
+  skipFlashText: $('skip-flash-text'),
   duration: $('duration'),
   audio: $('audio-select'),
   subtitles: $('subtitle-select'),
@@ -885,6 +892,7 @@ async function hostFile(filePath, item = null, {preview = false, start, autoplay
       preview,
     })
     current.openingMedia = false
+    findIntro(current, claimedAt, filePath)
     if (opened && autoplay && !current.preview) ui.localVideo.play().catch((error) => {
       // AbortError is play() being interrupted (a pause, or the next file loading) before it got
       // going, not the media failing: pausing straight after opening used to end the host's
@@ -909,8 +917,20 @@ function stopHosting() {
   clearHostImage()
   clearShare()
   session.playing = null
+  session.intro = null
   session.openingMedia = false
   setRole('idle')
+}
+
+// Skip intro (main/intro.js): a chapter named as the intro, else the theme this episode shares with
+// the next or previous one in its folder. A few seconds the first time for a file, instant after
+// (kept in userData/intros.json); the host sends it in its state so everyone gets the button.
+async function findIntro(current, claimedAt, filePath) {
+  if (!player.media?.video) return
+  const intro = await window.api.findIntro(filePath).catch(() => null)
+  if (session !== current || current.closed || current.claimedAt !== claimedAt || !isHost()) return
+  current.intro = cleanIntro(intro, player.duration)
+  if (current.intro) broadcastState()
 }
 
 const hostedTitle = () => session.image?.name || session.screen?.name || youtube.title || (youtube.videoId && session.playlist.items.get(session.playing?.id)?.title) || player.media?.title || player.media?.name || null
@@ -1645,6 +1665,7 @@ function hostState() {
     title: cleanText(hostedTitle(), 200),
     loading: session.openingMedia || (!media && !youtube.loaded && !session.image && !session.screen && !session.mediaError),
     ...(youtube.videoId && {youtubeId: youtube.videoId}),
+    intro: session.intro || null,
     image: session.image ? {id: session.image.id} : null,
     screen: session.screen,
     playlistId: session.playing?.id || null,
@@ -3688,9 +3709,71 @@ const toggleLoop = () => control('loop', !session.loop)
 
 // Plex-style skips: 10 seconds back, 30 forward. The arrow keys do the same.
 function skip(seconds) {
+  if (!canSeek()) return
   const duration = currentDuration()
-  const target = Math.max(0, currentTime() + seconds)
-  control('seek', duration ? Math.min(target, duration) : target)
+  const now = currentTime()
+  const target = Math.max(0, now + seconds)
+  const to = duration ? Math.min(target, duration) : target
+  control('seek', to)
+  if (Math.abs(to - now) < 0.5) return // already at the start or the end: nothing moved, nothing to say
+  lastSkip = chainSkip(lastSkip, seconds, performance.now())
+  flash(skipText(lastSkip.total), {back: seconds < 0})
+}
+let lastSkip = null
+
+// Something loaded that has a timeline (not a picture or a share), as the controls show it.
+const canSeek = () => session.role !== 'idle' && !ui.seek.disabled && !ui.controls.classList.contains('disabled')
+
+// A short note in the middle of the picture ("Skipped forward 30s", "Next: Episode 4") that fades
+// by itself: a CSS animation, restarted for each press, so nothing runs between presses.
+function flash(text, {back = false} = {}) {
+  ui.skipFlashText.textContent = text
+  ui.skipFlash.classList.toggle('back', back)
+  ui.skipFlash.hidden = false
+  ui.skipFlash.classList.remove('show')
+  void ui.skipFlash.offsetWidth // restarts the animation on a press during the last one
+  ui.skipFlash.classList.add('show')
+}
+ui.skipFlash.addEventListener('animationend', () => {
+  ui.skipFlash.classList.remove('show')
+  ui.skipFlash.hidden = true
+})
+
+const shownIntro = () => (isHost() ? session.intro : session.remote?.intro) || null
+function skipIntro() {
+  const intro = shownIntro()
+  if (!canSeek() || !introShowing(intro, currentTime())) return
+  logAction('skip-intro', {from: round(currentTime(), 1), to: intro.end})
+  control('seek', intro.end)
+  flash('Skipped intro')
+}
+
+// Where we are in the playlist: the host's item, or the one the host says it's playing.
+function playlistCursor() {
+  if (isHost()) return session.playing || null
+  const r = session.remote
+  return session.role === 'viewer' && r?.playlistId ? {id: r.playlistId, position: r.playlistPosition} : null
+}
+function playNextFromUser() {
+  const cursor = playlistCursor()
+  const next = cursor && nextItem(session.playlist, cursor, playable)
+  if (!next) return
+  logAction('next', {})
+  playItem(next.id)
+  flash(`Next: ${next.title}`)
+}
+function playPrevious() {
+  const cursor = playlistCursor()
+  const previous = cursor && previousItem(session.playlist, cursor, playable)
+  if (previousAction(currentTime(), Boolean(previous)) === 'restart') {
+    if (!canSeek()) return
+    control('seek', 0)
+    flash('Back to the start', {back: true})
+  } else {
+    logAction('previous', {})
+    playItem(previous.id)
+    flash(`Previous: ${previous.title}`, {back: true})
+  }
 }
 
 function toggleFullscreen() {
@@ -3986,6 +4069,11 @@ function render() {
   // A picture or a share has nothing to play, seek or loop (control ignores them), so say so.
   ui.play.disabled = ui.loop.disabled = ui.seek.disabled = imageMode || shareMode
   ui.play.dataset.state = isPlaying() ? 'playing' : 'paused'
+  // Next is for the playlist; Previous also restarts what's playing.
+  const cursor = role === 'idle' ? null : playlistCursor()
+  ui.next.disabled = !cursor || !nextItem(session.playlist, cursor, playable)
+  ui.previous.disabled = (!ready || imageMode || shareMode) && !(cursor && previousItem(session.playlist, cursor, playable))
+  ui.skipIntro.hidden = !ready || imageMode || shareMode || Boolean(mediaError) || !introShowing(shownIntro(), time)
   ui.loop.classList.toggle('active', session.loop)
   ui.loop.setAttribute('aria-pressed', String(session.loop))
   // While the thumb is held, the time label follows the thumb, not the playhead.
@@ -4991,6 +5079,12 @@ for (const button of document.querySelectorAll('[data-skip]')) {
   button.addEventListener('click', () => skip(Number(button.dataset.skip)))
 }
 ui.loop.addEventListener('click', toggleLoop)
+ui.previous.addEventListener('click', playPrevious)
+ui.next.addEventListener('click', playNextFromUser)
+ui.skipIntro.addEventListener('click', () => {
+  ui.skipIntro.blur()
+  skipIntro()
+})
 ui.localVideo.addEventListener('click', togglePlay)
 ui.remoteVideo.addEventListener('click', togglePlay)
 ui.stage.addEventListener('dblclick', (event) => {
@@ -5298,6 +5392,12 @@ document.addEventListener('keydown', (event) => {
   } else if (event.code === 'ArrowUp' || event.code === 'ArrowDown') {
     event.preventDefault() // a focused volume slider would otherwise step twice
     nudgeVolume(event.code === 'ArrowUp' ? 1 : -1)
+  } else if (event.code === 'KeyN' && event.shiftKey) {
+    playNextFromUser()
+  } else if (event.code === 'KeyP' && event.shiftKey) {
+    playPrevious()
+  } else if (event.code === 'KeyS' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    if (!ui.skipIntro.hidden) skipIntro()
   } else if (event.code === 'KeyL') {
     toggleLoop()
   } else if (event.code === 'KeyF') {

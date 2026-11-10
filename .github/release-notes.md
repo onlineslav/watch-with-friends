@@ -1,12 +1,11 @@
-## What's new in 0.8.9
+## What's new in 0.8.10
 
 Windows users and Mac users on 0.5.3 or later receive this release through the in-app updater. Mac users on 0.5.2 or earlier should install the DMG below once to enable future in-app updates.
 
-- **Skip intro.** A **Skip intro** button appears while a show's intro plays, for everyone in the room. Press it (or **S**) to jump straight to the episode. The app finds the intro from the file's chapters, or by spotting the theme an episode shares with the next or previous episode in the same folder. The first episode in a folder takes a few seconds to check; the rest are instant.
-- **Previous and Next buttons** next to the skip buttons. Previous restarts what's playing, or goes back to the earlier item if you're in the first few seconds. Next plays the next item in the playlist. **Shift+P** and **Shift+N** do the same.
-- **Skips say what they did.** The 10-second and 30-second skips show "Skipped forward 30s" on screen, and quick presses add up ("Skipped forward 1m 30s").
+- **Sound stays in sync after a pause.** After the host paused a film and played it again, viewers could hear the sound drift up to a second or two behind the picture until someone moved the playback bar. The host now keeps sending the sound through a pause, so it stays in step.
+- **Bluetooth headphones line up better.** The picture now waits the full delay that headphones report (up to 300 ms, was 200 ms).
 
-Also in 0.8.7: files start in your language (Settings → Languages). See the 0.8.7 release for details.
+Also in 0.8.9: Skip intro, Previous/Next buttons and an on-screen note for every skip. See the 0.8.9 release for details.
 
 ## Download
 

@@ -536,14 +536,67 @@ async function fixtures() {
   execFileSync(require('ffmpeg-static'), ['-v', 'error', '-f', 'lavfi', '-i', 'color=c=blue:size=64x64', '-frames:v', '1', picture], {windowsHide: true, timeout: 15000})
   const short = path.join(temporary, 'short.mp4') // M1.12: a film short enough to loop many times in a few seconds
   execFileSync(require('ffmpeg-static'), ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=320x180:rate=24', '-f', 'lavfi', '-i', 'sine=frequency=440', '-t', '2.5', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', short], {windowsHide: true, timeout: 15000})
-  return {video, picture, sound, short}
+  // A film with an "Intro" chapter from 5s to 20s: the Skip intro button's source (main/intro.js).
+  const intro = path.join(temporary, 'intro.mp4')
+  const chapters = path.join(temporary, 'chapters.txt')
+  fs.writeFileSync(chapters, `;FFMETADATA1
+[CHAPTER]
+TIMEBASE=1/1000
+START=0
+END=5000
+title=Cold open
+[CHAPTER]
+TIMEBASE=1/1000
+START=5000
+END=20000
+title=Intro
+[CHAPTER]
+TIMEBASE=1/1000
+START=20000
+END=60000
+title=Episode
+`)
+  execFileSync(require('ffmpeg-static'), ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=320x180:rate=24', '-f', 'lavfi', '-i', 'sine=frequency=440', '-i', chapters, '-map', '0:v', '-map', '1:a', '-map_chapters', '2', '-t', '60', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', intro], {windowsHide: true, timeout: 15000})
+  return {video, picture, sound, short, intro}
+}
+
+// Skip intro, the skip note and Previous, pressed by a viewer: the host finds the chapter, both see the
+// button during the intro only, pressing it lands the host past the intro, the ±10 skips add up on screen,
+// and Previous restarts the film.
+async function checkSkip(host, viewer, introFile) {
+  const shown = (id) => `!document.getElementById(${JSON.stringify(id)}).hidden`
+  const flashText = 'document.getElementById("skip-flash-text").textContent'
+  const hostTime = '__test.getState().time'
+  await run(host, `__test.hostFile(${JSON.stringify(introFile)})`)
+  await until(viewer, '__test.session.remote?.intro?.start === 5 && __test.session.remote.intro.end === 20', 30000, 'the viewer receives the intro the host found')
+  await until(viewer, '__test.session.remote && !__test.session.remote.loading && __test.session.peerStreams.get(__test.session.hostId)?.claimedAt === __test.session.remote.claimedAt', 30000, 'the viewer watches the intro film')
+  await until(viewer, `${shown('skip-intro')} === false`)
+  await run(viewer, '__test.control("seek", 8)')
+  await Promise.all([host, viewer].map((win) => until(win, shown('skip-intro'), 10000, 'Skip intro shows during the intro')))
+  await run(viewer, 'document.getElementById("skip-intro").click()')
+  await until(host, `${hostTime} >= 19.5 && ${hostTime} < 25`, 10000, 'Skip intro lands the host at the end of the intro')
+  assert.equal(await run(viewer, flashText), 'Skipped intro')
+  await Promise.all([host, viewer].map((win) => until(win, `!(${shown('skip-intro')})`, 5000, 'Skip intro hides after the intro')))
+  await run(viewer, '__test.control("pause")')
+  await until(host, 'document.getElementById("local-video").paused')
+  await run(viewer, `document.querySelector('[data-skip="-10"]').click(); document.querySelector('[data-skip="-10"]').click(); true`)
+  assert.equal(await run(viewer, flashText), 'Skipped back 20s')
+  await until(host, `${hostTime} < 3`, 10000, 'two -10 skips move the host back 20 seconds')
+  await run(viewer, '__test.control("seek", 30)')
+  await until(host, `${hostTime} >= 29`, 10000)
+  await until(viewer, "__test.session.remote.time >= 29", 5000)
+  assert.equal(await run(viewer, 'document.getElementById("previous").disabled'), false)
+  await run(viewer, 'document.getElementById("previous").click()')
+  assert.equal(await run(viewer, flashText), 'Back to the start')
+  await until(host, `${hostTime} < 1`, 10000, 'Previous restarts the film')
+  console.log('PASS: Skip intro shows during a chaptered intro for host and viewer and skips past it; ±10 skips add up on screen; Previous restarts the film')
 }
 
 app.whenReady().then(async () => {
   const windows = []
   const watchdog = setTimeout(() => { console.error('Network integration check timed out'); finish(1) }, publicDiscovery || checkYouTube ? 240000 : 180000)
   try {
-    const {video, picture, sound, short} = await fixtures()
+    const {video, picture, sound, short, intro} = await fixtures()
     diagnostics.start({dir: path.join(temporary, 'logs'), info: {version: app.getVersion()}})
     require('../main/main').registerIpc()
     ipcMain.removeHandler('net:ice-servers')
@@ -939,6 +992,7 @@ app.whenReady().then(async () => {
       await Promise.all([b, c].map((win) => until(win, '__test.audioLevel() > 0.01 && document.getElementById("remote-video").srcObject.getAudioTracks().length === 1')))
     }
     console.log('PASS: Replaced capture audio removes the old sender and remains audible for both viewers')
+    await checkSkip(a, b, intro)
     await run(c, `__test.hostFile(${JSON.stringify(video)})`)
     await until(a, '__test.session.role === "viewer" && document.getElementById("remote-video").readyState >= 2')
     await until(b, '__test.session.peerStreams.get(__test.session.hostId)?.claimedAt === __test.session.remote.claimedAt')

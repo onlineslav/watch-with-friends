@@ -141,12 +141,24 @@ async function checkControlsLayout(windows, host, viewer) {
   })()`
   const [width, height] = viewer.getContentSize()
   const layouts = []
+  // The walk takes several seconds; start the 30s film near its start so it doesn't loop meanwhile (a
+  // loop takes the capture's tracks out of its stream, which the step after this one needs).
+  await run(host, '__test.control("seek", 1)')
+  await until(host, '__test.getState().time < 5')
   try {
     const sizes = [[1700, false], [1280, true], [1100, true], [900, true], [720, true]]
     for (const [w, playlist] of sizes) {
       viewer.setContentSize(w, 800)
       await run(viewer, `__test.setPlaylistOpen(${playlist})`)
-      // Two frames: the observer, then the refit it schedules.
+      // Wait out the playlist's 0.2s slide (a slow runner read the bar mid-slide, before the refit:
+      // 0.8.8's macOS Intel CI), then two frames: the observer, then the refit it schedules.
+      let lastWidth = -1
+      for (let i = 0; i < 40; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 100))
+        const barWidth = await run(viewer, 'document.getElementById("controls").clientWidth')
+        if (barWidth === lastWidth) break
+        lastWidth = barWidth
+      }
       await until(viewer, `new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(true))))`)
       await new Promise((resolve) => setTimeout(resolve, 150))
       const layout = await run(viewer, read)

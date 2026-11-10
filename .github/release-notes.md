@@ -1,4 +1,4 @@
-## What's new in 0.8.8
+## What's new in 0.8.9
 
 Windows users and Mac users on 0.5.3 or later receive this release through the in-app updater. Mac users on 0.5.2 or earlier should install the DMG below once to enable future in-app updates.
 

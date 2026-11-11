@@ -246,7 +246,7 @@ test('readDetail picks the live audio stream over a stale one and reads the cand
   const live = {id: 'new', type: 'inbound-rtp', kind: 'audio', ssrc: 2, packetsReceived: 50, lastPacketReceivedTimestamp: 9000}
   assert.equal(readDetail([stale, live]).audioIn.ssrc, 2)
   assert.equal(readDetail([live, stale]).audioIn.ssrc, 2)
-  assert.deepEqual(readDetail(detailReport(1)).link, {protocol: 'udp', local: 'relay', remote: 'host', relay: 'tcp', tcp: null})
+  assert.deepEqual(readDetail(detailReport(1)).link, {protocol: 'udp', local: 'relay', remote: 'host', relay: 'tcp', tcp: null, id: 'pair', lf: null, rf: null, nt: null, switches: null})
 })
 
 const SDP = [
@@ -268,13 +268,37 @@ test('linkFacts gathers the slow-changing facts and is stable between identical 
   const detail = readDetail(detailReport(1))
   const facts = linkFacts(detail, {local: parseOpusFmtp(SDP), remote: null})
   assert.deepEqual(facts, {
-    net: {p: 'udp', l: 'relay', r: 'host', rp: 'tcp'},
+    net: {p: 'udp', l: 'relay', r: 'host', rp: 'tcp', id: 'pair'},
     venc: {impl: 'libx264', hw: false, codec: 'video/H264'},
     vdec: {impl: 'ExternalDecoder', hw: true, codec: 'video/H264'},
     opus: {local: {ch: 2, st: 1, sst: 1, br: 510000, fec: 1}},
   })
   assert.equal(JSON.stringify(facts), JSON.stringify(linkFacts(readDetail(detailReport(5)), {local: parseOpusFmtp(SDP)})), 'counters do not leak into the facts')
   assert.equal(linkFacts(readDetail([])), null)
+})
+
+test('linkFacts follows the selected route and never logs an address', () => {
+  const base = detailReport(1).filter((s) => s.type !== 'candidate-pair' && !s.type.endsWith('-candidate'))
+  const route = (selected) => [
+    ...base,
+    {id: 'T', type: 'transport', selectedCandidatePairId: selected, selectedCandidatePairChanges: selected === 'B' ? 2 : 1},
+    // The old pair is still nominated and succeeded for a moment after ICE switches: the transport wins.
+    {id: 'A', type: 'candidate-pair', nominated: true, state: 'succeeded', localCandidateId: 'la', remoteCandidateId: 'ra'},
+    {id: 'B', type: 'candidate-pair', nominated: true, state: 'succeeded', localCandidateId: 'lb', remoteCandidateId: 'rb'},
+    {id: 'la', type: 'local-candidate', candidateType: 'host', protocol: 'udp', address: '192.168.1.20', networkType: 'ethernet'},
+    {id: 'ra', type: 'remote-candidate', candidateType: 'srflx', protocol: 'udp', address: '203.0.113.9'},
+    {id: 'lb', type: 'local-candidate', candidateType: 'srflx', protocol: 'udp', address: '2001:db8::1', networkType: 'wifi'},
+    {id: 'rb', type: 'remote-candidate', candidateType: 'host', protocol: 'udp', address: 'abc-123.local'},
+  ]
+  const a = linkFacts(readDetail(route('A'))).net
+  const b = linkFacts(readDetail(route('B'))).net
+  assert.deepEqual(a, {p: 'udp', l: 'host', r: 'srflx', id: 'A', lf: 4, rf: 4, nt: 'ethernet', sw: 1})
+  assert.deepEqual(b, {p: 'udp', l: 'srflx', r: 'host', id: 'B', lf: 6, rf: 'mdns', nt: 'wifi', sw: 2})
+  assert.ok(!/192\.168|203\.0|2001|abc-123/.test(JSON.stringify([a, b])), 'no address in the facts')
+  // readStats uses the same route for its RTT.
+  assert.equal(readStats([{id: 'T', type: 'transport', selectedCandidatePairId: 'B'},
+    {id: 'A', type: 'candidate-pair', nominated: true, state: 'succeeded', currentRoundTripTime: 0.5},
+    {id: 'B', type: 'candidate-pair', nominated: true, state: 'succeeded', currentRoundTripTime: 0.04}]).rttMs, 40)
 })
 
 test('linkFacts still names the codec when Chromium withholds the encoder and decoder implementation', () => {

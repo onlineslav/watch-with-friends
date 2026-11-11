@@ -22,6 +22,22 @@ export function bitrateDelta(previous, next) {
   return {bitrateBps: Math.round(bytes * 8000 / intervalMs), intervalMs: Math.round(intervalMs)}
 }
 
+// The route a connection is using now. The transport's selectedCandidatePairId names it exactly; the
+// nominated-and-succeeded search is the fallback for a report without it (it can find none, or the old
+// pair, for a moment while ICE switches routes). `switches` counts route changes since the connection began.
+export function selectedPair(report, byId) {
+  let pair = null
+  let switches = null
+  report.forEach((s) => {
+    if (s.type === 'transport' && s.selectedCandidatePairId && byId.get(s.selectedCandidatePairId)) {
+      pair = byId.get(s.selectedCandidatePairId)
+      if (Number.isFinite(s.selectedCandidatePairChanges)) switches = s.selectedCandidatePairChanges
+    }
+  })
+  if (!pair) report.forEach((s) => { if (s.type === 'candidate-pair' && s.nominated && s.state === 'succeeded') pair = s })
+  return {pair, switches}
+}
+
 export function readStats(report, {audioOnly = false} = {}) {
   const byId = new Map()
   report.forEach((s) => byId.set(s.id, s))
@@ -32,11 +48,10 @@ export function readStats(report, {audioOnly = false} = {}) {
   // for the video ones in audio-only mode.
   let audioInbound = null
   let audioOutbound = null
-  let pair = null
+  const {pair} = selectedPair(report, byId)
   report.forEach((s) => {
     if (s.type === 'inbound-rtp' && s.kind === (audioOnly ? 'audio' : 'video')) inbound = busiest(inbound, s)
     else if (s.type === 'outbound-rtp' && s.kind === (audioOnly ? 'audio' : 'video')) outbound = busiest(outbound, s)
-    else if (s.type === 'candidate-pair' && s.nominated && s.state === 'succeeded') pair = s
     if (s.type === 'inbound-rtp' && s.kind === 'audio') audioInbound = busiest(audioInbound, s)
     else if (s.type === 'outbound-rtp' && s.kind === 'audio') audioOutbound = busiest(audioOutbound, s)
   })
@@ -198,6 +213,13 @@ export function describePeer({self = false, rttMs = null, relayed = false, sende
 
 const num = (value) => (typeof value === 'number' && Number.isFinite(value) ? value : null)
 const label = (value) => (typeof value === 'string' && value ? value.slice(0, 48) : null)
+// An address's family, never the address: 4, 6, or 'mdns' for Chromium's hidden `.local` names.
+export function family(address) {
+  if (typeof address !== 'string' || !address) return null
+  if (address.endsWith('.local')) return 'mdns'
+  if (address.includes(':')) return 6
+  return /^\d+\.\d+\.\d+\.\d+$/.test(address) ? 4 : null
+}
 const flag = (value) => (typeof value === 'boolean' ? value : null)
 const kindOf = (stat) => stat.kind ?? stat.mediaType
 export const round = (value, places = 0) => (value == null || !Number.isFinite(value) ? null : Math.round(value * 10 ** places) / 10 ** places)
@@ -245,14 +267,13 @@ export function readDetail(report) {
   let videoIn = null
   let videoOut = null
   let playout = null
-  let pair = null
+  const {pair, switches} = selectedPair(report, byId)
   report.forEach((s) => {
     const kind = kindOf(s)
     if (s.type === 'inbound-rtp' && kind === 'audio') audioIn = newest(audioIn, s, 'lastPacketReceivedTimestamp')
     else if (s.type === 'inbound-rtp' && kind === 'video') videoIn = newest(videoIn, s, 'lastPacketReceivedTimestamp')
     else if (s.type === 'outbound-rtp' && kind === 'video') videoOut = !videoOut || (num(s.framesPerSecond) || 0) > (num(videoOut.framesPerSecond) || 0) ? s : videoOut
     else if (s.type === 'media-playout' && kind === 'audio') playout = s
-    else if (s.type === 'candidate-pair' && s.nominated && s.state === 'succeeded') pair = s
   })
   const local = pair && byId.get(pair.localCandidateId)
   const remote = pair && byId.get(pair.remoteCandidateId)
@@ -287,6 +308,10 @@ export function readDetail(report) {
     link: pair && {
       protocol: label(local?.protocol), local: label(local?.candidateType), remote: label(remote?.candidateType),
       relay: label(local?.relayProtocol), tcp: label(local?.tcpType),
+      // Which route, without its addresses: the pair's own id, each end's address family and (where
+      // Chromium says) the local network type, and how many times the route has switched.
+      id: label(pair.id), lf: family(local?.address), rf: family(remote?.address),
+      nt: label(local?.networkType), switches: num(switches),
     },
   }
 }
@@ -379,8 +404,9 @@ export function parseOpusFmtp(sdp) {
 // The slow-changing facts about one connection, kept out of the 2s samples: logged once, and again
 // only when something here changes (an encoder switch, a new candidate pair, a renegotiated codec).
 export function linkFacts(detail, opus = null) {
+  const link = detail?.link
   return omitNull({
-    net: detail?.link && {p: detail.link.protocol, l: detail.link.local, r: detail.link.remote, rp: detail.link.relay, tcp: detail.link.tcp},
+    net: link ? omitNull({p: link.protocol, l: link.local, r: link.remote, rp: link.relay, tcp: link.tcp, id: link.id, lf: link.lf, rf: link.rf, nt: link.nt, sw: link.switches}) : null,
     // Chromium only names the encoder/decoder (and says if it is hardware) when the page has capture permission,
     // so the codec's mime type is kept too: it is always there.
     venc: detail?.videoOut && {impl: detail.videoOut.encoder, hw: detail.videoOut.encoderHw, codec: detail.videoOut.codec},

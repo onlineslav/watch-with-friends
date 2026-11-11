@@ -16,7 +16,8 @@
 
 const fs = require('node:fs')
 const path = require('node:path')
-const {diagnoseBottleneck} = require('./bottleneck')
+const {diagnoseBottleneck, troubledSamples} = require('./bottleneck')
+const {diagnosePath, extraTrouble} = require('./path-verdict')
 
 const SAMPLE_S = 2 // seconds between samples (TELEMETRY_INTERVAL_MS in the app)
 const SESSION_GAP_MS = 180_000 // silence in one room longer than this ends a session (a crash leaves no leave line)
@@ -104,11 +105,13 @@ function buildSessions(entries) {
     // facts) carry no room code. They belong to the visit they happened inside.
     if (!room) {
       if (current && CONTEXT_SCOPES.has(e.d.sc) && e.at - current.end <= SESSION_GAP_MS) current.context.push(e)
+      // The net probe's traceroutes to the people in the room (M1.13), for the Path line.
+      if (current && e.d.sc === 'network' && e.d.ev === 'trace' && e.at - current.end <= SESSION_GAP_MS) current.traces.push(e)
       continue
     }
     const entered = e.d.sc === 'room' && e.d.ev === 'entered'
     if (current && (current.room !== room || e.at - current.end > SESSION_GAP_MS || (entered && current.entries.some((x) => x.d.sc !== 'room')))) finish()
-    if (!current) current = {user: e.user, folder: e.folder, room, start: e.at, end: e.at, entries: [], context: []}
+    if (!current) current = {user: e.user, folder: e.folder, room, start: e.at, end: e.at, entries: [], context: [], traces: []}
     current.entries.push(e)
     current.end = Math.max(current.end, e.at)
     if (e.d.sc === 'room' && e.d.ev === 'leave') finish()
@@ -304,12 +307,27 @@ function scoreGroup(group) {
       hostEdge, viewerEdge, hv, vh,
       hostBusy: busyOf(x.hostSession, 'host'), viewerBusy: busyOf(x.viewerSession, 'viewer'),
     })
+    // Where on the path between the two homes (scripts/path-verdict.js), from the net probe and route counters.
+    const npOf = (s, role, other) => (s ? machineLines(s, role).filter((d) => d.np).map((d) => ({at: atOf(d), gw: d.np.gw, net: d.np.net, peer: d.np.peer?.[other]})) : [])
+    const cpOf = (lines) => lines.filter((d) => d.cp).map((d) => ({at: atOf(d), cp: d.cp}))
+    const tracesOf = (s, other) => (s ? s.traces.filter((e) => e.d.peer === other).map((e) => e.d) : [])
+    const hostCp = cpOf(x.hostLines)
+    const viewerCp = own ? cpOf(x.viewerLines) : []
+    const troubled = troubledSamples(
+      viewerPlaying.map((d) => (own ? {at: atOf(d), loss: d.lossPct, freezes: d.freezes, frz: d.v?.frz} : {at: atOf(d), loss: d.receiver?.lossPct, freezes: d.receiver?.freezes})),
+      hostPlaying.map((d) => ({at: atOf(d), bw: d.e?.bw, cpu: d.e?.cpu})))
+    const path = diagnosePath({
+      times: [...troubled.map((s) => s.at), ...extraTrouble({hv, vh, hostCp, viewerCp})],
+      hostName: nameOf(x.host), viewerName: nameOf(x.viewer),
+      hostNp: npOf(x.hostSession, 'host', x.viewer), viewerNp: npOf(x.viewerSession, 'viewer', x.host),
+      hostCp, viewerCp, hostTraces: tracesOf(x.hostSession, x.viewer), viewerTraces: tracesOf(x.viewerSession, x.host),
+    })
     const series = {hostEdge: summary(hostEdge.map((p) => p.er)), viewerEdge: summary(viewerEdge.map((p) => p.er)), hv: summary(hv.map((p) => p.ms)), vh: summary(vh.map((p) => p.ms))}
     return {
       hostName: nameOf(x.host), viewerName: nameOf(x.viewer),
       hostVersion: x.hostSession?.version || null, viewerVersion: x.viewerSession?.version || null,
       sources: {viewerLog: own, hostLog: x.hostLines.length > 0},
-      viewer, host, bottleneck, series,
+      viewer, host, bottleneck, path, series,
       viewerCpu: x.viewerSession ? machineOf(x.viewerSession, 'viewer') : null,
       raw: {viewerLines: own ? x.viewerLines : [], hostLines: x.hostLines, hostEdge, viewerEdge, hv, vh},
     }
@@ -417,6 +435,20 @@ function bottleneckText(row) {
   return `${label}   [${seen ? `${seen.trim()} ` : ''}${b.reasons.join('; ')}]`
 }
 
+function pathText(row) {
+  const p = row.path
+  const label = {
+    'host-home': `${row.hostName}'s home network (host)`,
+    'viewer-home': `${row.viewerName}'s home network (viewer)`,
+    'host-isp': `${row.hostName}'s internet provider (host)`,
+    'viewer-isp': `${row.viewerName}'s internet provider (viewer)`,
+    between: 'the route between the two homes',
+    flow: 'the video flow only (the route itself stayed clean)',
+    unclear: 'unclear',
+  }[p.verdict]
+  return `${label}   [${p.reasons.join('; ')}]`
+}
+
 const compact = (d) => {
   const {t, m, lv, sc, ev, room, self, ...rest} = d
   const text = JSON.stringify(rest)
@@ -475,6 +507,7 @@ function formatGroup(score) {
     line('Edge RTT', edgeText(r.series))
     line('One-way delay', delayText(r.series))
     line('Likely bottleneck', bottleneckText(r))
+    if (r.path) line('Where on the path', pathText(r))
   }
   if (score.marks.length) {
     out.push('')

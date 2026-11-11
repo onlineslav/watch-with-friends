@@ -39,6 +39,8 @@ contextBridge.exposeInMainWorld('api', {
   setZoom: (factor) => ipcRenderer.invoke('window:zoom', factor),
   onZoomStep: (handler) => ipcRenderer.on('zoom:step', (_event, direction) => handler(direction)),
   setInRoom: (inRoom) => ipcRenderer.send('app:in-room', inRoom),
+  netProbePeers: (list) => ipcRenderer.send('netprobe:peers', list),
+  netProbeTrouble: (peer, why) => ipcRenderer.send('netprobe:trouble', peer, why),
   onMachineSample: (handler) => ipcRenderer.on('machine:sample', (_event, reading) => handler(reading)),
   logEvents: (entries) => ipcRenderer.invoke('log:events', entries),
   saveDiagnostics: (options) => ipcRenderer.invoke('log:save', options),

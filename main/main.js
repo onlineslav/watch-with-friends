@@ -346,6 +346,10 @@ function registerIpc() {
     win.setAlwaysOnTop(Boolean(pinned), 'floating')
     return win.isAlwaysOnTop()
   })
+  // The room's other people and the address each connection reaches them at, for the net probe's peer
+  // pings and traceroutes (main/net-probe.js validates them; nothing runs unless the probe does).
+  ipcMain.on('netprobe:peers', (_event, list) => netProbe.setPeers(list))
+  ipcMain.on('netprobe:trouble', (_event, peer, why) => netProbe.trouble(peer, why))
   ipcMain.on('app:in-room', (event, inRoom) => {
     updater.setInRoom(inRoom)
     setMachineSampling(event.sender, Boolean(inRoom))

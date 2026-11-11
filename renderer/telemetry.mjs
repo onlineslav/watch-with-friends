@@ -313,7 +313,39 @@ export function readDetail(report) {
       id: label(pair.id), lf: family(local?.address), rf: family(remote?.address),
       nt: label(local?.networkType), switches: num(switches),
     },
+    // The route's own counters, both directions: ICE checks we sent and got answered, checks the other
+    // end sent us and we answered, bytes each way and when a packet last arrived. A stall that only
+    // one direction suffers shows here as checks going out unanswered while theirs still arrive.
+    pair: pair && {
+      id: pair.id, at: num(pair.timestamp),
+      rq: num(pair.requestsSent), rs: num(pair.responsesReceived), rr: num(pair.requestsReceived), ss: num(pair.responsesSent),
+      disc: num(pair.packetsDiscardedOnSend),
+      bin: num(pair.bytesReceived), bout: num(pair.bytesSent), rtt: num(pair.currentRoundTripTime),
+      lastIn: num(pair.lastPacketReceivedTimestamp),
+    },
   }
+}
+
+// Whether a connection is struggling enough to traceroute to that person now (main rate-limits it to
+// once a minute): the reason, or null. Loss over 10%, a round trip over a second, nothing received
+// for 2s, a host hearing nothing from a viewer for 4s while playing, or ICE disconnected.
+export function peerTrouble({lossPct, rttMs, quietMs, feedbackAgeMs, ice} = {}) {
+  if (ice === 'disconnected' || ice === 'failed') return 'disconnected'
+  if (lossPct > 10) return 'loss'
+  if (rttMs > 1000) return 'rtt'
+  if (quietMs > 2000) return 'quiet'
+  if (feedbackAgeMs > 4000) return 'feedback'
+  return null
+}
+
+// The address the route reaches the other person at, for main's peer ping and traceroute only
+// (main/net-probe.js). Kept out of readDetail so nothing that logs or stores the detail can carry it.
+export function remoteAddress(report) {
+  const byId = new Map()
+  report.forEach((s) => byId.set(s.id, s))
+  const {pair} = selectedPair(report, byId)
+  const remote = pair && byId.get(pair.remoteCandidateId)
+  return remote && typeof remote.address === 'string' && remote.address ? remote.address : null
 }
 
 // How far the sound trails the picture at the viewer's output, in ms (positive = sound late, the same
@@ -346,7 +378,19 @@ export function detailDelta(previous, next) {
   const aJb = perUnit(before, audio, 'jbDelay', 'jbCount')
   const vJb = perUnit(videoBefore, video, 'jbDelay', 'jbCount')
   const skew = audio?.ept != null && video?.ept != null ? video.ept - audio.ept : null
+  const pair = next?.pair
+  const pairBefore = previous?.pair && pair && previous.pair.id === pair.id ? previous.pair : null
+  const seconds = pairBefore && pair.at > pairBefore.at ? (pair.at - pairBefore.at) / 1000 : null
+  const kbps = (key) => { const d = step(pairBefore, pair, key); return d != null && seconds ? Math.round((d * 8) / seconds / 1000) : null }
   return omitNull({
+    // The route, both directions (see readDetail's pair): checks sent/answered (rq/rs), checks received/
+    // answered (rr/ss), packets dropped on send, kbps in/out, its RTT, and ms since a packet last arrived.
+    cp: pair && {
+      rq: step(pairBefore, pair, 'rq'), rs: step(pairBefore, pair, 'rs'), rr: step(pairBefore, pair, 'rr'), ss: step(pairBefore, pair, 'ss'),
+      disc: step(pairBefore, pair, 'disc'), in: kbps('bin'), out: kbps('bout'),
+      rtt: round(pair.rtt != null ? pair.rtt * 1000 : null),
+      quiet: pair.at != null && pair.lastIn != null ? Math.max(0, Math.round(pair.at - pair.lastIn)) : null,
+    },
     // Audio receive health: loss, jitter, what the decoder made up, and how it is time-stretching.
     a: audio && {
       lost: step(before, audio, 'lost'), rx: step(before, audio, 'received'), jit: round(audio.jitter != null ? audio.jitter * 1000 : null, 1),

@@ -472,6 +472,24 @@ times (audio and growing frames for both viewers each repeat), then forces two r
 per peer). Orchestrator sweep: loop bench 7/7 repeats heard; `npm test` 489/489. Audits: 1 (MEDIUM long-film path,
 fixed; 2 LOW fixed).
 
+### M1.13 Path Probe
+Status: verified
+Added: Aya, 2026-11-11, after Lenna's 07:22–07:51 UTC episodes: one-way delays up to 13s both ways while both
+routers, both lines to 1.1.1.1 and both edge RTTs stayed clean, so the trouble sat on the route between the homes.
+Story: When the stream between Lenna and me breaks, the report says where: her home network, mine, one of our
+providers, the route between us (and from which hop), or only the video flow.
+Done when:
+- Each side pings the other person's address every 200ms while in a room with telemetry on (`np.peer` on
+  `machine-sample`); the address never reaches the log.
+- A traceroute runs 5s after someone joins (baseline) and again on 3 bad pings or on connection trouble, at most one
+  a minute, logged as `network/trace` with hops as [ms, kind, 4-hex hash], no addresses.
+- Samples carry the route's own per-direction counters (`cp`).
+- `npm run diagnostics -- --report` prints a "Where on the path" line when this data exists.
+Gate: no
+Evidence: `npm test` 561/561 (new: `test/net-probe-peer.test.js`, `test/telemetry-path.test.mjs`,
+`test/path-verdict.test.js`); the Windows helper built and traced 1.0.0.1 live. Needs a release before Lenna's logs
+carry it.
+
 ### M1.8 Real session review with Lenna [feel]
 Status: needs Aya
 Story: Lenna and I watch something together with live telemetry on, and the worst three things we notice get fixed.

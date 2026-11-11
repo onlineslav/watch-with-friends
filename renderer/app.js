@@ -94,6 +94,8 @@ import {
   nextSteady,
   readStats,
   readDetail,
+  remoteAddress,
+  peerTrouble,
   detailDelta,
   linkFacts,
   parseOpusFmtp,
@@ -835,6 +837,7 @@ async function leaveRoom() {
     leavingRoom = null
     ui.create.disabled = ui.joinForm.querySelector('button').disabled = false
     window.api.setInRoom(false)
+    probePeers.sent = '' // main forgets the room's peers on leaving
   })
   return leavingRoom
 }
@@ -1791,7 +1794,26 @@ function viewerDetail(delta) {
   // `off`: the estimated sound-late offset in ms (see soundLateMs); `av` is kept but cannot see a lip-sync hold.
   const off = round(soundLateMs({aJb: delta?.s?.aJb, vJb: delta?.s?.vJb, dec: delta?.v?.dec, outMs: out, baseMs: base}), 1)
   const sync = omitNull({...delta?.s, out, base, off})
-  return omitNull({a: delta?.a, s: sync, v: delta?.v}) || {}
+  return omitNull({a: delta?.a, s: sync, v: delta?.v, cp: delta?.cp}) || {}
+}
+
+// The net probe in main pings each person in the room and traceroutes to them when a connection
+// struggles (main/net-probe.js). It needs the address each connection reaches them at; that goes over
+// IPC only, never into the log. Sent when the set changes; trouble at most once per 10s per person.
+const probePeers = {sent: '', troubleAt: new Map()}
+function syncProbePeers(addresses) {
+  const list = [...addresses].filter(([, address]) => address).map(([peer, address]) => ({peer, address})).sort((a, b) => a.peer.localeCompare(b.peer))
+  const key = JSON.stringify(list)
+  if (key === probePeers.sent) return
+  probePeers.sent = key
+  window.api.netProbePeers?.(list)
+}
+function reportProbeTrouble(peer, why) {
+  if (!why) return
+  const last = probePeers.troubleAt.get(peer) || 0
+  if (performance.now() - last < 10_000) return
+  probePeers.troubleAt.set(peer, performance.now())
+  window.api.netProbeTrouble?.(peer, why)
 }
 
 // The slow-changing facts about one connection, written when they first appear and when they change.
@@ -1851,18 +1873,28 @@ async function sampleConnection() {
   const pending = Object.entries(pcs).map(async ([id, pc]) => [id, await pc.getStats().then((report) => {
     const t = performance.now()
     // Walking an RTCStatsReport builds a fresh object per entry on every pass; do it once for both readers.
-    try { const entries = Array.from(report.values()); return {...readStats(entries, {audioOnly}), detail: readDetail(entries)} } finally { spent += performance.now() - t }
+    try { const entries = Array.from(report.values()); return {...readStats(entries, {audioOnly}), detail: readDetail(entries), address: remoteAddress(entries)} } finally { spent += performance.now() - t }
   }, () => null)])
   spent += performance.now() - started
   const readings = new Map(await Promise.all(pending))
   if (session.room !== room) return
   const resumed = performance.now()
   const deltas = new Map()
+  const addresses = new Map()
   for (const [id, stats] of readings) {
     if (stats && session.peers.has(id)) {
       const p = person(id)
       Object.assign(p, {rttMs: stats.rttMs, relayed: stats.relayed})
       deltas.set(id, detailDelta(p.lastDetail, stats.detail))
+      addresses.set(id, stats.address)
+      const hostView = isHost() && p.receiver
+      reportProbeTrouble(id, peerTrouble({
+        lossPct: hostView ? p.receiver.lossPct : session.role === 'viewer' && id === session.hostId ? inboundDelta(session.lastInbound, stats.inbound)?.lossPct : null,
+        rttMs: stats.rttMs,
+        quietMs: deltas.get(id)?.cp?.quiet,
+        feedbackAgeMs: isHost() && hostPlaying() && p.receiverAt != null ? performance.now() - p.receiverAt : null,
+        ice: pcs[id]?.iceConnectionState,
+      }))
       p.lastDetail = stats.detail
       logLinkFacts(id, p, pcs[id], stats.detail)
       if (isShareSender(id) && stats.inbound) {
@@ -1923,11 +1955,13 @@ async function sampleConnection() {
           feedbackFresh: Boolean(p.receiver && p.receiverAt !== before?.receiverAt),
           playback,
           source: {width: dimensions.width ?? null, height: dimensions.height ?? null},
-          ...omitNull({e: deltas.get(id)?.e, ow: omitNull({vh: p.vhDelays?.take()}), set: currentSettingsTag()}),
+          ...omitNull({e: deltas.get(id)?.e, cp: deltas.get(id)?.cp, ow: omitNull({vh: p.vhDelays?.take()}), set: currentSettingsTag()}),
         })
       }
     }
   }
+
+  syncProbePeers(addresses)
 
   const peerId = session.role === 'viewer' ? session.hostId : [...session.peers][0]
   const stats = readings.get(peerId)

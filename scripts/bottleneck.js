@@ -70,13 +70,18 @@ const queueGrew = (r) => Boolean(r) && r.rise >= QUEUE_RISE_MS
  * @returns {{verdict, reasons: string[], numbers: object}} verdict is one of
  *   none | host-upload | viewer-network | viewer-computer | host-computer | unclear
  */
-function diagnoseBottleneck(input = {}) {
-  const viewer = input.viewer || []
-  const host = input.host || []
-  const troubled = [
+// The samples that count as trouble: loss, a freeze, or the encoder held back by bandwidth or CPU.
+function troubledSamples(viewer = [], host = []) {
+  return [
     ...viewer.filter((s) => s.loss > TROUBLE_LOSS_PCT || s.freezes > 0 || s.frz > 0),
     ...host.filter((s) => s.bw >= CPU_LIMITED_MS || s.cpu >= CPU_LIMITED_MS),
   ].filter((s) => finite(s.at))
+}
+
+function diagnoseBottleneck(input = {}) {
+  const viewer = input.viewer || []
+  const host = input.host || []
+  const troubled = troubledSamples(viewer, host)
   const times = troubled.map((s) => s.at)
   const numbers = {troubled: troubled.length, samples: viewer.length || host.length}
   if (!times.length) return {verdict: 'none', reasons: ['no loss, freezes or encoder limits'], numbers}
@@ -162,5 +167,5 @@ function diagnoseBottleneck(input = {}) {
 
 module.exports = {
   CALM_MS, CPU_LIMITED_MS, DECODE_SLOW_MS, EDGE_RISE_MS, ENCODE_SLOW_MS, NEAR_MS, TROUBLE_LOSS_PCT,
-  diagnoseBottleneck, linkFull, rise,
+  diagnoseBottleneck, linkFull, rise, troubledSamples,
 }

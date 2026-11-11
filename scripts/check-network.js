@@ -719,6 +719,10 @@ app.whenReady().then(async () => {
         // Some platforms omit nominated pairs in their first RTP readings. Give
         // readStats an explicit selected pair for the injected bandwidth value.
         controlled.set('quality-test-pair', {...pair, id: 'quality-test-pair', type: 'candidate-pair', nominated: true, state: 'succeeded', availableOutgoingBitrate: probe.capacity});
+        // readStats follows the transport's selected pair first, so point it at the injected one.
+        for (const stats of report.values()) {
+          if (stats.type === 'transport') controlled.set(stats.id, {...stats, selectedCandidatePairId: 'quality-test-pair'});
+        }
         return controlled;
       };
     })()`)

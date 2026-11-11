@@ -1,11 +1,12 @@
-## What's new in 0.8.10
+## What's new in 0.8.11
 
 Windows users and Mac users on 0.5.3 or later receive this release through the in-app updater. Mac users on 0.5.2 or earlier should install the DMG below once to enable future in-app updates.
 
-- **Sound stays in sync after a pause.** After the host paused a film and played it again, viewers could hear the sound drift up to a second or two behind the picture until someone moved the playback bar. The host now keeps sending the sound through a pause, so it stays in step.
-- **Bluetooth headphones line up better.** The picture now waits the full delay that headphones report (up to 300 ms, was 200 ms).
+- **A nicer Skip intro button.** Quieter dark glass with a white label and a small **S** hint. It steps back into the corner when the controls hide.
+- **Keyboard shortcuts at a glance.** A keyboard button next to the flag in the player controls (or press **?**) lists every shortcut.
+- **Better connection diagnostics.** The diagnostic log now notes when a connection switches network route, so a sudden lag spike can be traced to whose end changed. No addresses are recorded.
 
-Also in 0.8.9: Skip intro, Previous/Next buttons and an on-screen note for every skip. See the 0.8.9 release for details.
+Also in 0.8.10: sound stays in sync after a pause. See the 0.8.10 release for details.
 
 ## Download
 

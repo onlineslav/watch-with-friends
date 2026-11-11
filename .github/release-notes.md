@@ -1,12 +1,10 @@
-## What's new in 0.8.11
+## What's new in 0.8.12
 
 Windows users and Mac users on 0.5.3 or later receive this release through the in-app updater. Mac users on 0.5.2 or earlier should install the DMG below once to enable future in-app updates.
 
-- **A nicer Skip intro button.** Quieter dark glass with a white label and a small **S** hint. It steps back into the corner when the controls hide.
-- **Keyboard shortcuts at a glance.** A keyboard button next to the flag in the player controls (or press **?**) lists every shortcut.
-- **Better connection diagnostics.** The diagnostic log now notes when a connection switches network route, so a sudden lag spike can be traced to whose end changed. No addresses are recorded.
+- **Finds where a bad connection breaks.** With "Send telemetry for development" on, the app now checks the connection to each person in the room and traces the route to them when the stream struggles. The diagnostic report can then say whether the trouble was someone's home network, their internet provider, or the route between you. No addresses are recorded.
 
-Also in 0.8.10: sound stays in sync after a pause. See the 0.8.10 release for details.
+Also in 0.8.11: a nicer Skip intro button and a keyboard shortcuts panel (press **?**). See the 0.8.11 release for details.
 
 ## Download
 

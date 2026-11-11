@@ -3352,36 +3352,88 @@ kbd {
 
 /* Skip intro: a pill above the controls' right end, shown only during the intro. It stays when the
    rest of the chrome hides (it is the one thing worth reaching for then) and drops to the corner. */
+/* Skip intro: quiet dark glass over the picture, brightening on hover; white label, a faint key hint. */
 .skip-intro {
   position: absolute;
-  right: 20px;
-  bottom: 96px;
+  right: 24px;
+  bottom: 100px;
   z-index: 3;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 10px 16px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.28);
-  background: rgba(16, 16, 22, 0.72);
-  backdrop-filter: blur(8px);
+  gap: 10px;
+  padding: 9px 10px 9px 16px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: linear-gradient(180deg, rgba(34, 34, 46, 0.6), rgba(12, 12, 18, 0.6));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 10px 30px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(16px) saturate(150%);
   color: #fff;
   font: inherit;
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 600;
+  letter-spacing: 0.01em;
   cursor: pointer;
-  transition: bottom 0.2s, background 0.15s, border-color 0.15s;
-  animation: skip-intro-in 0.25s ease-out;
+  transition: bottom 0.25s ease, opacity 0.25s ease, background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+  animation: skip-intro-in 0.35s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.skip-intro-label { color: #fff; }
+.skip-intro svg { width: 16px; height: 16px; fill: #fff; opacity: 0.9; }
+.skip-intro kbd {
+  margin-left: 2px;
+  padding: 1px 6px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
 }
 .skip-intro:hover,
 .skip-intro:focus-visible {
-  background: var(--accent);
-  border-color: var(--accent);
+  border-color: rgba(255, 255, 255, 0.34);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0.1));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 10px 32px rgba(124, 108, 255, 0.28);
+  transform: translateY(-1px);
 }
-.skip-intro svg { width: 18px; height: 18px; }
-.room.idle .skip-intro { bottom: 24px; }
+.skip-intro:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.skip-intro:active { transform: translateY(0) scale(0.98); }
+/* With the controls tucked away it drops to the corner and steps back a little. */
+.room.idle .skip-intro { bottom: 28px; opacity: 0.8; }
 @keyframes skip-intro-in {
-  from { opacity: 0; transform: translateY(6px); }
+  from { opacity: 0; transform: translateY(8px); }
+}
+
+/* Keyboard shortcuts panel: a wider card, groups side by side, each key a small cap. */
+.shortcuts-card { width: min(760px, 100%); gap: 18px; }
+.shortcuts-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 20px 28px;
+}
+.shortcuts-list h2 {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.shortcuts-list dl { margin: 0; display: grid; gap: 7px; }
+.shortcuts-list .shortcut { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.shortcuts-list dt { color: var(--text); font-size: 14px; }
+.shortcuts-list dd { margin: 0; display: flex; align-items: center; gap: 4px; flex: none; color: var(--muted); font-size: 12px; }
+.shortcuts-list kbd {
+  min-width: 24px;
+  padding: 2px 7px;
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
 }
 
 /* "Skipped forward 30s": centred over the picture, fades by itself (app.js restarts it per press). */

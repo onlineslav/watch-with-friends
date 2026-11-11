@@ -35,6 +35,7 @@ import {RoomHistory} from './room-history.mjs'
 import {RoomPresence} from './room-presence.mjs'
 import {drawConfetti, launchConfetti, stepConfetti} from './confetti.mjs'
 import {REACTIONS, createRateLimiter, playReactionSound} from './reactions.mjs'
+import {shortcutGroups, SHORTCUTS_KEY} from './shortcuts.mjs'
 import {clampZoom, stepZoom, parseZoom, formatZoom, zoomPercent, MIN_ZOOM, MAX_ZOOM, DEFAULT_ZOOM} from './zoom.mjs'
 import {captionHtml} from './subtitles.mjs'
 import {shareSources, hidesTimeline, RESOLUTIONS, FRAME_RATES, DEFAULT_RESOLUTION, DEFAULT_FRAME_RATE, shareVideoConstraints, audioInputs, windowIdFromSource, AUDIO_BITRATES, DEFAULT_AUDIO_BITRATE, shareAudioBitrate, SHARE_PRIORITIES, DEFAULT_SHARE_PRIORITY, sharePriority, cleanPeerShare, shareTiles, shareView, gridColumns} from './screenshare.mjs'
@@ -225,6 +226,10 @@ const ui = {
   reactionsToggle: $('reactions-toggle'),
   reactionFeed: $('reaction-feed'),
   mark: $('mark'),
+  shortcuts: $('shortcuts'),
+  shortcutsToggle: $('shortcuts-toggle'),
+  shortcutsClose: $('shortcuts-close'),
+  shortcutsList: $('shortcuts-list'),
   markNote: $('mark-note'),
   markNoteInput: $('mark-note-input'),
   markKey: $('mark-key'),
@@ -816,7 +821,7 @@ async function leaveRoom() {
   for (const peerId of [...current.images.keys()]) forgetImage(peerId)
   session = blankSession()
   setRole('idle')
-  ui.room.hidden = ui.settings.hidden = true
+  ui.room.hidden = ui.settings.hidden = ui.shortcuts.hidden = true
   ui.home.hidden = false
   ui.home.append(ui.friends, ui.friendNotification)
   setFriendsOpen(false)
@@ -5395,8 +5400,44 @@ youtube.addEventListener('ended', () => {
   else playNext()
 })
 
+// The keyboard shortcuts panel (the keyboard button beside the flag, or ?), built once from shortcuts.mjs.
+function renderShortcuts() {
+  ui.shortcutsList.replaceChildren(...shortcutGroups(window.api.platform).map(({title, items}) => {
+    const group = element('section', 'shortcut-group')
+    const list = element('dl')
+    for (const {keys, alt, label} of items) {
+      const row = element('div', 'shortcut')
+      const caps = element('dd')
+      const combo = (parts) => parts.map((k) => element('kbd', null, k))
+      caps.append(...combo(keys), ...(alt ? [document.createTextNode('or'), ...combo(alt)] : []))
+      row.append(element('dt', null, label), caps)
+      list.append(row)
+    }
+    group.append(element('h2', null, title), list)
+    return group
+  }))
+}
+function setShortcutsOpen(open) {
+  if (open && !ui.shortcutsList.firstChild) renderShortcuts()
+  ui.shortcuts.hidden = !open
+  ui.shortcutsToggle.setAttribute('aria-expanded', String(open))
+  if (open) ui.shortcutsClose.focus()
+  else if (document.activeElement && ui.shortcuts.contains(document.activeElement)) document.activeElement.blur()
+}
+ui.shortcutsToggle.addEventListener('click', () => {
+  ui.shortcutsToggle.blur()
+  setShortcutsOpen(ui.shortcuts.hidden)
+})
+ui.shortcutsClose.addEventListener('click', () => setShortcutsOpen(false))
+ui.shortcuts.addEventListener('pointerdown', (event) => { if (event.target === ui.shortcuts) setShortcutsOpen(false) })
+
 document.addEventListener('keydown', (event) => {
   if (ui.room.hidden || !ui.settings.hidden || !ui.sharePicker.hidden || event.target.matches('input:not([type=range]), select, textarea')) return
+  if (event.key === SHORTCUTS_KEY && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    event.preventDefault()
+    return setShortcutsOpen(ui.shortcuts.hidden)
+  }
+  if (!ui.shortcuts.hidden) return
   if (event.code === 'Space') {
     event.preventDefault()
     if (event.target instanceof HTMLButtonElement) event.target.blur()
@@ -5456,6 +5497,7 @@ document.addEventListener('pointerdown', (event) => {
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return
   setReactionsOpen(false)
+  setShortcutsOpen(false)
   endItemDrag(false)
   closeSharePicker()
   if (!ui.settingsUnsaved.hidden) return keepEditingSettings()

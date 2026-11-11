@@ -299,6 +299,18 @@
         <button id="leave" class="ghost">Leave</button>
       </header>
 
+      <div id="shortcuts" class="modal shortcuts" hidden>
+        <div class="modal-card shortcuts-card" role="dialog" aria-modal="true" aria-labelledby="shortcuts-title">
+          <header class="modal-header">
+            <h1 id="shortcuts-title">Keyboard shortcuts</h1>
+            <button id="shortcuts-close" class="ghost icon-button" title="Close (Esc)" aria-label="Close">
+              <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" /></svg>
+            </button>
+          </header>
+          <div id="shortcuts-list" class="shortcuts-list"></div>
+        </div>
+      </div>
+
       <div id="stage" class="stage" data-role="idle">
         <div id="paused-title" class="paused-title" hidden></div>
         <video id="local-video" class="local"></video>
@@ -363,8 +375,9 @@
           <span id="skip-flash-text"></span>
         </div>
         <button id="skip-intro" class="skip-intro" title="Skip intro (S)" hidden>
-          <span>Skip intro</span>
-          <svg viewBox="0 0 24 24"><path d="M5 6v12l8.5-6zm9.5 0h2.5v12h-2.5z" /></svg>
+          <span class="skip-intro-label">Skip intro</span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6v12l8.5-6zm9.5 0h2.5v12h-2.5z" /></svg>
+          <kbd aria-hidden="true">S</kbd>
         </button>
 
         <div id="controls" class="controls">
@@ -405,6 +418,9 @@
               <input id="mark-note-input" maxlength="80" autocomplete="off" spellcheck="false" placeholder="Marked. Add a note, then Enter" aria-label="Note for this mark" />
             </form>
           </div>
+          <button id="shortcuts-toggle" class="icon" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts" aria-haspopup="dialog" aria-controls="shortcuts">
+            <svg viewBox="0 0 24 24"><path d="M20 5H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm-9 3h2v2h-2zm0 3h2v2h-2zM8 8h2v2H8zm0 3h2v2H8zm-1 2H5v-2h2zm0-3H5V8h2zm9 7H8v-2h8zm0-4h-2v-2h2zm0-3h-2V8h2zm3 3h-2v-2h2zm0-3h-2V8h2z" /></svg>
+          </button>
           <select id="audio-select" title="Audio track"></select>
           <select id="subtitle-select" title="Subtitles"></select>
           <select id="track-select" title="Language and subtitles"></select>

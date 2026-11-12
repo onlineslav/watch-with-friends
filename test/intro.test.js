@@ -1,6 +1,6 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const {SAMPLE_RATE, chapterIntro, findShared, fingerprint, neighbours} = require('../main/intro')
+const {SAMPLE_RATE, chapterIntro, comparableLength, findShared, fingerprint, neighbours} = require('../main/intro')
 
 // Deterministic "audio": music-like notes (a few tones with an envelope) from a seeded generator.
 function rng(seed) {
@@ -87,4 +87,13 @@ test('neighbouring episodes, nearest first, in natural order', () => {
   assert.deepEqual(neighbours('Show S01E2.mkv', files), ['Show S01E3.mkv', 'Show S01E1.mkv', 'Show S01E10.mkv'])
   assert.deepEqual(neighbours('Show S01E10.mkv', files), ['Show S01E3.mkv', 'Show S01E2.mkv'])
   assert.deepEqual(neighbours('alone.mkv', ['alone.mkv']), [])
+})
+
+test('a double episode and its single neighbours are compared, a film beside episodes is not', () => {
+  assert.equal(comparableLength(2950, 1474), true, 'double episode, single neighbour')
+  assert.equal(comparableLength(1474, 2950), true, 'single episode, double neighbour')
+  assert.equal(comparableLength(1474, 1400), true, 'ordinary neighbour')
+  assert.equal(comparableLength(5400, 1400), false, 'film beside episodes')
+  assert.equal(comparableLength(1400, 5400), false, 'episode beside a film')
+  assert.equal(comparableLength(0, 1400), false, 'unknown length')
 })

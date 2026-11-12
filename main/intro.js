@@ -236,6 +236,13 @@ const collator = new Intl.Collator(undefined, {numeric: true, sensitivity: 'base
 const naturalCompare = (x, y) => collator.compare(x, y)
 
 // Video files beside `name`, nearest episode first: next, previous, the one after next, the one before.
+// Episodes worth comparing: a double episode (2x) sits beside single ones, so it and its neighbours
+// must still be compared, while a film beside a folder of episodes (~4x) is left alone. Only the first
+// SCAN_S of each is read either way.
+function comparableLength(own, theirs) {
+  return own > 0 && theirs >= own * 0.4 && theirs <= own * 2.5
+}
+
 function neighbours(name, siblings) {
   const videos = siblings.filter((n) => VIDEO_EXTENSIONS.has(path.extname(n).slice(1).toLowerCase())).sort(naturalCompare)
   const at = videos.indexOf(name)
@@ -312,7 +319,7 @@ function createIntroFinder({ffmpeg, ffprobe, cacheFile, record = () => {}}) {
     for (const name of candidates) {
       const other = path.join(dir, name)
       const theirs = await facts(other).catch(() => null)
-      if (!theirs?.audio || theirs.duration < own.duration * 0.6 || theirs.duration > own.duration * 1.6) continue
+      if (!theirs?.audio || !comparableLength(own.duration, theirs.duration)) continue
       tried++
       const otherKey = await fileKey(other)
       const shared = findShared(await printOf(key, filePath), await printOf(otherKey, other))
@@ -342,4 +349,4 @@ function createIntroFinder({ffmpeg, ffprobe, cacheFile, record = () => {}}) {
   }
 }
 
-module.exports = {FRAME_S, SAMPLE_RATE, chapterIntro, createIntroFinder, findShared, fingerprint, naturalCompare, neighbours}
+module.exports = {FRAME_S, SAMPLE_RATE, chapterIntro, comparableLength, createIntroFinder, findShared, fingerprint, naturalCompare, neighbours}

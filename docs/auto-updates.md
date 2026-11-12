@@ -108,3 +108,7 @@ need one manual upgrade to the first public release containing this updater.
 References: [Sparkle setup](https://sparkle-project.org/documentation/),
 [custom drivers](https://sparkle-project.org/documentation/api-reference/Protocols/SPUUserDriver.html),
 [external bundle updates](https://sparkle-project.org/documentation/sparkle-cli/).
+
+## Summary moved from CLAUDE.md (2026-11-12)
+
+- **Auto-update** (`main/updater.js`, Windows and Mac): at launch and on wake, packaged builds check for a newer release, download it in the background and install it with a relaunch, through one `UpdateController` (`main/update-controller.js`) with a driver per platform. The renderer reports `app:in-room`; an update that's ready during a room waits until you leave it. **Windows:** `electron-updater` against the GitHub releases (the `build.publish` config puts `app-update.yml` in the app); releases must carry `latest.yml` and the `.exe.blockmap`. **Mac** (since 0.5.3; earlier installs must take one manual `.dmg`): Squirrel.Mac rejects ad-hoc signed apps, so `main/sparkle.js` drives a bundled Sparkle helper (`updater/WatchWithFriendsUpdater.app`, built by `scripts/build-mac-updater.js`) against a per-arch `appcast-<arch>.xml` signed with the EdDSA key in CI (`scripts/mac-update-feed.js`, `SUPublicEDKey` set in `prepare-package.js`); Sparkle's own automatic checks are off, the app drives it. The workflow uploads the appcasts and `.zip`s alongside the `.dmg`s.

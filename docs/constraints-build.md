@@ -1,0 +1,11 @@
+# Constraints: identifiers, entry point, packaging, integration check (don't regress)
+
+Moved word for word from CLAUDE.md on 2026-11-12 so a session doesn't load it every turn. Read before renaming anything, changing `main/index.js`, `package.json` build settings, or the release workflow, and before running `npm run test:network`.
+
+- **The rename kept its compatibility anchors.** The app is *Watch With Friends* (GitHub: `onlineslav/watch-with-friends`, titled "Watch With Friends - Synced Media Player"), renamed from *Synced Video Player* after 0.4.3. Three identifiers deliberately still say `synced-video-player`, and changing them breaks existing installs: `build.appId` (`app.syncedvideoplayer`) is how NSIS and electron-updater recognise an install, so a new value would install beside the old app instead of upgrading it; `APP_ID` in `renderer/app.js` and `helloText` in `renderer/friends.mjs` are on the wire, so a new value can't see or connect to anyone on an older build. `main/startup.js` copies the old `%APPDATA%\Synced Video Player` profile into the new one once (`carryOverProfile`, marker file, caches skipped) so identity, friends and saved rooms survive; `scripts/patch-trystero.js` accepts either name's marker so an already-patched `node_modules` isn't patched twice.
+
+- **Entry point is `main/index.js`,** which calls `start()` from `main/main.js`. Electron 44 doesn't set `require.main` to the entry file, so a `require.main === module` check never runs and the app idles with no window.
+
+- **Packaging:** ffmpeg/ffprobe must be in `asarUnpack` (paths are rewritten `app.asar` → `app.asar.unpacked`). `ffprobe-static` ships every platform's binary, so the per-platform `files` excludes in `package.json` matter. Mac builds are ad-hoc signed (`identity: "-"`) and not notarized.
+
+- **Integration check:** `npm run test:network` bundles the real renderer with temporary test hooks and local IPC discovery, then connects three hidden Electron windows over WebRTC. It uses disposable profiles and synthetic files, without public discovery or relay traffic. It covers friends, signed room admission, video/audio, subtitles, controls, host changes, image ordering, terminal errors and rejoining. Production bundles include no test hooks.

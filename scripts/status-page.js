@@ -12,10 +12,10 @@ const root = path.resolve(__dirname, '..');
 const outDir = path.join(root, 'work', 'status');
 const outFile = path.join(outDir, 'index.html');
 
-// The "Your Claude plan" tile comes from the shared builder in Aya's _workflow (a global rule,
-// 2026-11-04). Optional: on a machine without it, the page just has no tile.
+// The "Your Claude plan" tile comes from the shared builder, which moved into Control Room (M1.9, 2026-11-12).
+// Optional: on a machine without it, the page just has no tile.
 let shared = null;
-try { shared = require('I:/Software Development/_workflow/status/status-page.js'); } catch { /* not on this PC */ }
+try { shared = require('I:/Software Development/control-room/collectors/project-page.js'); } catch { /* not on this PC */ }
 const tokensTile = () => { try { return shared ? shared.tokensHtml(root) + (shared.docsHtml ? shared.docsHtml(root) : '') : ''; } catch { return ''; } };
 const read = (p) => {
   try { return fs.readFileSync(path.join(root, p), 'utf8').replace(/\r\n/g, '\n'); }

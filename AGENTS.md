@@ -33,7 +33,7 @@ WebRTC. Viewers never have the file. The host is authoritative for playback stat
 | `npm run test:connections` | Joining, friend discovery and rejoin during a simulated discovery outage; gates releases |
 | `npm run test:logging` | Renderer events reach the log file |
 | `npm run bench` | A/V sync and audio/video benchmark, ~15 min; the number every media-path change is checked against |
-| `npm run status` | `work/status/index.html` |
+| `npm run status` | Builds `work/status/index.html` by hand. Nothing rebuilds it after a commit any more: the live page is Control Room's, at http://127.0.0.1:8790/synced-video-player/ |
 | `npm run dist:win` / `dist:mac` | Installer in `dist/` (Mac only on macOS; CI builds both) |
 
 Every script with its full notes (flags, variants, caveats): `docs/commands.md`.
